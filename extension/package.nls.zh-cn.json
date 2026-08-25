@@ -1,0 +1,5 @@
+{
+  "command.sendSelection": "DSH: 发送选中代码到会话",
+  "command.sendFile": "DSH: 发送文件到会话",
+  "command.sendFolder": "DSH: 发送文件夹到会话"
+}

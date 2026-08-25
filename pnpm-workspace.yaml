@@ -1,0 +1,11 @@
+# pnpm 11 reads pnpm-specific settings ONLY from this file (an .npmrc copy
+# is silently ignored); these two used to live there.
+autoInstallPeers: false
+verifyDepsBeforeRun: false
+allowBuilds:
+  # node-pty arrives only as a transitive dependency of dsh-better-sidebar
+  # (used for its TYPES during build); this plugin never runs it, so its
+  # native build script is explicitly not allowed.
+  node-pty: false
+minimumReleaseAgeExclude:
+  - dsh-better-sidebar@0.16.0

@@ -1,0 +1,35 @@
+/**
+ * The VSCode tab component: resolves the session's authoritative working
+ * directory, maps it into the embedded VS Code server's filesystem view
+ * (identity in the default same-container deployment), and embeds the
+ * VS Code workbench in a same-origin iframe
+ * (`<base>/?folder=<mapped cwd>`).
+ *
+ * Design notes:
+ * - The iframe is NOT sandboxed and NOT keyed away on `visible === false`:
+ *   the default deployment serves the VS Code server behind the same gateway
+ *   (cookies flow, WebSocket terminal works) and the VS Code session should
+ *   survive tab switches inside the sidebar.
+ * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
+ * (`session.cwd`); the scope's optional cwd is used as a fast path.
+ * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
+ *   snapshot each render, so gear-popup edits apply on the next render.
+ * - All chrome follows the DSH appearance (light / dark / system) through
+ *   the host's `--dsw-alias-*` tokens — see `adoptTabStyles` below.
+ *
+ * @module dsh-sidebar-vscode/client/VscodeView
+ */
+import type { TabComponentProps } from 'dsh-better-sidebar';
+/**
+ * Idempotently install the tab stylesheet into `document.head`. The tokens
+ * are host globals maintained by the theme presenter (they flip with the
+ * appearance preference, `system` included), so the stylesheet needs no
+ * theme awareness of its own.
+ * @returns a disposer that removes the element (safe to call twice).
+ */
+export declare function adoptTabStyles(): () => void;
+/**
+ * Render the VS Code workbench for the scope's workspace.
+ * @param props - the tab component props (scope + the sidebar store).
+ */
+export declare function VscodeView(props: TabComponentProps): React.ReactNode;

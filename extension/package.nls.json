@@ -1,0 +1,5 @@
+{
+  "command.sendSelection": "DSH: Send Selection to Session",
+  "command.sendFile": "DSH: Send File to Session",
+  "command.sendFolder": "DSH: Send Folder to Session"
+}

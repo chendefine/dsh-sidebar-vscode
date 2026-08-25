@@ -1,0 +1,67 @@
+{
+  "name": "selection-reference",
+  "displayName": "DSH Selection Reference",
+  "description": "Send the current editor selection (file + line range + code) or the explorer-selected files/folders (path + kind only) to the DeepSeek Harness conversation composer, when the workbench is embedded in the DSH sidebar.",
+  "publisher": "dsh",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chendefine/dsh-sidebar-vscode",
+    "directory": "extension"
+  },
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "dsh.selectionReference.send",
+        "title": "%command.sendSelection%"
+      },
+      {
+        "command": "dsh.selectionReference.sendFile",
+        "title": "%command.sendFile%"
+      },
+      {
+        "command": "dsh.selectionReference.sendFolder",
+        "title": "%command.sendFolder%"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "dsh.selectionReference.send",
+          "when": "editorHasSelection",
+          "group": "9_cutcopypaste@50"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "dsh.selectionReference.sendFile",
+          "when": "!explorerResourceIsFolder",
+          "group": "6_copypath@50"
+        },
+        {
+          "command": "dsh.selectionReference.sendFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "6_copypath@51"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "dsh.selectionReference.send",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "editorHasSelection"
+      }
+    ]
+  }
+}

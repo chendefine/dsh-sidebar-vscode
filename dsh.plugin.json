@@ -1,0 +1,16 @@
+{
+  "name": "dsh-sidebar-vscode",
+  "version": "0.1.0",
+  "description": "DSH web plugin: a better-sidebar tab that embeds the VS Code web workbench opened at the current session workspace, behind the gateway's /vscode subpath or any configured editor base URL. Editor selections land as <text-selection> context chips; explorer files/folders land as path-only <file-selection>/<folder-selection> markers.",
+  "entry": {
+    "name": "dsh-sidebar-vscode",
+    "inject": []
+  },
+  "client": {
+    "platform": "web"
+  },
+  "contributes": {
+    "tools": [],
+    "skills": []
+  }
+}
