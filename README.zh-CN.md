@@ -6,6 +6,10 @@
 
 ![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![CI](https://img.shields.io/github/actions/workflow/status/chendefine/dsh-sidebar-vscode/ci.yml) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
 
+## 界面截图
+
+![产品使用截图](screenshot.png)
+
 ```
 编辑器选区                          资源管理器
   右键 / Ctrl+Alt+C                  右键文件 / 文件夹
@@ -260,6 +264,7 @@ extension/                    # VS Code 扩展 dsh.selection-reference（命令 
 scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 → 注册清单 → 重启 → 健康检查）
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
+screenshot.png                # 产品使用截图（见上方「界面截图」）
 tests/*.spec.ts               # vitest 单测，共 195 例 / 8 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 dsh.plugin.json               # 插件清单（元数据）

@@ -6,6 +6,10 @@ A [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) sidebar 
 
 ![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![CI](https://img.shields.io/github/actions/workflow/status/chendefine/dsh-sidebar-vscode/ci.yml) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
 
+## Screenshot
+
+![Product usage screenshot](screenshot.png)
+
 ```
 editor selection                    explorer
   right-click / Ctrl+Alt+C          right-click file / folder
@@ -263,6 +267,7 @@ extension/                    # the VS Code extension dsh.selection-reference (c
 scripts/install-extension.sh  # one-command extension install (vsce package → files → manifest → restart → health)
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
+screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
 tests/*.spec.ts               # vitest specs — 195 tests / 8 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 dsh.plugin.json               # plugin manifest (metadata)
