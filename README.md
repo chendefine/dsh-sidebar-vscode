@@ -164,7 +164,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 |---|---|---|
 | `openAsDefault` | `false` | Brand-new sessions open this tab by default (replacing the seeded Files tab); used sessions keep their layouts |
 | `serverUrl` | `/vscode` | Server base URL: same-origin gateway subpath, or a full address (e.g. `http://127.0.0.1:8000/vscode` to bypass the gateway locally; keep the `/vscode` base path) |
-| `pathMap` | `/data/workspace=/data/workspace;/opt=/opt` | DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged; unmappable cwds open the default view with a notice |
+| `pathMap` | `/data/workspace=/data/workspace;/opt=/opt` | DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged. Rules are prefix rewriters, **not a whitelist**: chat-side file opens of absolute paths no rule matches pass through as-is (VS Code itself reports a genuinely missing file); only an unmappable session cwd opens the default view with a notice |
 | `maxLines` | `200` (range 1–2000) | Max rendered code lines per reference; overflow keeps head+tail halves and marks the omitted middle inline |
 | `maxBytes` | `20000` (range 1000–200000) | UTF-8 byte cap per reference (guards minified single-line files) |
 
@@ -243,7 +243,7 @@ nginx: location /vscode/ → 127.0.0.1:8000 (with WebSocket upgrade)
       case, so adding/removing users needs zero gateway sync
 ```
 
-The DSH session and the embedded workbench see **the same filesystem under the same paths**, so the default map is the identity pair `/data/workspace=/data/workspace;/opt=/opt` — pure pass-through that merely whitelists the reachable workspace roots (`/tmp` & co. map to nothing → notice + default view). Move the workbench to another container/mount and rewrite the prefixes via `pathMap`.
+The DSH session and the embedded workbench see **the same filesystem under the same paths**, so the default map is the identity pair `/data/workspace=/data/workspace;/opt=/opt` — pure pass-through signposts. The rules are prefix rewriters, not a whitelist: chat-side **file opens** that match no rule pass through at their original path (any readable file opens in the same-container deployment; existence is the open channel's call), and only an unmappable session **cwd** shows the notice and opens the default view (e.g. a `/tmp` session — add a rule if you want it mapped). Move the workbench to another container/mount and rewrite the prefixes via `pathMap`.
 
 ### Repository layout
 

@@ -30,7 +30,7 @@ export declare const zh: {
     readonly settingRangeHint: "超出可填范围，确认时将自动改为最近的边界值";
     readonly settingOpenAsDefault: "侧边栏默认打开 VSCode";
     readonly settingOpenAsDefaultDesc: "新会话的侧边栏默认打开本 VSCode 标签（替换默认的「文件」标签）；同时接管对话里的文件点击（变更文件标签、工具行路径、正文文件引用）——点击后在本标签的 VS Code 中打开而不是内置文件标签；关闭后两者都恢复默认行为，且已打开过的会话保持各自布局";
-    readonly openUnmapped: "文件路径无法映射到 VSCode 容器，未能在 VS Code 中打开";
+    readonly openUnmapped: "文件路径不是容器内绝对路径，未能在 VS Code 中打开（绝对路径不再要求命中映射规则，未匹配时按原路径打开）";
     readonly injectedAsText: "已注入为文本引用（输入框暂不可写入，提交效果相同）";
     readonly injectFailed: "未能注入：当前没有可用的对话输入框";
     readonly produced: "本次产出";

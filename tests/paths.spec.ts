@@ -10,6 +10,7 @@ import {
   DEFAULT_SERVER_URL,
   buildVscodeUrl,
   mapPath,
+  mapPathForOpen,
   normalizeBaseUrl,
   parsePathMap,
 } from '../src/client/paths.ts'
@@ -90,6 +91,51 @@ describe('mapPath (custom rules)', () => {
   it('root source prefix maps everything', () => {
     const rules = parsePathMap('/=/mirror')
     expect(mapPath('/anything/here', rules)).toBe('/mirror/anything/here')
+  })
+})
+
+describe('mapPathForOpen (default deployment rules)', () => {
+  const rules = parsePathMap(DEFAULT_PATH_MAP)
+
+  it('passes out-of-map absolute paths through unchanged (unmapped ≠ unopenable)', () => {
+    expect(mapPathForOpen('/app/dsh/packages/foo.ts', rules)).toBe('/app/dsh/packages/foo.ts')
+    expect(mapPathForOpen('/tmp/scratch/notes.json', rules)).toBe('/tmp/scratch/notes.json')
+    expect(mapPathForOpen('/root/.bashrc', rules)).toBe('/root/.bashrc')
+  })
+
+  it('keeps the identity mapping for the configured roots', () => {
+    expect(mapPathForOpen('/opt/dsh/plugins/p/x.ts', rules)).toBe('/opt/dsh/plugins/p/x.ts')
+    expect(mapPathForOpen('/data/workspace/proj/a.ts', rules)).toBe('/data/workspace/proj/a.ts')
+  })
+
+  it('returns null only for non-absolute or empty input', () => {
+    expect(mapPathForOpen('relative/path', rules)).toBeNull()
+    expect(mapPathForOpen('', rules)).toBeNull()
+    expect(mapPathForOpen('   ', rules)).toBeNull()
+  })
+
+  it('trims whitespace before deciding', () => {
+    expect(mapPathForOpen('  /tmp/x.ts  ', rules)).toBe('/tmp/x.ts')
+  })
+})
+
+describe('mapPathForOpen (custom rules)', () => {
+  it('rewrites matched prefixes and passes everything else through', () => {
+    const rules = parsePathMap('/dsh-ws=/vscode-ws')
+    expect(mapPathForOpen('/dsh-ws/a.ts', rules)).toBe('/vscode-ws/a.ts')
+    expect(mapPathForOpen('/other/a.ts', rules)).toBe('/other/a.ts')
+  })
+
+  it('keeps the destination-prefix pass-through of mapPath', () => {
+    const rules = parsePathMap('/dsh-ws=/vscode-ws')
+    expect(mapPathForOpen('/vscode-ws/project/a.ts', rules)).toBe('/vscode-ws/project/a.ts')
+  })
+
+  it('prefers the longest matching source prefix', () => {
+    const rules = parsePathMap('/data/workspace=/mnt/vscode;/data/workspace/code=/x')
+    expect(mapPathForOpen('/data/workspace/code/a.ts', rules)).toBe('/x/a.ts')
+    expect(mapPathForOpen('/data/workspace/other/a.ts', rules)).toBe('/mnt/vscode/other/a.ts')
+    expect(mapPathForOpen('/data/elsewhere/a.ts', rules)).toBe('/data/elsewhere/a.ts')
   })
 })
 

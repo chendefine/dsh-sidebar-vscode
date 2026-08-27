@@ -12,10 +12,13 @@
  *   /opt                   (==)      /opt
  *
  * so the built-in default is a pair of identity rules
- * `/data/workspace=/data/workspace;/opt=/opt` — pure pass-through that still
- * whitelists the reachable workspace roots (anything else, e.g. `/tmp`, is
- * unmappable). The sidebar settings row (`pathMap`) can override the rules,
- * e.g. when the workbench runs in a separate container with different mounts.
+ * `/data/workspace=/data/workspace;/opt=/opt` — pure pass-through markers for
+ * the usual workspace roots. The rules act as PREFIX REWRITERS, not a
+ * whitelist: a path no rule matches is not an error, it just reaches the
+ * open channels unchanged ({@link mapPathForOpen}); only the workspace
+ * FOLDER mapping treats it as unmappable ({@link mapPath}). The sidebar
+ * settings row (`pathMap`) can override the rules, e.g. when the workbench
+ * runs in a separate container with different mounts.
  *
  * @module dsh-sidebar-vscode/client/paths
  */
@@ -93,6 +96,29 @@ export function mapPath(path: string, rules: readonly PathMapRule[]): string | n
     if (under(clean, rule.to)) return clean
   }
   return null
+}
+
+/**
+ * Map one DSH-side path for a FILE OPEN: {@link mapPath} when a rule
+ * matches, else the path itself passed through unchanged.
+ *
+ * Rationale: unmapped ≠ unopenable. DSH and the VS Code server share one
+ * filesystem in the default same-container deployment, so any absolute
+ * path the session can read the workbench can open; whether the file
+ * actually exists is the open channel's call (the extension stats and
+ * warns "file not found", the URL-payload channel lets VS Code report
+ * it). Refusing the open client-side just because no rule matched — the
+ * old behavior — turned perfectly readable out-of-map files (e.g.
+ * `/app`, `/tmp`) into the「文件路径无法映射到 VSCode 容器」error.
+ *
+ * Returns null only for input nothing sensible can be done with: empty
+ * or non-absolute paths (the open channels all address POSIX absolute
+ * paths).
+ */
+export function mapPathForOpen(path: string, rules: readonly PathMapRule[]): string | null {
+  const clean = path.trim()
+  if (clean === '' || !clean.startsWith('/')) return null
+  return mapPath(clean, rules) ?? clean
 }
 
 /**

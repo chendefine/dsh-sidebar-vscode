@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TabComponentProps } from 'dsh-better-sidebar'
 import { readSetting, readSettingValue } from './settings.ts'
-import { buildVscodeUrl, mapPath, normalizeBaseUrl, parsePathMap } from './paths.ts'
+import { buildVscodeUrl, mapPath, mapPathForOpen, normalizeBaseUrl, parsePathMap } from './paths.ts'
 import { installClipboardBridge } from './clipboardBridge.ts'
 import type { ClipboardPayload } from './selection.ts'
 import { getReferenceLander, setFallbackOptions } from './composer.tsx'
@@ -272,7 +272,11 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   const executeOpen = useCallback(async (request: OpenRequest): Promise<void> => {
     const { serverUrl: base, pathMap: rules, cwd: workdir } = openInputs.current
     const workspace = workdir !== undefined ? mapPath(workdir, rules) : undefined
-    const file = mapPath(request.path, rules)
+    // Unmapped ≠ unopenable: a path no rule matches passes through as-is
+    // (same-container deployment — the workbench sees the very same file),
+    // and the open channel decides existence (extension stat / VS Code's
+    // own not-found error). null only for non-absolute garbage.
+    const file = mapPathForOpen(request.path, rules)
     if (file === null) {
       setFlash(`${t('openUnmapped')}: ${request.path}`)
       return
