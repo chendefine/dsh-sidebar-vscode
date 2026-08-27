@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   OPEN_CHANNEL_API,
+  fetchSettingsDocumentPath,
   probeCapability,
   resetCapabilityCache,
   sendOpenCommand,
@@ -106,6 +107,32 @@ describe('sendOpenCommand', () => {
         { folder: '/w', path: '/w/a.ts', nonce: 1 },
         fetchLike,
       )).resolves.toBe(false)
+    }
+  })
+})
+
+describe('fetchSettingsDocumentPath', () => {
+  it('POSTs an empty body and maps {ok, value:{path}} to the path', async () => {
+    const fetchLike = makeFetch([{ status: 200, body: { ok: true, value: { path: '/data/dsh-home/settings.yaml' } } }])
+    await expect(fetchSettingsDocumentPath(fetchLike)).resolves.toBe('/data/dsh-home/settings.yaml')
+    expect(fetchLike.calls).toEqual([
+      { url: `${OPEN_CHANNEL_API}/settings.document`, body: {} },
+    ])
+  })
+
+  it('failures and malformed answers map to null (fail-soft for the stock button)', async () => {
+    for (const answer of [
+      { status: 500, body: { ok: false, error: { code: 'settings-absent' } } },
+      { status: 500, body: { ok: false, error: { code: 'no-document' } } },
+      { status: 404, body: { ok: false, error: { code: 'not-found' } } },
+      { status: 200, body: { ok: true, value: { path: 42 } } },
+      { status: 200, body: { ok: true, value: { path: '' } } },
+      { status: 200, body: { ok: true, value: {} } },
+      { status: 200, body: null },
+      new Error('network down'),
+    ]) {
+      const fetchLike = makeFetch([answer])
+      await expect(fetchSettingsDocumentPath(fetchLike)).resolves.toBeNull()
     }
   })
 })

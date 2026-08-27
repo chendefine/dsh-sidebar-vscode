@@ -39,7 +39,7 @@ export interface OpenCommand {
 }
 
 /** POST one JSON body and answer `{ok, value}` structurally; null on any failure. */
-async function postJson(
+export async function postJson(
   method: string,
   body: Record<string, unknown>,
   fetchLike: FetchLike,
@@ -106,4 +106,26 @@ export async function sendOpenCommand(
 ): Promise<boolean> {
   const parsed = await postJson('open.request', command as unknown as Record<string, unknown>, fetchLike)
   return parsed !== null
+}
+
+/**
+ * Locate the settings provider's local document through this plugin's node
+ * half (`settings.document`, same fenced route family as the open channel).
+ * The stock `/api/settings.openDocument` deliberately never reveals the
+ * Host path to the browser — this plugin's own route does, so the settings
+ * button takeover can hand the file to the embedded VS Code instead of the
+ * Host OS opener (which dies with `xdg-open ENOENT` on headless containers).
+ *
+ * Fail-soft like every helper here: an absent settings provider, a provider
+ * without a local document, an older node half (route not reloaded yet), or
+ * any transport error answers null and the caller falls back to the stock
+ * open behavior.
+ */
+export async function fetchSettingsDocumentPath(
+  fetchLike: FetchLike = defaultFetch,
+): Promise<string | null> {
+  const parsed = await postJson('settings.document', {}, fetchLike)
+  if (parsed === null) return null
+  const path = (parsed.value as { path?: unknown } | null)?.path
+  return typeof path === 'string' && path !== '' ? path : null
 }

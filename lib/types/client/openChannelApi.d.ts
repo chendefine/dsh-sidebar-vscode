@@ -36,6 +36,11 @@ export interface OpenCommand {
     line?: number;
     column?: number;
 }
+/** POST one JSON body and answer `{ok, value}` structurally; null on any failure. */
+export declare function postJson(method: string, body: Record<string, unknown>, fetchLike: FetchLike): Promise<{
+    ok: boolean;
+    value: unknown;
+} | null>;
 export declare function probeCapability(folder: string, fetchLike?: FetchLike, now?: () => number): Promise<boolean>;
 /** Test-only: drop the capability cache (each spec starts cold). */
 export declare function resetCapabilityCache(): void;
@@ -45,3 +50,17 @@ export declare function resetCapabilityCache(): void;
  * polls) — delivery itself is asynchronous by design (the extension polls).
  */
 export declare function sendOpenCommand(command: OpenCommand, fetchLike?: FetchLike): Promise<boolean>;
+/**
+ * Locate the settings provider's local document through this plugin's node
+ * half (`settings.document`, same fenced route family as the open channel).
+ * The stock `/api/settings.openDocument` deliberately never reveals the
+ * Host path to the browser — this plugin's own route does, so the settings
+ * button takeover can hand the file to the embedded VS Code instead of the
+ * Host OS opener (which dies with `xdg-open ENOENT` on headless containers).
+ *
+ * Fail-soft like every helper here: an absent settings provider, a provider
+ * without a local document, an older node half (route not reloaded yet), or
+ * any transport error answers null and the caller falls back to the stock
+ * open behavior.
+ */
+export declare function fetchSettingsDocumentPath(fetchLike?: FetchLike): Promise<string | null>;

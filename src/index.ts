@@ -16,7 +16,14 @@
  *
  * - `/sidebar-vscode/api/open.capability` + `/open.request`: the spool the
  *   embedded workbench's extension polls (see `src/openChannel.ts`), fenced
- *   by the same browser-trust rules as every other plugin route.
+ *   by the same browser-trust rules as every other plugin route;
+ *
+ * - `/sidebar-vscode/api/settings.document`: locates the settings provider's
+ *   local document (prepareDocument) for the browser-half takeover of the
+ *   settings page's「打开配置文件」button — the stock /api method opens it
+ *   with the Host OS opener (dead on headless containers) and never reveals
+ *   the path; this route hands the path to this plugin's own fenced channel
+ *   so the file can open inside the embedded VS Code instead.
  *
  * @module dsh-sidebar-vscode
  */
@@ -73,6 +80,8 @@ interface HostContextFace {
     }): () => void
   }
   webRuntime: { trustedHosts: readonly string[] }
+  /** The settings provider face this plugin reads (prepareDocument only). */
+  get(name: 'settings'): { prepareDocument(): Promise<string | undefined> } | undefined
 }
 
 /**
@@ -103,6 +112,7 @@ export function apply(ctx: Context): void {
   // ── Extension command channel routes ───────────────────────────────────
   // POST /sidebar-vscode/api/open.capability {folder} → {ok, value:{present}}
   // POST /sidebar-vscode/api/open.request   {folder, path, nonce, …} → {ok}
+  // POST /sidebar-vscode/api/settings.document (no body) → {ok, value:{path}}
   // Fenced like every other plugin route (browser-trust fence over the
   // live trustedHosts); a cross-site page cannot reach them.
   const host = ctx as unknown as HostContextFace
@@ -124,6 +134,32 @@ export function apply(ctx: Context): void {
         : undefined
       if (method === undefined || method.includes('/')) {
         writeJson(res, 404, { ok: false, error: { code: 'not-found', message: 'unknown method' } })
+        return
+      }
+      // The settings-document locator: the settings button takeover needs the
+      // Host-side absolute path the stock /api method deliberately withholds
+      // from the browser. No body is read (nothing to validate), and the
+      // answer only rides the same fenced same-origin route family as the
+      // open channel — the path names a document whose existence the settings
+      // provider itself guarantees (prepareDocument materializes it).
+      if (method === 'settings.document') {
+        const settings = host.get('settings')
+        if (settings === undefined) {
+          writeJson(res, 500, { ok: false, error: { code: 'settings-absent', message: 'settings service is absent: this deployment does not mount a settings provider (e.g. @deepseek-ai/dsh-settings-file) in its composition' } })
+          return
+        }
+        let path: string | undefined
+        try {
+          path = await settings.prepareDocument()
+        } catch (error) {
+          writeJson(res, 500, { ok: false, error: { code: 'internal', message: `settings document preparation failed: ${error instanceof Error ? error.message : String(error)}` } })
+          return
+        }
+        if (path === undefined || path === '') {
+          writeJson(res, 500, { ok: false, error: { code: 'no-document', message: 'settings provider has no local document to open' } })
+          return
+        }
+        writeJson(res, 200, { ok: true, value: { path } })
         return
       }
       try {

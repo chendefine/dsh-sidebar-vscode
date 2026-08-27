@@ -28,7 +28,7 @@ editor selection                    explorer
 - Version: 0.1.1
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 245 passing (12 spec files)
+- Tests: 263 passing (13 spec files)
 
 ## Features
 
@@ -65,6 +65,8 @@ editor selection                    explorer
 - **Default tab**: an optional switch makes **brand-new sessions** open the VSCode tab by default (replacing better-sidebar's hardcoded seeded Files tab); used sessions keep their own layouts, and turning it off only affects future sessions.
 
 - **Chat file-click takeover** (gated by the same switch; research options II + III): clicking **produced-file chips** (the per-turn changed-files row), tool-row path links, or prose file mentions in the conversation no longer opens better-sidebar's built-in Files tab — it focuses this VSCode tab (the panel auto-expands) and opens the file inside the embedded VS Code, with no workbench reload. Two takeover seams: **option II** — register the `conversation.chat.turnTail` slot at priority -2 (before better-sidebar's own -1 entry), claim the produced-files row with the same derivation, and render its chips as a visual twin whose clicks reroute here; **option III** — wrap `workspaces.openPath` (the client runtime's single funnel for the remaining chat-side opens; ui-conversation's apply.ts is its only production caller). Option III also repairs a headless-container hole: better-sidebar declines its own takeover whenever its built-in Files tab is disabled, letting opens fall through to the Host OS opener (`spawn xdg-open ENOENT`); this wrapper keeps them landing in the VSCode tab regardless of that setting. After the click: the tab's meta carries an `openRequest` → this plugin's host half writes `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → the extension (≥ 0.1.1) polls every 500ms and consumes it via `showTextDocument`; a `cap.json` liveness marker plus a capability probe gate the channel, and any miss degrades to a one-shot URL-`payload` workbench reload. Switch off = the feature is entirely disabled (chat behavior unchanged).
+
+- **Settings "open configuration file" takeover** (option IV, same switch): the settings page's「打开配置文件」button stock-behavior calls `/api/settings.openDocument`, which hands `$DSH_HOME/settings.yaml` to the Host OS opener — dead on headless containers (`xdg-open` missing). With the switch on, this plugin instead resolves the document path through its own fenced node-half route (`POST /sidebar-vscode/api/settings.document` → `prepareDocument()`), then reroutes it through the very same `openRequest` channel as the chat clicks — the file opens inside the embedded VS Code (the absolute path needs no `pathMap` rule since `mapPathForOpen` passes unmatched paths through). A landed reroute also closes the settings dialog itself: its open state is component-local (no service exposes a close), so the close rides the panel's own document-level Escape listener — mounted exactly while the dialog is open — via one synthetic Escape keydown, leaving the workbench in view. Fail-soft: an absent settings provider, an un-reloaded host half, or any transport error falls back to the stock `/api` call (dialog stays open), so the button never breaks.
 
 ## Installation
 
@@ -162,7 +164,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 
 | Key | Default | Description |
 |---|---|---|
-| `openAsDefault` | `false` | Brand-new sessions open this tab by default (replacing the seeded Files tab); used sessions keep their layouts |
+| `openAsDefault` | `false` | Brand-new sessions open this tab by default (replacing the seeded Files tab); used sessions keep their layouts. The switch also gates the chat file-click takeover and the settings「打开配置文件」takeover |
 | `serverUrl` | `/vscode` | Server base URL: same-origin gateway subpath, or a full address (e.g. `http://127.0.0.1:8000/vscode` to bypass the gateway locally; keep the `/vscode` base path) |
 | `pathMap` | `/data/workspace=/data/workspace;/opt=/opt` | DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged. Rules are prefix rewriters, **not a whitelist**: chat-side file opens of absolute paths no rule matches pass through as-is (VS Code itself reports a genuinely missing file); only an unmappable session cwd opens the default view with a notice |
 | `maxLines` | `200` (range 1–2000) | Max rendered code lines per reference; overflow keeps head+tail halves and marks the omitted middle inline |
@@ -260,6 +262,7 @@ src/client/selection.ts       # clipboard envelope codecs (selection + resource 
 src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (20 tests)
 src/client/settings.ts        # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
 src/client/settingsRows.tsx   # settings panel: switch row + stacked text rows + cap rows (self-adopted styles)
+src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (7 tests)
 src/client/defaultTab.ts      # "open VSCode by default": pristine-seed detection + swap rails + watcher (22 tests)
 src/client/i18n.ts            # locale service wiring + t()
 src/client/locales.ts         # zh/en dictionaries
@@ -270,7 +273,7 @@ scripts/install-extension.sh  # one-command extension install (vsce package → 
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
 screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 245 tests / 12 files (per-file counts noted above)
+tests/*.spec.ts               # vitest specs — 263 tests / 13 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 dsh.plugin.json               # plugin manifest (metadata)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
@@ -289,7 +292,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (245 tests)
+pnpm test         # vitest run (263 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.

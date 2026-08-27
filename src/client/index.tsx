@@ -15,7 +15,11 @@
  * - the chat-open takeover (openIntercept.ts / turnTail.tsx): the
  *   produced-files row and the runtime's `workspaces.openPath` funnel are
  *   rerouted so chat file clicks open inside the VSCode tab, gated by the
- *   same `openAsDefault` switch as the default-tab swap.
+ *   same `openAsDefault` switch as the default-tab swap;
+ * - the settings-open takeover (settingsTakeover.ts): the settings page's
+ *   「打开配置文件」button resolves the configuration file through this
+ *   plugin's fenced node-half route and opens it inside the VSCode tab
+ *   instead of the Host OS opener, gated by the same switch.
  *
  * When better-sidebar is absent (optional peer), tab registration silently
  * skips; the reference plumbing still works for the paste fallback.
@@ -35,6 +39,8 @@ import {
   wrapWorkspacesOpenPath,
 } from './openIntercept.ts'
 import { adoptTurnTailStyles, registerTurnTailVscode } from './turnTail.tsx'
+import { closeSettingsDialog, wrapSettingsOpenDocument } from './settingsTakeover.ts'
+import { fetchSettingsDocumentPath } from './openChannelApi.ts'
 import {
   ComposerDock,
   adoptRailStyles,
@@ -59,9 +65,10 @@ import { isResourceList } from './selection.ts'
 /** Services required before mounting: the sidebar service, the slot registry
  * (the turn-tail claim), the locale service, the session registry, the
  * conversation input service, the trigger registry (chip serialization
- * routing), and the client workspaces service (the openPath seam). */
+ * routing), the client workspaces service (the openPath seam), and the
+ * connection service (the settings.openDocument seam). */
 export const inject = [
-  'betterSidebar', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'workspaces',
+  'betterSidebar', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'workspaces', 'connection',
 ]
 
 /** The structural context face the client body touches. The betterSidebar
@@ -100,6 +107,10 @@ interface ClientContextFace {
   /** The client workspaces service (runtime IWorkspaces mirror — openPath only). */
   workspaces?: {
     openPath(path: string): Promise<void>
+  }
+  /** The connection service (the settings.openDocument wrapper's target). */
+  connection?: {
+    api: { settings: import('./settingsTakeover.ts').SettingsApiLike }
   }
   effect(register: () => () => void, name?: string): void
 }
@@ -264,12 +275,14 @@ export function apply(ctx: unknown): void {
     return () => { stop() }
   }, 'dsh-sidebar-vscode: default tab watcher')
 
-  // The chat-open takeover (options II + III from the research), gated by
-  // the SAME openAsDefault switch as the default-tab swap: switch off → both
-  // seams decline and the chat keeps its stock behavior; switch on → chat
-  // file opens land in the VSCode tab and its meta carries the path
-  // (VscodeView opens it there). Both also require the tab type enabled and
-  // the peer's tabMeta/updateTab capabilities (better-sidebar ≥ 0.12).
+  // The chat-open takeover (options II + III from the research) plus the
+  // settings-open takeover (option IV), gated by the SAME openAsDefault
+  // switch as the default-tab swap: switch off → every seam declines and the
+  // chat/settings keep their stock behavior; switch on → chat file opens and
+  // the settings「打开配置文件」click land in the VSCode tab and its meta
+  // carries the path (VscodeView opens it there). All also require the tab
+  // type enabled and the peer's tabMeta/updateTab capabilities
+  // (better-sidebar ≥ 0.12).
   client.effect(() => {
     const features = betterSidebar.features
     if (features !== undefined && (!features.includes('tabMeta') || !features.includes('updateTab'))) {
@@ -319,10 +332,30 @@ export function apply(ctx: unknown): void {
         reroute: path => { openInVscode('', path) },
       })
 
+    // Option IV — the settings page's「打开配置文件」button: the stock click
+    // drives the Host OS opener (dead on headless containers); this wrapper
+    // resolves the document through this plugin's own fenced node-half route
+    // and opens it in the VSCode tab instead. The rerouted path is absolute
+    // (the settings provider's own document), so it needs no cwd resolution
+    // — and mapPathForOpen passes it through even without a mapping-rule
+    // match. Fail-soft: any miss on the resolve falls back to the untouched
+    // original method. A successful reroute also closes the settings dialog
+    // (the file is now in view; the modal would only cover the workbench).
+    const connection = client.connection
+    const stopSettingsOpen = connection === undefined
+      ? undefined
+      : wrapSettingsOpenDocument(connection.api, {
+        takeoverEnabled,
+        resolvePath: () => fetchSettingsDocumentPath(),
+        reroute: path => { rerouteChatOpen(betterSidebar, TAB_ID, path) },
+        closeDialog: () => { closeSettingsDialog() },
+      })
+
     return () => {
+      stopSettingsOpen?.()
       stopOpenPath?.()
       stopTurnTail()
       disposeStyles()
     }
-  }, 'dsh-sidebar-vscode: chat open takeover')
+  }, 'dsh-sidebar-vscode: chat + settings open takeover')
 }

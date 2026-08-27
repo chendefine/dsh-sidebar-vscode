@@ -27,7 +27,7 @@
 - 版本：0.1.1
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：245 例全部通过（12 个规格文件）
+- 测试：263 例全部通过（13 个规格文件）
 
 ## 功能简介
 
@@ -64,6 +64,8 @@
 - **默认标签**：可选开关让**全新会话**的侧边栏默认打开 VSCode 标签（替换 better-sidebar 硬编码的「文件」种子标签）；已打开过的会话保持各自布局，关闭后只影响之后的新会话。
 
 - **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行，chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装 `workspaces.openPath`（客户端运行时其余对话侧文件打开的唯一漏斗，ui-conversation 的 apply.ts 是唯一生产调用方）。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.1）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
+
+- **设置页「打开配置文件」接管**（方案 IV，同一开关）：按钮原本调用 `/api/settings.openDocument`，由宿主把 `$DSH_HOME/settings.yaml` 交给系统原生打开器——headless 容器上直接失败（`xdg-open` 缺失）。开关开启时，本插件改走自有的受信围栏路由（`POST /sidebar-vscode/api/settings.document` → `prepareDocument()`）取到文档绝对路径，再复用与对话点击完全相同的 `openRequest` 通道改道——配置文件在内嵌 VS Code 里打开（绝对路径无需命中 `pathMap` 规则，`mapPathForOpen` 对未匹配路径原样透传）。改道落地后「设置」弹框也会自动关闭：弹框开启状态是组件本地 state（没有服务暴露关闭方法），关闭走弹框自身挂在 document 上的 Escape 监听（生命周期恰好等于弹框开启期）——合成一次 Escape 键事件即可，视野留给工作台。全程 fail-soft：settings 服务缺失、host 半未重载、任何传输错误都回退到原生 `/api` 调用（弹框不关），按钮不会因本插件而坏。
 
 ## 安装方法
 
@@ -161,7 +163,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `openAsDefault` | `false` | 全新会话的侧边栏默认打开 VSCode 标签（替换「文件」种子标签）；已打开过的会话保持各自布局 |
+| `openAsDefault` | `false` | 全新会话的侧边栏默认打开 VSCode 标签（替换「文件」种子标签）；已打开过的会话保持各自布局。该开关同时控制对话文件点击接管与设置页「打开配置文件」接管 |
 | `serverUrl` | `/vscode` | VS Code 服务器基地址：同源网关子路径，或完整地址（如 `http://127.0.0.1:8000/vscode`，绕过网关本机直连，需保留 `/vscode` 基路径） |
 | `pathMap` | `/data/workspace=/data/workspace;/opt=/opt` | DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。规则只做前缀改写、**不是白名单**：对话里点击文件时，未命中任何规则的绝对路径按原路径直接打开（文件真不存在时由 VS Code 报错兜底）；仅会话 cwd 映射不到时打开默认界面并提示 |
 | `maxLines` | `200`（范围 1–2000） | 单次引用注入的代码行数上限，超出保留首尾两半、省略中间并标注省略区间 |
@@ -257,6 +259,7 @@ src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种
 src/client/paths.ts           # pathMap 解析/映射/反向映射、URL 构建（20 测试）
 src/client/settings.ts        # pluginSettings 读取 + 截断上限契约（默认/边界/提交助手）（14 测试）
 src/client/settingsRows.tsx   # 功能设置面板：开关行 + 文本行（上下布局）+ 数值行（自注入样式）
+src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（7 测试）
 src/client/defaultTab.ts      # 「默认打开 VSCode」：pristine 种子检测 + 换种护栏 + 监听（22 测试）
 src/client/i18n.ts            # locale 服务挂接 + t()
 src/client/locales.ts         # zh/en 词典
@@ -267,7 +270,7 @@ scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 �
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
 screenshot.png                # 产品使用截图（见上方「界面截图」）
-tests/*.spec.ts               # vitest 单测，共 245 例 / 12 文件（如上括注分文件计数）
+tests/*.spec.ts               # vitest 单测，共 263 例 / 13 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 dsh.plugin.json               # 插件清单（元数据）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
@@ -286,7 +289,7 @@ lib/                          # 构建产物（随仓库提交：link: 部署直
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc 声明 + tsdown 双 bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run（245 例）
+pnpm test         # vitest run（263 例）
 ```
 
 重建后硬刷新浏览器即可（link: 依赖 + 内容 rev 查询参数自动破缓存）；host 半改动需重启 `dsh web`。

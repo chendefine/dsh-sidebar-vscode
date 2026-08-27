@@ -15,7 +15,11 @@
  * - the chat-open takeover (openIntercept.ts / turnTail.tsx): the
  *   produced-files row and the runtime's `workspaces.openPath` funnel are
  *   rerouted so chat file clicks open inside the VSCode tab, gated by the
- *   same `openAsDefault` switch as the default-tab swap.
+ *   same `openAsDefault` switch as the default-tab swap;
+ * - the settings-open takeover (settingsTakeover.ts): the settings page's
+ *   「打开配置文件」button resolves the configuration file through this
+ *   plugin's fenced node-half route and opens it inside the VSCode tab
+ *   instead of the Host OS opener, gated by the same switch.
  *
  * When better-sidebar is absent (optional peer), tab registration silently
  * skips; the reference plumbing still works for the paste fallback.
@@ -26,7 +30,8 @@ import type { TabDescriptor } from 'dsh-better-sidebar';
 /** Services required before mounting: the sidebar service, the slot registry
  * (the turn-tail claim), the locale service, the session registry, the
  * conversation input service, the trigger registry (chip serialization
- * routing), and the client workspaces service (the openPath seam). */
+ * routing), the client workspaces service (the openPath seam), and the
+ * connection service (the settings.openDocument seam). */
 export declare const inject: string[];
 /** The tab descriptor this plugin registers. */
 export declare function vscodeTab(): TabDescriptor;

@@ -16,7 +16,14 @@
  *
  * - `/sidebar-vscode/api/open.capability` + `/open.request`: the spool the
  *   embedded workbench's extension polls (see `src/openChannel.ts`), fenced
- *   by the same browser-trust rules as every other plugin route.
+ *   by the same browser-trust rules as every other plugin route;
+ *
+ * - `/sidebar-vscode/api/settings.document`: locates the settings provider's
+ *   local document (prepareDocument) for the browser-half takeover of the
+ *   settings page's「打开配置文件」button — the stock /api method opens it
+ *   with the Host OS opener (dead on headless containers) and never reveals
+ *   the path; this route hands the path to this plugin's own fenced channel
+ *   so the file can open inside the embedded VS Code instead.
  *
  * @module dsh-sidebar-vscode
  */
