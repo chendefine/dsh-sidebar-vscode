@@ -64,7 +64,8 @@ EXT_VERSION="$(node -p "require('$EXT_SRC/package.json').version")"
 EXT_ROOT="$SERVER_DATA_DIR/extensions"
 DEST_FOLDER="${EXT_ID}-${EXT_VERSION}"
 DEST_DIR="$EXT_ROOT/$DEST_FOLDER"
-VSIX="${VSIX_ARG:-$EXT_SRC/dsh-selection-reference-${EXT_VERSION}.vsix}"
+VSIX_DIR="$EXT_SRC/vsix"
+VSIX="${VSIX_ARG:-$VSIX_DIR/dsh-selection-reference-${EXT_VERSION}.vsix}"
 
 log() { printf '\n== %s\n' "$*"; }
 
@@ -73,7 +74,8 @@ if [ "$SKIP_BUILD" = 1 ]; then
   [ -f "$VSIX" ] || { echo "FATAL: --skip-build but VSIX not found: $VSIX" >&2; exit 1; }
   log "skip build, reusing $VSIX"
 else
-  log "packaging VSIX from $EXT_SRC (vsce)"
+  log "packaging VSIX from $EXT_SRC (vsce) into $VSIX_DIR"
+  mkdir -p "$VSIX_DIR"
   ( cd "$EXT_SRC" && npm_config_cache="$NPM_CACHE" \
       npx --yes @vscode/vsce package --allow-missing-repository \
       --out "$VSIX" </dev/null )

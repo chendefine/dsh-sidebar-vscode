@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.1.0
+- 版本：0.1.1
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：195 例全部通过（8 个规格文件）
+- 测试：245 例全部通过（12 个规格文件）
 
 ## 功能简介
 
@@ -63,13 +63,15 @@
 
 - **默认标签**：可选开关让**全新会话**的侧边栏默认打开 VSCode 标签（替换 better-sidebar 硬编码的「文件」种子标签）；已打开过的会话保持各自布局，关闭后只影响之后的新会话。
 
+- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行，chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装 `workspaces.openPath`（客户端运行时其余对话侧文件打开的唯一漏斗，ui-conversation 的 apply.ts 是唯一生产调用方）。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.1）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
+
 ## 安装方法
 
 ### 前提
 
 - DSH 宿主（Web GUI）+ 已安装 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) ≥ 0.12（可选 peer：缺席时标签页注册静默跳过，粘贴兜底仍可用；开发基线 0.16）；
 - 一个浏览器可达的 `code serve-web` 实例。默认拓扑下它与 dsh-runtime **同容器**，经网关同源子路径 `/vscode` 反代（见[部署拓扑](#部署拓扑默认值的依据)），浏览器登录态自动携带，WebSocket 终端等全功能可用；
-- 配套 VS Code 扩展 `dsh.selection-reference` 已装入该 serve-web 实例（提供右键命令与快捷键，见下）。
+- 配套 VS Code 扩展 `dsh.selection-reference` 已装入该 serve-web 实例（提供右键命令与快捷键；**对话文件点击打开通道需 ≥ 0.1.1**，见下）。
 
 ### 插件本体
 
@@ -113,7 +115,7 @@ pnpm -C <profile-dir> add link:<repo-checkout>
 
 ### VS Code 扩展
 
-选中 / 文件发送命令由扩展 `dsh.selection-reference`（源码在 `extension/`）提供，需装入 serve-web 实例：
+选中 / 文件发送命令与**对话文件点击的轮询通道**由扩展 `dsh.selection-reference`（源码在 `extension/`）提供，需装入 serve-web 实例。**文件打开通道需要 ≥ 0.1.1**（旧版本只有发送命令；打开点击会降级为 URL payload 重载）：
 
 ```sh
 scripts/install-extension.sh                  # 打包 VSIX → 装入 serve-web → 注册清单 → 重启 → 健康检查
@@ -259,13 +261,13 @@ src/client/defaultTab.ts      # 「默认打开 VSCode」：pristine 种子检�
 src/client/i18n.ts            # locale 服务挂接 + t()
 src/client/locales.ts         # zh/en 词典
 src/client/icons.tsx          # VS Code 标志 + 引用 chip 文件/文件夹/关闭图标（currentColor SVG）
-extension/                    # VS Code 扩展 dsh.selection-reference（命令 + 右键 + 快捷键 + nls 双语）
- ├ extension.js / harness.js / package.json / package.nls*.json / .vscodeignore / *.vsix
+extension/                    # VS Code 扩展 dsh.selection-reference（命令 + 右键 + 快捷键 + nls 双语 + 文件打开轮询通道）
+ ├ extension.js / harness.js / package.json / package.nls*.json / .vscodeignore / vsix/*.vsix
 scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 → 注册清单 → 重启 → 健康检查）
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
 screenshot.png                # 产品使用截图（见上方「界面截图」）
-tests/*.spec.ts               # vitest 单测，共 195 例 / 8 文件（如上括注分文件计数）
+tests/*.spec.ts               # vitest 单测，共 245 例 / 12 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 dsh.plugin.json               # 插件清单（元数据）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
@@ -284,7 +286,7 @@ lib/                          # 构建产物（随仓库提交：link: 部署直
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc 声明 + tsdown 双 bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run（195 例）
+pnpm test         # vitest run（245 例）
 ```
 
 重建后硬刷新浏览器即可（link: 依赖 + 内容 rev 查询参数自动破缓存）；host 半改动需重启 `dsh web`。

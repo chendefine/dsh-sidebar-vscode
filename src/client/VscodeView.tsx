@@ -27,6 +27,8 @@ import { buildVscodeUrl, mapPath, normalizeBaseUrl, parsePathMap } from './paths
 import { installClipboardBridge } from './clipboardBridge.ts'
 import type { ClipboardPayload } from './selection.ts'
 import { getReferenceLander, setFallbackOptions } from './composer.tsx'
+import { extractOpenRequest, type OpenRequest } from './openIntercept.ts'
+import { probeCapability, sendOpenCommand } from './openChannelApi.ts'
 import { t } from './i18n.ts'
 
 /** What `/sidebar/api/session.cwd` answers on success (`parsed.value`). */
@@ -248,7 +250,85 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   // Path translation + iframe target.
   const mapped = cwd === undefined ? undefined : mapPath(cwd, pathMap)
   const unmapped = cwd !== undefined && mapped === null
-  const target = buildVscodeUrl(serverUrl, mapped ?? null)
+
+  // ---- Chat-open requests (the intercepted produced-file chips / path
+  // links): the tab's meta carries `{ openRequest: { nonce, path } }` and is
+  // consumed here. The nonce guard is mount-initialized: a request that
+  // already sat in the persisted meta when this component mounted is marked
+  // seen WITHOUT opening — a page reload must not replay the last open —
+  // while later bumps (new clicks) execute.
+  const openRequest = extractOpenRequest((props.tab as { meta?: unknown } | undefined)?.meta)
+  const lastNonce = useRef(Number.NEGATIVE_INFINITY)
+  const nonceInitialized = useRef(false)
+  const [pendingOpen, setPendingOpen] = useState<{ basis: string, url: string } | null>(null)
+  // Degradation notices only (unmapped opens / injection failures / text
+  // fallback); success is silent — declared here so the open path below can
+  // reference it (the same state the clipboard bridge reports through).
+  const [flash, setFlash] = useState<string | null>(null)
+  // Latest values for the async open path (avoids stale closures).
+  const openInputs = useRef({ serverUrl, pathMap, cwd })
+  openInputs.current = { serverUrl, pathMap, cwd }
+
+  const executeOpen = useCallback(async (request: OpenRequest): Promise<void> => {
+    const { serverUrl: base, pathMap: rules, cwd: workdir } = openInputs.current
+    const workspace = workdir !== undefined ? mapPath(workdir, rules) : undefined
+    const file = mapPath(request.path, rules)
+    if (file === null) {
+      setFlash(`${t('openUnmapped')}: ${request.path}`)
+      return
+    }
+    // Primary channel: the upgraded dsh.selection-reference extension polls
+    // a spool dir in the container; the node half writes the command. Only
+    // tried when a workspace folder is known (it addresses the extension).
+    if (workspace != null) {
+      const capable = await probeCapability(workspace)
+      if (capable) {
+        const sent = await sendOpenCommand({
+          folder: workspace,
+          path: file,
+          nonce: request.nonce,
+          line: request.line,
+          column: request.column,
+        })
+        if (sent) return
+      }
+    }
+    // Degraded channel (no extension / route failure / no workspace): reload
+    // the workbench once with VS Code web's native payload parameter. The
+    // pending URL is stamped with the basis it was computed from and ignored
+    // once that basis changes (cwd flip / settings edit) so a stale payload
+    // can never hijack a later navigation.
+    let authority = window.location.host
+    try { authority = new URL(base, window.location.href).host || authority } catch { /* keep page host */ }
+    setPendingOpen({
+      basis: `${base}#${workspace ?? ''}`,
+      url: buildVscodeUrl(base, workspace ?? null, {
+        file,
+        authority,
+        line: request.line,
+        column: request.column,
+      }),
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!nonceInitialized.current) {
+      nonceInitialized.current = true
+      lastNonce.current = openRequest?.nonce ?? Number.NEGATIVE_INFINITY
+      return
+    }
+    if (openRequest === null || openRequest.nonce <= lastNonce.current) return
+    lastNonce.current = openRequest.nonce
+    void executeOpen(openRequest)
+  }, [openRequest?.nonce, executeOpen])
+
+  // The iframe target: the pending payload URL while one is valid for the
+  // current basis, else the plain folder URL.
+  const targetBasis = `${serverUrl}#${mapped ?? ''}`
+  const effectivePending = pendingOpen !== null && pendingOpen.basis === targetBasis ? pendingOpen : null
+  const target = effectivePending !== null
+    ? effectivePending.url
+    : buildVscodeUrl(serverUrl, mapped ?? null)
 
   // Hold the iframe until the cwd resolves (avoids loading the default
   // workspace first and flipping to ?folder= a moment later).
@@ -281,9 +361,6 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   bridgeInputs.current = { pathMap, maxLines, maxBytes, cwd, sessionId: scope.sessionId }
   // Keep the paste fallback's options fresh (same live values).
   setFallbackOptions({ reverseRules: pathMap, cwd, maxLines, maxBytes })
-  // Degradation notices only (injection failures / text fallback); success
-  // is silent — the chip appearing in the composer IS the feedback.
-  const [flash, setFlash] = useState<string | null>(null)
   useEffect(() => {
     if (flash === null) return
     const timer = window.setTimeout(() => { setFlash(null) }, 3000)

@@ -9,7 +9,7 @@
 
 ```sh
 scripts/install-extension.sh                # 打包 VSIX → 安装 → 注册清单 → 重启 serve-web → 健康检查
-scripts/install-extension.sh --skip-build   # 复用已构建的 VSIX（extension/dsh-selection-reference-<版本>.vsix）
+scripts/install-extension.sh --skip-build   # 复用已构建的 VSIX（extension/vsix/dsh-selection-reference-<版本>.vsix）
 scripts/install-extension.sh --vsix 路径.vsix
 ```
 
@@ -39,8 +39,9 @@ No installation of Visual Studio Code stable was found.
 
 ```sh
 cd extension
+mkdir -p vsix
 npm_config_cache=/tmp/dsh-vsce-npm-cache npx --yes @vscode/vsce package \
-  --allow-missing-repository --out dsh-selection-reference-0.1.0.vsix
+  --allow-missing-repository --out vsix/dsh-selection-reference-0.1.1.vsix
 ```
 
 要点：
@@ -48,8 +49,8 @@ npm_config_cache=/tmp/dsh-vsce-npm-cache npx --yes @vscode/vsce package \
 - **`npm_config_cache` 覆盖**：`~/.npm` 里可能有 root 属主的缓存文件导致
   `EACCES`，指到 /tmp 可避开；
 - **`.vscodeignore`**（已随仓库提交）把 `harness.js`（扩展的手工测试工具）
-  排除在包外，VSIX 只含 `extension.js` + `package.json` + 两个
-  `package.nls*.json`；
+  与 `vsix/`（已打包的 VSIX 存放目录）排除在包外，VSIX 只含
+  `extension.js` + `package.json` + 两个 `package.nls*.json`；
 - **`--allow-missing-repository`**：`extension/package.json` 已声明
   `repository`（指向 `chendefine/dsh-sidebar-vscode` 的 `extension/` 子目录），
   vsce 会把它写进 VSIX 元数据；该旗标保留为兜底——`extension/` 本身不是 git
@@ -61,12 +62,12 @@ serve-web 的扩展根目录 = `--server-data-dir` 下的 `extensions/`：
 
 ```sh
 EXTROOT=/data/workspace/.vscode/extensions
-DEST=$EXTROOT/dsh.selection-reference-0.1.0        # 命名规则: <publisher.name>-<版本>
-unzip -q -o dsh-selection-reference-0.1.0.vsix 'extension/*' -d /tmp/vsixx
+DEST=$EXTROOT/dsh.selection-reference-0.1.1        # 命名规则: <publisher.name>-<版本>
+unzip -q -o vsix/dsh-selection-reference-0.1.1.vsix 'extension/*' -d /tmp/vsixx
 rm -rf "$DEST" && mkdir -p "$DEST" && cp -a /tmp/vsixx/extension/. "$DEST/"
 # 清掉同扩展的旧版本目录，避免 manifest 与目录不一致
 find "$EXTROOT" -maxdepth 1 -type d -name 'dsh.selection-reference-*' \
-  ! -name 'dsh.selection-reference-0.1.0' -exec rm -rf {} +
+  ! -name 'dsh.selection-reference-0.1.1' -exec rm -rf {} +
 ```
 
 universal 扩展的目录名**不带**平台后缀（对比平台相关的
@@ -81,7 +82,7 @@ universal 扩展的目录名**不带**平台后缀（对比平台相关的
 cp -a "$EXTROOT/extensions.json" "$EXTROOT/extensions.json.bak-dsh"
 node - <<'NODE'
 const fs = require('fs')
-const root = '/data/workspace/.vscode/extensions', folder = 'dsh.selection-reference-0.1.0'
+const root = '/data/workspace/.vscode/extensions', folder = 'dsh.selection-reference-0.1.1'
 const pkg = JSON.parse(fs.readFileSync(`${root}/${folder}/package.json`, 'utf8'))
 const id = `${pkg.publisher}.${pkg.name}`                    // dsh.selection-reference
 const listPath = `${root}/extensions.json`
@@ -141,7 +142,7 @@ curl -sf http://127.0.0.1:8000/vscode/ >/dev/null && echo OK
 浏览器打开 `http://<host>:8000/vscode`（或 DSH 侧边栏的 VSCode 标签页刷新）：
 
 1. **扩展视图**（Ctrl+Shift+X）搜 `@installed dsh` → 应出现
-   *DSH Selection Reference 0.1.0，发布者 dsh，源 VSIX*；
+   *DSH Selection Reference 0.1.1，发布者 dsh，源 VSIX*；
 2. 扩展详情页「功能」标签 → 三条命令
    （`dsh.selectionReference.send` / `.sendFile` / `.sendFolder`）、快捷键
    Ctrl+Alt+C、`editor/context` + `explorer/context` 菜单均已注册；

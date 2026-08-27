@@ -29,9 +29,12 @@ export declare const zh: {
     readonly settingMaxBytesDesc: "单次引用注入的 UTF-8 字节上限（防止压缩成一行的超大文件），超出时同样保留首尾、省略中间；未设置时默认 20000，可填范围 1000–200000";
     readonly settingRangeHint: "超出可填范围，确认时将自动改为最近的边界值";
     readonly settingOpenAsDefault: "侧边栏默认打开 VSCode";
-    readonly settingOpenAsDefaultDesc: "新会话的侧边栏默认打开本 VSCode 标签（替换默认的「文件」标签）；仅对全新会话生效，已打开过的会话保持各自布局；关闭后只影响之后的新会话";
+    readonly settingOpenAsDefaultDesc: "新会话的侧边栏默认打开本 VSCode 标签（替换默认的「文件」标签）；同时接管对话里的文件点击（变更文件标签、工具行路径、正文文件引用）——点击后在本标签的 VS Code 中打开而不是内置文件标签；关闭后两者都恢复默认行为，且已打开过的会话保持各自布局";
+    readonly openUnmapped: "文件路径无法映射到 VSCode 容器，未能在 VS Code 中打开";
     readonly injectedAsText: "已注入为文本引用（输入框暂不可写入，提交效果相同）";
     readonly injectFailed: "未能注入：当前没有可用的对话输入框";
+    readonly produced: "本次产出";
+    readonly producedOpen: "在 VS Code 中打开";
     readonly railReferences: "VS Code 代码引用";
     readonly removeReference: "移除引用";
 };

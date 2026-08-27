@@ -25,10 +25,10 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.1.0
+- Version: 0.1.1
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 195 passing (8 spec files)
+- Tests: 245 passing (12 spec files)
 
 ## Features
 
@@ -64,13 +64,15 @@ editor selection                    explorer
 
 - **Default tab**: an optional switch makes **brand-new sessions** open the VSCode tab by default (replacing better-sidebar's hardcoded seeded Files tab); used sessions keep their own layouts, and turning it off only affects future sessions.
 
+- **Chat file-click takeover** (gated by the same switch; research options II + III): clicking **produced-file chips** (the per-turn changed-files row), tool-row path links, or prose file mentions in the conversation no longer opens better-sidebar's built-in Files tab — it focuses this VSCode tab (the panel auto-expands) and opens the file inside the embedded VS Code, with no workbench reload. Two takeover seams: **option II** — register the `conversation.chat.turnTail` slot at priority -2 (before better-sidebar's own -1 entry), claim the produced-files row with the same derivation, and render its chips as a visual twin whose clicks reroute here; **option III** — wrap `workspaces.openPath` (the client runtime's single funnel for the remaining chat-side opens; ui-conversation's apply.ts is its only production caller). Option III also repairs a headless-container hole: better-sidebar declines its own takeover whenever its built-in Files tab is disabled, letting opens fall through to the Host OS opener (`spawn xdg-open ENOENT`); this wrapper keeps them landing in the VSCode tab regardless of that setting. After the click: the tab's meta carries an `openRequest` → this plugin's host half writes `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → the extension (≥ 0.1.1) polls every 500ms and consumes it via `showTextDocument`; a `cap.json` liveness marker plus a capability probe gate the channel, and any miss degrades to a one-shot URL-`payload` workbench reload. Switch off = the feature is entirely disabled (chat behavior unchanged).
+
 ## Installation
 
 ### Prerequisites
 
 - A DSH host (Web GUI) with [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) ≥ 0.12 installed (an optional peer: without it tab registration silently skips while the paste fallbacks keep working; the dev baseline is 0.16);
 - A `code serve-web` instance reachable from the browser. In the default topology it runs **inside the dsh-runtime container**, reverse-proxied through the gateway's same-origin `/vscode` subpath (see [deployment topology](#deployment-topology-why-the-defaults)) so the browser session carries over and WebSockets work;
-- The companion VS Code extension `dsh.selection-reference` installed into that serve-web instance (it provides the context-menu commands and the keybinding; see below).
+- The companion VS Code extension `dsh.selection-reference` installed into that serve-web instance (it provides the context-menu commands and the keybinding; **the chat file-open channel needs ≥ 0.1.1** — see below).
 
 ### The plugin itself
 
@@ -114,7 +116,7 @@ pnpm -C <profile-dir> add link:<repo-checkout>
 
 ### The VS Code extension
 
-The send commands come from the `dsh.selection-reference` extension (sources in `extension/`), which must be installed into the serve-web instance:
+The send commands and the **chat file-click polling channel** come from the `dsh.selection-reference` extension (sources in `extension/`), which must be installed into the serve-web instance. **The file-open channel needs ≥ 0.1.1** (older versions only have the send commands; open clicks degrade to the URL-payload reload):
 
 ```sh
 scripts/install-extension.sh                  # package VSIX → install → register manifest → restart → health-check
@@ -262,13 +264,13 @@ src/client/defaultTab.ts      # "open VSCode by default": pristine-seed detectio
 src/client/i18n.ts            # locale service wiring + t()
 src/client/locales.ts         # zh/en dictionaries
 src/client/icons.tsx          # VS Code mark + chip file/folder/close icons (currentColor SVG)
-extension/                    # the VS Code extension dsh.selection-reference (commands + menus + keybinding + nls)
- ├ extension.js / harness.js / package.json / package.nls*.json / .vscodeignore / *.vsix
+extension/                    # the VS Code extension dsh.selection-reference (commands + menus + keybinding + nls + the file-open polling channel)
+ ├ extension.js / harness.js / package.json / package.nls*.json / .vscodeignore / vsix/*.vsix
 scripts/install-extension.sh  # one-command extension install (vsce package → files → manifest → restart → health)
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
 screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 195 tests / 8 files (per-file counts noted above)
+tests/*.spec.ts               # vitest specs — 245 tests / 12 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 dsh.plugin.json               # plugin manifest (metadata)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
@@ -287,7 +289,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (195 tests)
+pnpm test         # vitest run (245 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.

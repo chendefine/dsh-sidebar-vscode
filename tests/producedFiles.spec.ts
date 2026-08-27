@@ -1,0 +1,147 @@
+/**
+ * Unit tests for the turn-tail derivation replica (producedFiles.ts) — the
+ * takeover's claim logic (research option II).
+ *
+ * @module dsh-sidebar-vscode/tests/producedFiles.spec
+ */
+
+import { describe, expect, it } from 'vitest'
+import {
+  makeTurnTailSelect,
+  producedForClosing,
+  producedPaths,
+  selectProducedFiles,
+} from '../src/client/producedFiles.ts'
+
+/** One tool-result node shape the derivation reads. */
+function toolResult(callView: unknown, isError = false, turn = 1): unknown {
+  return { kind: 'tool-result', isError, callView, turn }
+}
+
+/** One assistant node shape. */
+function assistant(seq: number, turn = 1): unknown {
+  return { kind: 'assistant', seq, turn }
+}
+
+describe('producedPaths (render intent)', () => {
+  it('diff cards and generic edit cards produce their locations', () => {
+    expect(producedPaths({ card: 'diff', locations: [{ path: '/w/a.ts' }] })).toEqual(['/w/a.ts'])
+    expect(producedPaths({ card: 'generic', kind: 'edit', locations: [{ path: '/w/b.ts' }] })).toEqual(['/w/b.ts'])
+  })
+
+  it('reads, deletes, failures, and non-edit cards produce nothing', () => {
+    expect(producedPaths({ card: 'generic', kind: 'read', locations: [{ path: '/w/a.ts' }] })).toEqual([])
+    expect(producedPaths({ card: 'generic', locations: [{ path: '/w/a.ts' }] })).toEqual([])
+    expect(producedPaths({ locations: [{ path: '/w/a.ts' }] })).toEqual([])
+    expect(producedPaths(null)).toEqual([])
+    expect(producedPaths('x')).toEqual([])
+  })
+
+  it('malformed locations entries are skipped, not fatal', () => {
+    expect(producedPaths({
+      card: 'diff',
+      locations: [{ path: '/w/a.ts' }, null, 3, { noPath: 1 }, { path: '/w/b.ts' }],
+    })).toEqual(['/w/a.ts', '/w/b.ts'])
+  })
+})
+
+describe('producedForClosing (turn scoping)', () => {
+  it('collects the edit paths of the closing turn in first-seen order, deduped', () => {
+    const nodes = [
+      { kind: 'user' },
+      toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }, { path: '/w/b.ts' }] }),
+      toolResult({ card: 'generic', kind: 'edit', locations: [{ path: '/w/a.ts' }] }),
+      assistant(7),
+    ]
+    expect(producedForClosing(nodes, 7)).toEqual(['/w/a.ts', '/w/b.ts'])
+  })
+
+  it('error tool-results are skipped', () => {
+    const nodes = [
+      { kind: 'user' },
+      toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }] }, true),
+      toolResult({ card: 'diff', locations: [{ path: '/w/b.ts' }] }),
+      assistant(7),
+    ]
+    expect(producedForClosing(nodes, 7)).toEqual(['/w/b.ts'])
+  })
+
+  it('a user message resets accumulation (a previous turn cannot leak in)', () => {
+    const nodes = [
+      toolResult({ card: 'diff', locations: [{ path: '/w/old.ts' }] }),
+      assistant(1),
+      { kind: 'user' },
+      toolResult({ card: 'diff', locations: [{ path: '/w/new.ts' }] }),
+      assistant(2),
+    ]
+    expect(producedForClosing(nodes, 2)).toEqual(['/w/new.ts'])
+  })
+
+  it('a turn-number change resets accumulation too', () => {
+    // Mirrors the upstream derivation: the reset fires when a node carries a
+    // DIFFERENT turn number than the one seen before it — and only then. A
+    // user message resets unconditionally; the assistant carrying the new
+    // turn number arrives after the tool results, so the reset the old turn
+    // would need must come from a node that reports the new turn BEFORE the
+    // new results (the host's node stream does this via turn headers).
+    const nodes = [
+      { kind: 'user' },
+      toolResult({ card: 'diff', locations: [{ path: '/w/old.ts' }] }, false, 1),
+      { kind: 'assistant', seq: 1, turn: 1 },
+      { kind: 'user' },
+      { turn: 2 },
+      toolResult({ card: 'diff', locations: [{ path: '/w/new.ts' }] }, false, 2),
+      assistant(9, 2),
+    ]
+    expect(producedForClosing(nodes, 9)).toEqual(['/w/new.ts'])
+  })
+
+  it('an unmatched closing seq yields empty (foreign owner shape declines)', () => {
+    const nodes = [toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }] })]
+    expect(producedForClosing(nodes, 99)).toEqual([])
+    expect(producedForClosing([], 1)).toEqual([])
+    // null / non-object nodes never throw
+    expect(producedForClosing([null, 'x', 3, assistant(1)], 1)).toEqual([])
+  })
+})
+
+describe('selectProducedFiles / makeTurnTailSelect (the claim)', () => {
+  const owner = {
+    nodes: [
+      { kind: 'user' },
+      toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }] }),
+      assistant(5),
+    ],
+    seq: 5,
+  }
+
+  it('claims with the produced paths when the turn wrote files', () => {
+    expect(selectProducedFiles(owner)).toEqual(['/w/a.ts'])
+  })
+
+  it('declines for owners whose turn produced nothing', () => {
+    expect(selectProducedFiles({ nodes: [{ kind: 'user' }, assistant(5) ], seq: 5 })).toBeNull()
+  })
+
+  it('declines for malformed owners (never throws)', () => {
+    expect(selectProducedFiles(null)).toBeNull()
+    expect(selectProducedFiles(undefined)).toBeNull()
+    expect(selectProducedFiles('x')).toBeNull()
+    expect(selectProducedFiles({})).toBeNull()
+    expect(selectProducedFiles({ nodes: 'not-array', seq: 1 })).toBeNull()
+    expect(selectProducedFiles({ nodes: [], seq: 'x' })).toBeNull()
+  })
+
+  it('the gated select declines while the takeover is disabled and passes through otherwise', () => {
+    const select = makeTurnTailSelect(() => false)
+    expect(select(owner)).toBeNull()
+    const enabled = makeTurnTailSelect(() => true)
+    expect(enabled(owner)).toEqual(['/w/a.ts'])
+    // The gate is read per claim, so flipping it flips the outcome.
+    let on = false
+    const live = makeTurnTailSelect(() => on)
+    expect(live(owner)).toBeNull()
+    on = true
+    expect(live(owner)).toEqual(['/w/a.ts'])
+  })
+})

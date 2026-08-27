@@ -132,11 +132,50 @@ export function normalizeBaseUrl(raw: string | undefined): string {
 }
 
 /**
+ * One file the degraded channel asks the workbench to open through VS Code
+ * web's native `payload` query parameter (see {@link buildVscodeUrl}).
+ */
+export interface VscodeOpenFile {
+  /** The VS Code-server-side absolute path to open. */
+  file: string
+  /** The host the browser reaches the VS Code server through (`host[:port]`). */
+  authority: string
+  /** Optional 1-based line to place the cursor on. */
+  line?: number
+  /** Optional 1-based column to place the cursor on (requires `line`). */
+  column?: number
+}
+
+/**
  * Build the iframe target: the (scheme-absolute or same-origin relative)
  * VS Code workbench URL, with `?folder=` naming the mapped workspace
  * (the server opens that folder; `folder === null` opens its default).
+ *
+ * `open` (the degraded no-extension channel) rides VS Code web's native
+ * `payload` query parameter — the same mechanism vscode.dev uses (per the
+ * code-server FAQ: payload is upstream VS Code web behavior, no
+ * server-specific config needed) — as a URL-encoded `[key, value]` pair
+ * array: `gotoLineMode` makes a trailing `:line[:column]` suffix a cursor
+ * position, and `openFile` takes a
+ * `vscode-remote://<authority><absolute path>` URI where `<authority>` is
+ * the host the browser reaches the server through. The payload is consumed
+ * once at workbench startup, so this channel costs a full iframe reload —
+ * the extension command channel is the primary path and this is its
+ * fallback.
  */
-export function buildVscodeUrl(base: string, folder: string | null): string {
+export function buildVscodeUrl(base: string, folder: string | null, open?: VscodeOpenFile): string {
   const root = `${base}/`
-  return folder === null ? root : `${root}?folder=${encodeURIComponent(folder)}`
+  if (open === undefined) {
+    return folder === null ? root : `${root}?folder=${encodeURIComponent(folder)}`
+  }
+  const suffix = open.line !== undefined
+    ? `:${open.line}${open.column !== undefined ? `:${open.column}` : ''}`
+    : ''
+  const target = `vscode-remote://${open.authority}${open.file}${suffix}`
+  const payload = JSON.stringify([
+    ['gotoLineMode', 'true'],
+    ['openFile', target],
+  ])
+  const query = folder !== null ? `folder=${encodeURIComponent(folder)}&` : ''
+  return `${root}?${query}payload=${encodeURIComponent(payload)}`
 }

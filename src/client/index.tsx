@@ -11,7 +11,11 @@
  *   the paste fallback (composer dock): payload → chips on the addressed
  *   session's composer, plain-text mention as the degraded path;
  * - a mention paster (composer dock) that recovers copied reference items —
- *   whitespace-mangled or canonical mention text — back into chips.
+ *   whitespace-mangled or canonical mention text — back into chips;
+ * - the chat-open takeover (openIntercept.ts / turnTail.tsx): the
+ *   produced-files row and the runtime's `workspaces.openPath` funnel are
+ *   rerouted so chat file clicks open inside the VSCode tab, gated by the
+ *   same `openAsDefault` switch as the default-tab swap.
  *
  * When better-sidebar is absent (optional peer), tab registration silently
  * skips; the reference plumbing still works for the paste fallback.
@@ -23,7 +27,14 @@ import type { TabDescriptor } from 'dsh-better-sidebar'
 import { adoptTabStyles, VscodeView } from './VscodeView.tsx'
 import { VscodeIcon } from './icons.tsx'
 import { attachLocale, t } from './i18n.ts'
-import { watchDefaultTab, type DefaultTabServiceFace } from './defaultTab.ts'
+import { TAB_ID, readSettingValue } from './settings.ts'
+import { watchDefaultTab, OPEN_AS_DEFAULT_KEY, type DefaultTabServiceFace } from './defaultTab.ts'
+import {
+  rerouteChatOpen,
+  resolveAgainst,
+  wrapWorkspacesOpenPath,
+} from './openIntercept.ts'
+import { adoptTurnTailStyles, registerTurnTailVscode } from './turnTail.tsx'
 import {
   ComposerDock,
   adoptRailStyles,
@@ -45,20 +56,25 @@ import {
 import type { ClipboardPayload } from './selection.ts'
 import { isResourceList } from './selection.ts'
 
-/** Services required before mounting: the sidebar service, the slot registry,
- * the locale service, the session registry, the conversation input service,
- * and the trigger registry (chip serialization routing). */
+/** Services required before mounting: the sidebar service, the slot registry
+ * (the turn-tail claim), the locale service, the session registry, the
+ * conversation input service, the trigger registry (chip serialization
+ * routing), and the client workspaces service (the openPath seam). */
 export const inject = [
-  'betterSidebar', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers',
+  'betterSidebar', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'workspaces',
 ]
 
 /** The structural context face the client body touches. The betterSidebar
- * member is the service's registry face plus the default-tab slice (open /
- * close / enablement / snapshot subscription) the watcher and the settings
- * panel need — structural over the real `BetterSidebarService`. */
+ * member is the service's registry face plus the slices the default-tab
+ * watcher, the settings panel, and the chat-open reroute need — structural
+ * over the real `BetterSidebarService`. */
 interface ClientContextFace {
   betterSidebar?: DefaultTabServiceFace & {
     registerTab(descriptor: TabDescriptor): () => void
+    /** Patch an open tab's display fields (the openRequest meta vehicle). */
+    updateTab(tabId: string, patch: { title?: string, path?: string, meta?: unknown }): void
+    /** Monotonic capability list ('tabMeta' / 'updateTab' gate the takeover). */
+    readonly features?: readonly string[]
   }
   slots: {
     inject(key: string, callback: () => () => void): () => void
@@ -70,10 +86,20 @@ interface ClientContextFace {
     }, component: unknown): () => void
   }
   locale: Parameters<typeof attachLocale>[0]
-  sessions?: SessionsServiceFace
+  sessions?: SessionsServiceFace & {
+    /** The live session list (the cwd source for the chat-open reroute). */
+    list?: { getSnapshot(): {
+      current?: string
+      byId?: Record<string, { cwd?: string } | undefined>
+    } }
+  }
   conversation?: ConversationServiceFace
   inputTriggers?: {
     registerSource(source: VscodeTriggerSource): () => void
+  }
+  /** The client workspaces service (runtime IWorkspaces mirror — openPath only). */
+  workspaces?: {
+    openPath(path: string): Promise<void>
   }
   effect(register: () => () => void, name?: string): void
 }
@@ -237,4 +263,66 @@ export function apply(ctx: unknown): void {
     const stop = watchDefaultTab(betterSidebar)
     return () => { stop() }
   }, 'dsh-sidebar-vscode: default tab watcher')
+
+  // The chat-open takeover (options II + III from the research), gated by
+  // the SAME openAsDefault switch as the default-tab swap: switch off → both
+  // seams decline and the chat keeps its stock behavior; switch on → chat
+  // file opens land in the VSCode tab and its meta carries the path
+  // (VscodeView opens it there). Both also require the tab type enabled and
+  // the peer's tabMeta/updateTab capabilities (better-sidebar ≥ 0.12).
+  client.effect(() => {
+    const features = betterSidebar.features
+    if (features !== undefined && (!features.includes('tabMeta') || !features.includes('updateTab'))) {
+      console.info('[dsh-sidebar-vscode] better-sidebar lacks tabMeta/updateTab; chat-open takeover stays off')
+      return () => {}
+    }
+    const takeoverEnabled = (): boolean => readSettingValue(betterSidebar, OPEN_AS_DEFAULT_KEY) === true
+      && betterSidebar.isTabEnabled(TAB_ID)
+    const currentCwd = (): string | undefined => {
+      const snapshot = client.sessions?.list?.getSnapshot()
+      const id = snapshot?.current
+      return id !== undefined ? snapshot?.byId?.[id]?.cwd : undefined
+    }
+    const openInVscode = (sessionId: string, path: string): void => {
+      // The turn-tail inject carries its sessionId (its produced paths may
+      // be workspace-relative); the openPath wrapper passes '' and falls
+      // back to the CURRENT session's cwd (its callers resolve absolutes
+      // already — ui-conversation's apply.ts).
+      const cwd = sessionId !== ''
+        ? client.sessions?.list?.getSnapshot()?.byId?.[sessionId]?.cwd
+        : currentCwd()
+      rerouteChatOpen(betterSidebar, TAB_ID, resolveAgainst(cwd, path))
+    }
+
+    // Option II — the produced-files row (the "changed files" chips):
+    // claimed at priority -2, before better-sidebar's own -1 entry, so the
+    // chips open the files in the VSCode tab. A decline (switch off / tab
+    // disabled / nothing produced) falls through to its row unchanged.
+    const disposeStyles = adoptTurnTailStyles()
+    const stopTurnTail = registerTurnTailVscode(
+      client.slots,
+      takeoverEnabled,
+      openInVscode,
+    )
+
+    // Option III — the runtime's single remaining funnel (tool-row path
+    // links, prose file mentions), which ALSO repairs the headless hole:
+    // better-sidebar declines its own takeover when its built-in Files tab
+    // is disabled, letting opens die on the Host OS opener
+    // (`spawn xdg-open ENOENT`); this wrapper keeps them landing here
+    // regardless of that setting.
+    const workspaces = client.workspaces
+    const stopOpenPath = workspaces === undefined
+      ? undefined
+      : wrapWorkspacesOpenPath(workspaces, {
+        takeoverEnabled,
+        reroute: path => { openInVscode('', path) },
+      })
+
+    return () => {
+      stopOpenPath?.()
+      stopTurnTail()
+      disposeStyles()
+    }
+  }, 'dsh-sidebar-vscode: chat open takeover')
 }

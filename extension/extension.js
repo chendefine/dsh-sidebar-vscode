@@ -1,7 +1,7 @@
 /**
  * DSH Selection Reference — editor side.
  *
- * Two commands, one envelope:
+ * Three commands, one envelope, one command channel:
  *
  * - "DSH: 发送选中代码到会话 / Send Selection to Session" (editor context
  *   menu, command palette, Ctrl/Cmd+Alt+C): packs the active selection(s) —
@@ -31,6 +31,17 @@
  * clipboard — paste it into the DSH composer and the paste-side fallback
  * recognizes the marker.
  *
+ * The command channel (v0.1.1+): DSH's chat-side file opens (produced-file
+ * chips, tool-row path links) are rerouted into this workbench. The plugin's
+ * host half writes `<tmpdir>/dsh-sidebar-vscode/<slug(workspace)>/cmd.json`;
+ * this extension polls that spool (500ms) and opens the addressed file with
+ * `vscode.window.showTextDocument` — no workbench reload. A `cap.json`
+ * marker refreshed on every tick advertises liveness back (the client probes
+ * it through the plugin's fenced route before relying on the channel, and
+ * falls back to a URL-payload reload when it is missing). The spool only
+ * works when DSH and the editor share the filesystem (the default
+ * same-container topology).
+ *
  * No workspace-relative guessing here beyond asRelativePath: the payload
  * carries both the absolute path and the workspace-relative path; the DSH
  * side picks the display form and translates container paths back into the
@@ -39,9 +50,110 @@
 'use strict'
 
 const vscode = require('vscode')
+const nodeFs = require('fs')
+const nodeOs = require('os')
+const nodePath = require('path')
 
 /** Envelope marker — must match dsh-sidebar-vscode's SELECTION_MARKER. */
 const MARKER = '@@DSH_REF::'
+
+/** Command-channel poll interval (ms). */
+const CHANNEL_POLL_MS = 500
+
+/** How old the capability marker may get before it is refreshed (ms). */
+const CHANNEL_CAP_REFRESH_MS = 60000
+
+/**
+ * Filesystem-safe slug of one workspace folder — MUST stay in lockstep with
+ * src/openChannel.ts `slugOf` (spec pinned by tests/openChannel.spec.ts —
+ * the authoritative value list lives there).
+ */
+function slugOf (folder) {
+  const clean = String(folder).trim()
+  const safe = clean.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
+  let digest = 5381
+  for (let i = 0; i < clean.length; i++) {
+    digest = ((digest * 33) ^ clean.charCodeAt(i)) >>> 0
+  }
+  return safe + '-' + digest.toString(16)
+}
+
+/** The spool directory one workspace folder's channel lives in. */
+function channelDirOf (folderPath) {
+  return nodePath.join(nodeOs.tmpdir(), 'dsh-sidebar-vscode', slugOf(folderPath))
+}
+
+/** Best-effort atomic marker write (tmp + rename); failures are silent. */
+function writeMarker (file, value) {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`
+  nodeFs.writeFileSync(tmp, value)
+  nodeFs.renameSync(tmp, file)
+}
+
+/**
+ * One poll tick over every workspace folder: refresh the capability marker
+ * when stale, then consume any fresh command (monotonic nonce per folder —
+ * a command is consumed at most once even across overlapping ticks).
+ */
+async function channelTick (lastNonceByDir) {
+  const folders = vscode.workspace.workspaceFolders || []
+  for (const folder of folders) {
+    const dir = channelDirOf(folder.uri.fsPath)
+
+    // Capability refresh: the client's probe (through the plugin's fenced
+    // route) only sees us while this marker is fresh.
+    try {
+      const capFile = nodePath.join(dir, 'cap.json')
+      let stale = true
+      try {
+        stale = Date.now() - nodeFs.statSync(capFile).mtimeMs > CHANNEL_CAP_REFRESH_MS
+      } catch { /* absent → stale */ }
+      if (stale) {
+        nodeFs.mkdirSync(dir, { recursive: true })
+        writeMarker(capFile, String(Date.now()))
+      }
+    } catch { /* best effort */ }
+
+    // Command consumption.
+    let command
+    try {
+      command = JSON.parse(nodeFs.readFileSync(nodePath.join(dir, 'cmd.json'), 'utf8'))
+    } catch {
+      continue
+    }
+    if (command === null || typeof command !== 'object') continue
+    const nonce = typeof command.nonce === 'number' && Number.isFinite(command.nonce)
+      ? command.nonce
+      : null
+    const target = typeof command.path === 'string' && command.path.startsWith('/')
+      ? command.path
+      : null
+    if (nonce === null || target === null) continue
+    const last = lastNonceByDir.get(dir) || Number.NEGATIVE_INFINITY
+    if (nonce <= last) continue
+    // Advance BEFORE acting: a failing open must not retry every tick.
+    lastNonceByDir.set(dir, nonce)
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.file(target))
+    } catch {
+      void vscode.window.showWarningMessage(`DSH: 文件不存在 (file not found): ${target}`)
+      continue
+    }
+    const options = { preview: true }
+    const line = Number.isFinite(command.line) ? Math.max(1, Math.floor(command.line)) : null
+    const column = Number.isFinite(command.column) ? Math.max(1, Math.floor(command.column)) : null
+    if (line !== null) {
+      const l = line - 1
+      const c = (column !== null ? column : 1) - 1
+      options.selection = new vscode.Range(l, c, l, c)
+    }
+    try {
+      await vscode.window.showTextDocument(vscode.Uri.file(target), options)
+    } catch (error) {
+      void vscode.window.showErrorMessage(`DSH: 打开文件失败 — ${String((error && error.message) || error)}`)
+    }
+  }
+}
 
 /** Rendered code-line cap for the human-readable fallback part. */
 const FALLBACK_MAX_LINES = 200
@@ -198,6 +310,32 @@ function activate (context) {
   const fileDisposable = vscode.commands.registerCommand('dsh.selectionReference.sendFile', sendResource)
   const folderDisposable = vscode.commands.registerCommand('dsh.selectionReference.sendFolder', sendResource)
   context.subscriptions.push(disposable, fileDisposable, folderDisposable)
+
+  // The command channel: poll the spool from the first tick (a command may
+  // already be waiting — the DSH chat click that opened this workbench can
+  // race ahead of activation). A slow tick never overlaps the next (the
+  // timer re-arms only after the tick settles); a throwing tick is logged
+  // and skipped, never fatal.
+  const lastNonceByDir = new Map()
+  let pollHandle = null
+  const schedulePoll = () => {
+    pollHandle = setTimeout(async () => {
+      try {
+        await channelTick(lastNonceByDir)
+      } catch (error) {
+        console.error('[dsh.selection-reference] channel tick failed:', error)
+      }
+      schedulePoll()
+    }, CHANNEL_POLL_MS)
+  }
+  schedulePoll()
+  context.subscriptions.push({ dispose () { if (pollHandle !== null) clearTimeout(pollHandle) } })
 }
 
-module.exports = { activate, deactivate () {} }
+module.exports = {
+  activate,
+  deactivate () {},
+  // Test seams (not part of the extension contract).
+  slugOf,
+  channelDirOf,
+}

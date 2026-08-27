@@ -11,7 +11,11 @@
  *   the paste fallback (composer dock): payload → chips on the addressed
  *   session's composer, plain-text mention as the degraded path;
  * - a mention paster (composer dock) that recovers copied reference items —
- *   whitespace-mangled or canonical mention text — back into chips.
+ *   whitespace-mangled or canonical mention text — back into chips;
+ * - the chat-open takeover (openIntercept.ts / turnTail.tsx): the
+ *   produced-files row and the runtime's `workspaces.openPath` funnel are
+ *   rerouted so chat file clicks open inside the VSCode tab, gated by the
+ *   same `openAsDefault` switch as the default-tab swap.
  *
  * When better-sidebar is absent (optional peer), tab registration silently
  * skips; the reference plumbing still works for the paste fallback.
@@ -19,9 +23,10 @@
  * @module dsh-sidebar-vscode/client
  */
 import type { TabDescriptor } from 'dsh-better-sidebar';
-/** Services required before mounting: the sidebar service, the slot registry,
- * the locale service, the session registry, the conversation input service,
- * and the trigger registry (chip serialization routing). */
+/** Services required before mounting: the sidebar service, the slot registry
+ * (the turn-tail claim), the locale service, the session registry, the
+ * conversation input service, the trigger registry (chip serialization
+ * routing), and the client workspaces service (the openPath seam). */
 export declare const inject: string[];
 /** The tab descriptor this plugin registers. */
 export declare function vscodeTab(): TabDescriptor;
