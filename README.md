@@ -4,7 +4,7 @@
 
 A [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) sidebar tab for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) that embeds the **VS Code web workbench**, and turns editor selections / explorer files into **atomic reference chips** in the conversation composer — expanded by the host half into model context right after the citing message on submit.
 
-![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
+![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![CI](https://img.shields.io/github/actions/workflow/status/chendefine/dsh-sidebar-vscode/ci.yml) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
 
 ```
 editor selection                    explorer
@@ -267,8 +267,9 @@ tests/*.spec.ts               # vitest specs — 195 tests / 8 files (per-file c
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 dsh.plugin.json               # plugin manifest (metadata)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
-vitest.config.ts              # test-time @deepseek-ai/dsh-llm alias
+vitest.config.ts              # test-time dsh-llm alias (harness checkout preferred, installed package fallback)
 lib/                          # build outputs (committed: the link: deployment serves lib/client.js directly)
+.github/workflows/ci.yml      # CI: typecheck / test / build / package verification on Node 22 & 24
 ```
 
 Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays external, resolved by the DSH host loader); the browser half is a `window.__ModuleLoader__.load({ id, factory })` registration bundle (the official external client-plugin delivery format) with React / cordis external and a **purity gate** that rejects Node builtins and `@deepseek-ai/*` value imports.
@@ -289,8 +290,9 @@ Rebuild, then hard-refresh the browser (the link: dependency plus content-rev qu
 ### Environment notes
 
 - **pnpm ≥ 11**: pnpm-specific settings are read **only** from `pnpm-workspace.yaml` (same-named `.npmrc` keys are silently ignored). This repo pins `autoInstallPeers: false` (internal `@deepseek-ai/*` packages are not on the public registry) and `verifyDepsBeforeRun: false` (node_modules + lockfile are a frozen baseline; skip the pre-run check) there, plus `allowBuilds.node-pty: false` (types-only dependency; its native build never runs);
-- **Type & runtime mapping**: typecheck resolves through tsconfig `paths` to the harness checkout's built types (`/app/dsh`); tests alias `@deepseek-ai/dsh-llm` to the same runtime artifacts via `vitest.config.ts` (`workspace:` protocol deps cannot resolve inside this plugin's workspace);
-- **devDependencies baseline**: `dsh-better-sidebar@^0.16` exists for types and dev-time alignment only — at runtime it is an optional peer;
+- **Type & runtime mapping**: the `@deepseek-ai/*` build-time packages (`dsh-llm`, `dsh-agent`, and `dsh-llm`'s runtime peers) are devDependencies resolved from the npm registry, so plain clones and CI work out of the box; tsconfig `paths` and the vitest alias prefer a sibling harness checkout (`/app/dsh`) when one exists — its built artifacts are fresher than the published rc's — and fall back to the installed packages otherwise;
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`) runs typecheck / test / build / package-content verification on Node 22 and 24 — the matrix mirrors DSH's own support range (`^22.19.0 || >=24.0.0`, which the published `engines` field matches);
+- **devDependencies baseline**: `dsh-better-sidebar@^0.16` and the `@deepseek-ai/*` devDependencies exist for types, tests, and dev-time alignment only — at runtime they are all optional peers resolved by the DSH host;
 - **Extension manual harness**: `node extension/harness.js extension/extension.js` (stubs the injected `vscode` module, runs all three commands, prints each envelope + decoded payload).
 
 ### Publishing

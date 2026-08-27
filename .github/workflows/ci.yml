@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # DSH itself requires Node ^22.19 || >=24; the matrix mirrors DSH's
+        # own support range (the published engines field matches it).
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify package contents
+        run: |
+          pnpm pack --pack-destination /tmp/dsh-sidebar-vscode-pack
+          tar -tzf /tmp/dsh-sidebar-vscode-pack/*.tgz > /tmp/pack-list.txt
+          grep -q '^package/lib/index.js$' /tmp/pack-list.txt || (echo 'lib/index.js missing from package' && exit 1)
+          grep -q '^package/lib/client.js$' /tmp/pack-list.txt || (echo 'lib/client.js missing from package' && exit 1)
+          grep -q '^package/cordis.patch.yml$' /tmp/pack-list.txt || (echo 'cordis.patch.yml missing from package' && exit 1)

@@ -18,9 +18,18 @@
     "baseUrl": ".",
     "paths": {
       "cordis": ["./node_modules/@deepseek-ai/cordis"],
-      "@deepseek-ai/cordis": ["../../../../app/dsh/vendor/cordis/lib/types/index.d.ts"],
-      "@deepseek-ai/dsh-llm": ["../../../../app/dsh/packages/llm/llm/lib/types/index.d.ts"],
-      "@deepseek-ai/dsh-agent": ["../../../../app/dsh/packages/core/agent/lib/types/index.d.ts"]
+      "@deepseek-ai/cordis": [
+        "../../../../app/dsh/vendor/cordis/lib/types/index.d.ts",
+        "./node_modules/@deepseek-ai/cordis/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-llm": [
+        "../../../../app/dsh/packages/llm/llm/lib/types/index.d.ts",
+        "./node_modules/@deepseek-ai/dsh-llm/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-agent": [
+        "../../../../app/dsh/packages/core/agent/lib/types/index.d.ts",
+        "./node_modules/@deepseek-ai/dsh-agent/lib/types/index.d.ts"
+      ]
     }
   },
   "include": ["src", "tests", "tsdown.config.ts"]

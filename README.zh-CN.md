@@ -4,7 +4,7 @@
 
 为 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 侧边栏注册一个内嵌 **VS Code 网页版** 的标签页（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) / DSH 插件），并把编辑器选区 / 资源管理器文件变成对话输入框里的**原子引用 chip**——提交时由 host 半展开为紧随引用消息之后的模型上下文。
 
-![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
+![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![CI](https://img.shields.io/github/actions/workflow/status/chendefine/dsh-sidebar-vscode/ci.yml) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
 
 ```
 编辑器选区                          资源管理器
@@ -264,8 +264,9 @@ tests/*.spec.ts               # vitest 单测，共 195 例 / 8 文件（如上�
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 dsh.plugin.json               # 插件清单（元数据）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
-vitest.config.ts              # 测试期 @deepseek-ai/dsh-llm alias
+vitest.config.ts              # 测试期 dsh-llm alias（优先 harness 检出，回退已安装包）
 lib/                          # 构建产物（随仓库提交：link: 部署直接服务 lib/client.js）
+.github/workflows/ci.yml      # CI：Node 22 与 24 上的 typecheck / test / build / 包内容校验
 ```
 
 构建产物交付：host 半为普通 ESM bundle（`@deepseek-ai/dsh-llm` 保持外部导入，由 DSH host loader 解析）；browser 半为 `window.__ModuleLoader__.load({ id, factory })` 注册格式（官方外部 client 插件交付格式），React / cordis 走 external，并带**纯度门**——拒绝 Node 内建与 `@deepseek-ai/*` 值导入。
@@ -286,8 +287,9 @@ pnpm test         # vitest run（195 例）
 ### 环境要点
 
 - **pnpm ≥ 11**：pnpm 专属设置只从 `pnpm-workspace.yaml` 读取（`.npmrc` 中的同名键会被**静默忽略**）。本仓库在 `pnpm-workspace.yaml` 固定 `autoInstallPeers: false`（`@deepseek-ai/*` 内部包不在公网 registry）与 `verifyDepsBeforeRun: false`（`node_modules` + lockfile 为冻结基线，跳过 run 前预检），以及 `allowBuilds.node-pty: false`（仅类型引用，不运行其原生构建）；
-- **类型与运行时映射**：typecheck 依赖 tsconfig `paths` 指向 harness 检出（`/app/dsh`）的已构建类型；测试经 `vitest.config.ts` 把 `@deepseek-ai/dsh-llm` alias 到同处运行时产物（`workspace:` 协议依赖无法在本插件工作区解析）；
-- **devDependencies 基线**：`dsh-better-sidebar@^0.16` 仅为类型与开发期对齐，运行时是可选 peer；
+- **类型与运行时映射**：`@deepseek-ai/*` 构建期包（`dsh-llm`、`dsh-agent` 及 `dsh-llm` 的运行时 peer）均为从 npm registry 解析的 devDependencies，普通 clone 与 CI 开箱即用；tsconfig `paths` 与 vitest alias 在存在相邻 harness 检出（`/app/dsh`）时优先使用它（其构建产物比已发布 rc 更新），否则回退到已安装的包；
+- **CI**：GitHub Actions（`.github/workflows/ci.yml`）在 Node 22 与 24 上运行 typecheck / test / build / 包内容校验——矩阵对齐 DSH 自身的支持范围（`^22.19.0 || >=24.0.0`，与发布的 `engines` 字段一致）；
+- **devDependencies 基线**：`dsh-better-sidebar@^0.16` 与各 `@deepseek-ai/*` devDependencies 仅为类型、测试与开发期对齐——运行时它们都是可选 peer，由 DSH 宿主解析；
 - **扩展手工测试**：`node extension/harness.js extension/extension.js`（stub 掉注入的 `vscode` 模块，跑三条命令并打印信封与解码载荷）。
 
 ### 发布
