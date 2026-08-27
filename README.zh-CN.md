@@ -27,7 +27,7 @@
 - 版本：0.1.1
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：263 例全部通过（13 个规格文件）
+- 测试：269 例全部通过（13 个规格文件）
 
 ## 功能简介
 
@@ -38,7 +38,7 @@
 
 **引用注入**
 
-- **选中代码引用**：在嵌入的 VS Code 里选中代码，右键「DSH: 发送选中代码到会话」（英文界面：*DSH: Send Selection to Session*）或按 **Ctrl/Cmd+Alt+C**，选区落为对话输入框中一条**不可拆分的原子 chip**（形如 `@src/main.ts L10-L12`，退格一次删整条）；多光标选区按编辑器顺序逐条成 chip。提交时 host 半在 `agent/pre-step` 把它展开为紧跟该消息的独立 context 消息：
+- **选中代码引用**：在嵌入的 VS Code 里选中代码，右键「DSH: 发送选中代码到会话」（英文界面：*DSH: Send Selection to Session*）或按 **Ctrl/Cmd+Alt+C**，选区落为对话输入框**当前光标处**的一条**不可拆分的原子 chip**（形如 `@src/main.ts L10-L12`，退格一次删整条；输入框如有选区则替换该选区）；多光标选区按编辑器顺序逐条成 chip。提交时 host 半在 `agent/pre-step` 把它展开为紧跟该消息的独立 context 消息：
 
   ```xml
   <!-- User-captured VS Code selection (capture-time snapshot); re-read the
@@ -50,7 +50,7 @@
   </text-selection>
   ```
 
-- **资源管理器文件 / 文件夹引用**：资源管理器右键「DSH: 发送文件到会话」「DSH: 发送文件夹到会话」（英文界面：*DSH: Send File/Folder to Session*；支持多选与混选，按右键对象是否为文件夹二选一显示），每个选中项落为一条原子 chip：文件 `@src/main.ts`、文件夹 `@src`。资源引用**不携带任何内容**——提交时展开为只有路径属性、无正文、无提示注释的标记，tag 名本身表达文件 / 文件夹类型，模型需要时自行读取：
+- **资源管理器文件 / 文件夹引用**：资源管理器右键「DSH: 发送文件到会话」「DSH: 发送文件夹到会话」（英文界面：*DSH: Send File/Folder to Session*；支持多选与混选，按右键对象是否为文件夹二选一显示），每个选中项落为输入框当前光标处的一条原子 chip：文件 `@src/main.ts`、文件夹 `@src`。资源引用**不携带任何内容**——提交时展开为只有路径属性、无正文、无提示注释的标记，tag 名本身表达文件 / 文件夹类型，模型需要时自行读取：
 
   ```xml
   <file-selection path="src/main.ts"/>
@@ -59,7 +59,7 @@
 
 - **引用管理**：输入框上方渲染引用 tag 栏——同一引用的多条 chip 归并为一枚 tag（显示截断 / 文件夹徽标与出现次数），点 × 经一次草稿写入移除该引用的全部 chip；chip 的序列化形态是自包含的规范 mention，草稿文本即唯一存储，删光即不再注入，无残留状态；
 
-- **降级与恢复**：直连跨域 `serverUrl` 时同源桥不可用，信封落入真实剪贴板，**粘贴进输入框仍被识别**为 chip；chip 插入被输入机拒绝（提交中等瞬态）时退化为追加纯文本 mention（host 解析路径相同，仅失去 chip 外观）；从对话气泡 / 外部编辑器**复制渲染出的引用再粘回**——即使是 sigil 被空白撑开的散架文本（`@ [ label ]( dsh-vscode: … )`）或丢失闭合括号的截断复制体——经 canonical 校验后在光标处重建为原子 chip，前后散文保持原样（fail-soft，绝不报错）；
+- **降级与恢复**：直连跨域 `serverUrl` 时同源桥不可用，信封落入真实剪贴板，**粘贴进输入框仍被识别**为 chip 并落在粘贴光标处；chip 插入被输入机拒绝（提交中等瞬态）时退化为追加纯文本 mention（host 解析路径相同，仅失去 chip 外观）；从对话气泡 / 外部编辑器**复制渲染出的引用再粘回**——即使是 sigil 被空白撑开的散架文本（`@ [ label ]( dsh-vscode: … )`）或丢失闭合括号的截断复制体——经 canonical 校验后在光标处重建为原子 chip，前后散文保持原样（fail-soft，绝不报错）；
 
 - **默认标签**：可选开关让**全新会话**的侧边栏默认打开 VSCode 标签（替换 better-sidebar 硬编码的「文件」种子标签）；已打开过的会话保持各自布局，关闭后只影响之后的新会话。
 
@@ -210,7 +210,7 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 
 1. **VS Code 扩展**（`extension/`）：选区命令打包 `{ path, relative?, language?, dirty?, spans[] }`；资源命令对每个 URI `workspace.fs.stat` 判型打包 `{ kind: 'resource', resources: [{ path, relative?, type }] }`（无内容），经 `vscode.env.clipboard.writeText` 写入信封 `@@DSH_REF::<base64url(json)>::\n<可读回退文本>`；
 2. **剪贴板信号桥**（`src/client/clipboardBridge.ts`）：同源 iframe 特权——父页面在 workbench `window.navigator.clipboard.writeText` 上打补丁，拦截扩展宿主的剪贴板写入链（ext host → MainThreadClipboard → BrowserClipboardService → 晚绑定的 `navigator.clipboard.writeText`）；注入成功时完全不触碰真实剪贴板，仅失败时才把可读回退写入供手动粘贴；跨域 URL 下桥直接 no-op；
-3. **composer chip**（`src/client/references.ts` + `composer.tsx`）：载荷经 `pathMap` 反向映射回 DSH 路径（cwd 之下相对化）、截断（首尾两半）、`crypto.subtle` 计算 sha-256 前缀，编成规范 mention，经 `conversation.input` 服务的 `insertReference`（草稿末尾零宽 span CAS）落为原子 occurrence chip；本插件注册名为 `vscode-reference` 的 `@` 触发源（候选恒空，仅为提交序列化路由 codec）；`conversation.input.dock` 组件渲染引用 tag 栏并在 document 捕获相拦截粘贴（信封走注入 lander；mention 复制体经解析后落 chip——`preventDefault` 之外还要 `stopPropagation`，仅 preventDefault 拦不住 composer 的 React onPaste）；
+3. **composer chip**（`src/client/references.ts` + `composer.tsx`）：载荷经 `pathMap` 反向映射回 DSH 路径（cwd 之下相对化）、截断（首尾两半）、`crypto.subtle` 计算 sha-256 前缀，编成规范 mention，经 `conversation.input` 服务的 `insertReference` 落为原子 occurrence chip——落点是输入框**当前光标**：只要显示中的 composer 属于目标会话，就取其 textarea 实时选区（有选区则替换、多条 chip 按序连排、caret 恢复到最后一条 chip 之后）；光标不可得（会话不匹配 / 无可用输入框）时保持历史的草稿末尾零宽 span CAS；本插件注册名为 `vscode-reference` 的 `@` 触发源（候选恒空，仅为提交序列化路由 codec）；`conversation.input.dock` 组件渲染引用 tag 栏并在 document 捕获相拦截粘贴（信封走注入 lander 并落在粘贴光标处；mention 复制体经解析后落 chip——`preventDefault` 之外还要 `stopPropagation`，仅 preventDefault 拦不住 composer 的 React onPaste）；
 4. **host 边界**（`src/mention.ts`）：严格解析之外再追加一层 fail-soft 恢复扫描兜住散架复制体；闭合标签碰撞用内容哈希盐化防伪造。
 
 ### mention 编解码
@@ -254,7 +254,7 @@ src/client/index.tsx          # browser 半入口：注册 tab + dock + @ 触发
 src/client/VscodeView.tsx     # 标签组件：cwd → 路径映射 → iframe + 工具栏/提示 + 桥装载
 src/client/clipboardBridge.ts # 同源 iframe navigator.clipboard.writeText 信号补丁（8 测试）
 src/client/composer.tsx       # dock 组件：引用 tag 栏（自注入样式）+ 粘贴兜底
-src/client/references.ts      # 载荷→chip（选区/资源）/插入/tag 栏投影/粘贴恢复（39 测试）
+src/client/references.ts      # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（45 测试）
 src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种 payload）（14 测试）
 src/client/paths.ts           # pathMap 解析/映射/反向映射、URL 构建（20 测试）
 src/client/settings.ts        # pluginSettings 读取 + 截断上限契约（默认/边界/提交助手）（14 测试）
@@ -270,7 +270,7 @@ scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 �
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
 screenshot.png                # 产品使用截图（见上方「界面截图」）
-tests/*.spec.ts               # vitest 单测，共 263 例 / 13 文件（如上括注分文件计数）
+tests/*.spec.ts               # vitest 单测，共 269 例 / 13 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 dsh.plugin.json               # 插件清单（元数据）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
@@ -289,7 +289,7 @@ lib/                          # 构建产物（随仓库提交：link: 部署直
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc 声明 + tsdown 双 bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run（263 例）
+pnpm test         # vitest run（269 例）
 ```
 
 重建后硬刷新浏览器即可（link: 依赖 + 内容 rev 查询参数自动破缓存）；host 半改动需重启 `dsh web`。

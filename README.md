@@ -28,7 +28,7 @@ editor selection                    explorer
 - Version: 0.1.1
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 263 passing (13 spec files)
+- Tests: 269 passing (13 spec files)
 
 ## Features
 
@@ -39,7 +39,7 @@ editor selection                    explorer
 
 **Reference injection**
 
-- **Selection references**: select code inside the embedded VS Code, right-click *"DSH: Send Selection to Session"* (中文界面：「DSH: 发送选中代码到会话」) or press **Ctrl/Cmd+Alt+C** — the selection lands in the composer as one **atomic chip** (`@src/main.ts L10-L12`; one backspace deletes it whole); multi-cursor selections produce one chip each in editor order. On submit the host half expands it at `agent/pre-step` into a standalone context message right after the citing one:
+- **Selection references**: select code inside the embedded VS Code, right-click *"DSH: Send Selection to Session"* (中文界面：「DSH: 发送选中代码到会话」) or press **Ctrl/Cmd+Alt+C** — the selection lands in the composer at the **current caret** as one **atomic chip** (`@src/main.ts L10-L12`; one backspace deletes it whole; a composer selection is replaced); multi-cursor selections produce one chip each in editor order. On submit the host half expands it at `agent/pre-step` into a standalone context message right after the citing one:
 
   ```xml
   <!-- User-captured VS Code selection (capture-time snapshot); re-read the
@@ -51,7 +51,7 @@ editor selection                    explorer
   </text-selection>
   ```
 
-- **Explorer file/folder references**: right-click files/folders in the explorer (*"DSH: Send File/Folder to Session"*; multi-select aware, the file vs. folder entry is picked by the right-clicked item) — each item lands as one atomic chip: `@src/main.ts` for a file, `@src` for a folder. Resource references **carry no content**: on submit they expand into content-less, guidance-free markers — the tag name itself expresses the file/folder kind, and the model reads the bytes only when it needs them:
+- **Explorer file/folder references**: right-click files/folders in the explorer (*"DSH: Send File/Folder to Session"*; multi-select aware, the file vs. folder entry is picked by the right-clicked item) — each item lands at the composer's current caret as one atomic chip: `@src/main.ts` for a file, `@src` for a folder. Resource references **carry no content**: on submit they expand into content-less, guidance-free markers — the tag name itself expresses the file/folder kind, and the model reads the bytes only when it needs them:
 
   ```xml
   <file-selection path="src/main.ts"/>
@@ -60,7 +60,7 @@ editor selection                    explorer
 
 - **Reference management**: a rail above the composer groups every chip by reference (truncated / folder badges, occurrence counts); its × removes all chips of that reference through one draft write. A chip's serialized form is a self-contained canonical mention — the draft text is the single store of truth; delete it all and nothing is injected, with no leftover state.
 
-- **Fallbacks & recovery**: with a cross-origin `serverUrl` the same-origin bridge is unavailable — the envelope lands on the real clipboard and **pasting it into the composer still recognizes** it as chips; when the input machine refuses a chip insert (mid-submit transient) the mention degrades to plain text (the host parses it identically, only the chip affordance is lost); **copying a rendered reference and pasting it back** — even as whitespace-mangled sigil text (`@ [ label ]( dsh-vscode: … )`) or a truncation that lost the closing paren — is re-validated canonically and rebuilt as atomic chips at the caret with the surrounding prose kept verbatim (fail-soft, never throws).
+- **Fallbacks & recovery**: with a cross-origin `serverUrl` the same-origin bridge is unavailable — the envelope lands on the real clipboard and **pasting it into the composer still recognizes** it as chips, landing them at the paste caret; when the input machine refuses a chip insert (mid-submit transient) the mention degrades to plain text (the host parses it identically, only the chip affordance is lost); **copying a rendered reference and pasting it back** — even as whitespace-mangled sigil text (`@ [ label ]( dsh-vscode: … )`) or a truncation that lost the closing paren — is re-validated canonically and rebuilt as atomic chips at the caret with the surrounding prose kept verbatim (fail-soft, never throws).
 
 - **Default tab**: an optional switch makes **brand-new sessions** open the VSCode tab by default (replacing better-sidebar's hardcoded seeded Files tab); used sessions keep their own layouts, and turning it off only affects future sessions.
 
@@ -212,7 +212,7 @@ Both reference kinds share one chain:
 
 1. **VS Code extension** (`extension/`): the selection command packs `{ path, relative?, language?, dirty?, spans[] }`; the resource commands `workspace.fs.stat` each URI and pack `{ kind: 'resource', resources: [{ path, relative?, type }] }` (no content), handed to `vscode.env.clipboard.writeText` inside the envelope `@@DSH_REF::<base64url(json)>::\n<readable fallback>`;
 2. **Clipboard signal bridge** (`src/client/clipboardBridge.ts`): same-origin iframe privilege — the parent page patches `navigator.clipboard.writeText` on the workbench window, intercepting the extension host's clipboard chain (ext host → MainThreadClipboard → BrowserClipboardService → the late-bound `navigator.clipboard.writeText`); a successful landing never touches the real clipboard, a failed one writes the readable fallback for manual paste; on cross-origin URLs the bridge no-ops;
-3. **Composer chips** (`src/client/references.ts` + `composer.tsx`): the payload is reverse-mapped through `pathMap` back into DSH space (relativized under cwd), truncated (head+tail halves), hashed via `crypto.subtle` into the sha-256 prefix, and formatted as the canonical mention, then landed as an atomic occurrence chip through the `conversation.input` service's `insertReference` (end-of-draft zero-width span CAS); this plugin registers the `@` trigger source `vscode-reference` (candidates always empty — it exists purely so submit serialization routes through its codec); the `conversation.input.dock` component renders the rail and intercepts pastes at the document capture phase (envelopes go to the injection lander; recovered mention copies land as chips — `preventDefault` alone does not stop the composer's React onPaste, so `stopPropagation` rides along);
+3. **Composer chips** (`src/client/references.ts` + `composer.tsx`): the payload is reverse-mapped through `pathMap` back into DSH space (relativized under cwd), truncated (head+tail halves), hashed via `crypto.subtle` into the sha-256 prefix, and formatted as the canonical mention, then landed as an atomic occurrence chip through the `conversation.input` service's `insertReference` — at the composer's **current caret**: the displayed composer's live textarea selection whenever it belongs to the addressed session (a selected range is replaced, a batch splices in order, and the caret is restored just past the last chip); when no caret is addressable (session mismatch, no live composer) the landing keeps the historical end-of-draft zero-width span CAS; this plugin registers the `@` trigger source `vscode-reference` (candidates always empty — it exists purely so submit serialization routes through its codec); the `conversation.input.dock` component renders the rail and intercepts pastes at the document capture phase (envelopes go to the injection lander at the paste caret; recovered mention copies land as chips — `preventDefault` alone does not stop the composer's React onPaste, so `stopPropagation` rides along);
 4. **Host boundary** (`src/mention.ts`): after the strict parse, one fail-soft recovery scan catches whitespace-mangled copies; closing-tag collisions are salted with the content hash so the body cannot forge a terminator.
 
 ### The mention codec
@@ -257,7 +257,7 @@ src/client/index.tsx          # browser-half entry: tab + dock + @ source + dict
 src/client/VscodeView.tsx     # tab component: cwd → path mapping → iframe + toolbar/notices + bridge
 src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText signal patch (8 tests)
 src/client/composer.tsx       # dock component: reference rail (self-adopted styles) + paste fallbacks
-src/client/references.ts      # payload→chips (selection/resources)/insert/rail projection/paste recovery (39 tests)
+src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (45 tests)
 src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (14 tests)
 src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (20 tests)
 src/client/settings.ts        # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
@@ -273,7 +273,7 @@ scripts/install-extension.sh  # one-command extension install (vsce package → 
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
 screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 263 tests / 13 files (per-file counts noted above)
+tests/*.spec.ts               # vitest specs — 269 tests / 13 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 dsh.plugin.json               # plugin manifest (metadata)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
@@ -292,7 +292,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (263 tests)
+pnpm test         # vitest run (269 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.

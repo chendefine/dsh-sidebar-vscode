@@ -12,9 +12,10 @@
  * Two paste fallbacks cover what the bridge cannot: a clipboard envelope
  * (cross-origin or standalone editor windows) pasted into the composer
  * textarea decodes back into the same reference chips the bridge path
- * produces, and a copied reference item — the `@ [ label ]( dsh-vscode: … )`
- * text a rendered chip yields on copy, mangled or canonical — is recovered
- * into chips at the caret with its surrounding prose kept verbatim.
+ * produces — landing at the paste caret, like any paste — and a copied
+ * reference item — the `@ [ label ]( dsh-vscode: … )` text a rendered chip
+ * yields on copy, mangled or canonical — is recovered into chips at the
+ * caret with its surrounding prose kept verbatim.
  *
  * @module dsh-sidebar-vscode/client/composer
  */
@@ -25,6 +26,7 @@ import {
   parseRecoveredPaste,
   pasteRecoveredMentions,
   removeRefRanges,
+  type InsertOutcome,
   type OccurrenceLike,
   type PasteLandingOutcome,
   type RecoveredPastePart,
@@ -46,13 +48,17 @@ export interface FallbackOptions {
  * Land one decoded payload's reference chips on the addressed session.
  * Implemented by the plugin body (which owns the service context) and handed
  * in through the slot's inject face. The payload can be an editor selection
- * or an explorer file/folder list.
+ * or an explorer file/folder list. `at` is the draft range the chips replace
+ * (usually the composer caret); when omitted the implementation resolves the
+ * insertion point itself — the displayed composer's caret for the addressed
+ * session, else the draft tail — and owns the post-landing caret restore.
  */
 export type ReferenceLander = (
   sessionId: string | undefined,
   payload: ClipboardPayload,
   options: FallbackOptions,
-) => Promise<{ inserted: number, textFallback: number, failed: boolean }>
+  at?: { readonly start: number, readonly end: number },
+) => Promise<InsertOutcome>
 
 /**
  * Land one parsed mention-carrying paste on the addressed session at the
@@ -222,10 +228,24 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
       }
 
       // Fallback 1: the clipboard envelope (standalone editor windows).
+      // The envelope lands at the paste selection like any paste — not the
+      // draft tail — because the target still holds its pre-edit caret.
       const payload = parseClipboardEnvelope(text)
       if (payload !== null) {
         swallow()
-        void lander(sessionId, payload, fallbackOptions)
+        const el = target
+        const selection = {
+          start: target.selectionStart ?? 0,
+          end: target.selectionEnd ?? target.selectionStart ?? 0,
+        }
+        void (async () => {
+          const outcome = await lander(sessionId, payload, fallbackOptions, selection)
+          if (outcome.caret !== undefined) {
+            const caret = outcome.caret
+            // One frame out: the controlled textarea's value propagates first.
+            requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
+          }
+        })()
         return
       }
 
@@ -312,6 +332,42 @@ export function setReferenceLander(instance: ReferenceLander | undefined): void 
 /** The lander installed by the plugin body (undefined before apply). */
 export function getReferenceLander(): ReferenceLander | undefined {
   return lander
+}
+
+// ---- the displayed composer's caret (the bridge path's insertion point) ----
+
+/** Locate the displayed conversation's composer textarea, when addressable. */
+function activeComposerTextarea(): HTMLTextAreaElement | null {
+  const el = document.querySelector('[data-composer-card] textarea')
+  return el instanceof HTMLTextAreaElement && !el.disabled ? el : null
+}
+
+/**
+ * Read the displayed composer's selection — the user's last caret or range,
+ * which a textarea keeps through focus loss into the VS Code iframe.
+ * Undefined whenever the composer is absent or not addressable; the caller
+ * then falls back to the draft tail.
+ */
+export function readActiveComposerSelection(): { start: number, end: number } | undefined {
+  const el = activeComposerTextarea()
+  if (el === null) return undefined
+  const start = el.selectionStart
+  if (start === null) return undefined
+  return { start, end: el.selectionEnd ?? start }
+}
+
+/**
+ * Restore the displayed composer's caret after an external landing. One
+ * frame out — the controlled textarea's value propagates first. Selection
+ * only, never focus: the user's focus stays wherever they were working
+ * (typically inside the VS Code iframe).
+ */
+export function restoreActiveComposerCaret(caret: number): void {
+  if (activeComposerTextarea() === null) return
+  requestAnimationFrame(() => {
+    const el = activeComposerTextarea()
+    if (el !== null) el.setSelectionRange(caret, caret)
+  })
 }
 
 /** Re-export for the plugin body's slot inject face typing. */

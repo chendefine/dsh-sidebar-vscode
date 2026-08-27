@@ -45,6 +45,8 @@ import {
   ComposerDock,
   adoptRailStyles,
   setReferenceLander,
+  readActiveComposerSelection,
+  restoreActiveComposerCaret,
   type FallbackOptions,
   type MentionPaster,
   type ReferenceLander,
@@ -133,6 +135,20 @@ interface VscodeTriggerSource {
   }
 }
 
+/**
+ * Whether the currently displayed conversation is the addressed session —
+ * the gate for reading (and restoring) the displayed composer's caret on
+ * its behalf: a composer showing another session holds another draft, so
+ * its selection offsets would be meaningless for this landing.
+ */
+function composerDisplayedFor(
+  sessions: ClientContextFace['sessions'],
+  sessionId: string | undefined,
+): boolean {
+  if (sessionId === undefined) return false
+  return sessions?.list?.getSnapshot().current === sessionId
+}
+
 /** The tab descriptor this plugin registers. */
 export function vscodeTab(): TabDescriptor {
   return {
@@ -178,16 +194,30 @@ export function apply(ctx: unknown): void {
   // Selection references: one lander shared by the composer dock (paste
   // fallback) and the tab's clipboard bridge. The lander builds one chip per
   // span (editor selections) or per resource (explorer files/folders) and
-  // lands them on the addressed session's input machine; the chip's ref IS
-  // the canonical mention, so submit serialization needs no state. The paster
-  // lands recovered mention copies (rendered-chip text pasted back) the same
-  // way — at the paste selection, prose preserved.
+  // lands them on the addressed session's input machine — at the addressed
+  // draft range: the caller's paste selection when it has one, else (the
+  // bridge path, which holds no composer element) the displayed composer's
+  // live caret whenever it belongs to the addressed session, else the draft
+  // tail. The chip's ref IS the canonical mention, so submit serialization
+  // needs no state. The paster lands recovered mention copies (rendered-chip
+  // text pasted back) the same way — at the paste selection, prose preserved.
   const lander: ReferenceLander = (
     sessionId: string | undefined,
     payload: ClipboardPayload,
     options: FallbackOptions,
+    at?: { readonly start: number, readonly end: number },
   ) => {
     return (async () => {
+      // Read the displayed composer's selection before any await: every
+      // async gap is a window where a machine write could flush a new value
+      // through React and collapse the textarea selection to the tail.
+      // The bridge path passes no `at`: resolve the insertion point here.
+      // Only the displayed conversation's caret is meaningful — a composer
+      // that belongs to another session holds a different session's draft —
+      // so anything else (mismatch, no live composer) keeps the historical
+      // end-of-draft append.
+      const ownPoint = at === undefined && composerDisplayedFor(client.sessions, sessionId)
+      const point = at !== undefined ? at : ownPoint ? readActiveComposerSelection() : undefined
       const refs = isResourceList(payload)
         ? buildResourceRefsFromPayload(payload, {
           reverseRules: options.reverseRules,
@@ -199,7 +229,14 @@ export function apply(ctx: unknown): void {
           maxLines: options.maxLines,
           maxBytes: options.maxBytes,
         })
-      return insertVscodeReferences(client.sessions, client.conversation, sessionId, refs)
+      const outcome = await insertVscodeReferences(client.sessions, client.conversation, sessionId, refs, point)
+      // Caret restore is the point owner's duty: a caller that passed `at`
+      // restores through its own element (the paste fallbacks); only the
+      // point this wrapper resolved itself from the DOM is restored here.
+      if (ownPoint && outcome.caret !== undefined && composerDisplayedFor(client.sessions, sessionId)) {
+        restoreActiveComposerCaret(outcome.caret)
+      }
+      return outcome
     })()
   }
   const pasteMentions: MentionPaster = (sessionId, parts, selection) => {

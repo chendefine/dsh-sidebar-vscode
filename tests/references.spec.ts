@@ -1,8 +1,9 @@
 /**
  * Unit tests for the client-side reference plumbing: payload → chip building
  * (path resolution, truncation, hashing, flags), service-based chip insertion
- * with retry and plain-text fallback, and the reference-rail projections
- * (grouping and range removal).
+ * with retry and plain-text fallback — at an addressed caret/selection or the
+ * historical draft tail — and the reference-rail projections (grouping and
+ * range removal).
  *
  * @module dsh-sidebar-vscode/tests/references.spec
  */
@@ -307,7 +308,7 @@ describe('insertVscodeReferences', () => {
     input.draftRev = 3
     const refs = await buildRefsFromPayload(payload(), {})
     const outcome = await insertVscodeReferences(servicesFor(input).sessions, servicesFor(input).conversation, 's1', refs)
-    expect(outcome).toEqual({ inserted: 1, textFallback: 0, failed: false })
+    expect(outcome).toEqual({ inserted: 1, textFallback: 0, failed: false, caret: input.draft.length })
     expect(input.inserted).toHaveLength(1)
     expect(input.inserted[0]!.span).toEqual({ start: 'look at'.length, end: 'look at'.length, draftRev: 3 })
   })
@@ -330,7 +331,7 @@ describe('insertVscodeReferences', () => {
     const refs = await buildRefsFromPayload(payload(), {})
     const { sessions, conversation } = servicesFor(input)
     const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs)
-    expect(outcome).toEqual({ inserted: 0, textFallback: 1, failed: false })
+    expect(outcome).toEqual({ inserted: 0, textFallback: 1, failed: false, caret: input.drafts[0]!.length })
     expect(input.drafts[0]).toBe(`ctx ${refs[0]!.ref} `)
   }, 10_000)
 
@@ -356,6 +357,105 @@ describe('insertVscodeReferences', () => {
       refs,
     )
     expect(outcome.failed).toBe(true)
+  })
+})
+
+describe('insertVscodeReferences at the caret', () => {
+  it('lands one chip at the caret mid-draft, keeping both sides', async () => {
+    const input = new MachineLikeInput()
+    input.draft = 'hello world'
+    const refs = await buildRefsFromPayload(payload(), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs, { start: 'hello'.length, end: 'hello'.length })
+    const display = `@${refs[0]!.label}`
+    expect(outcome.inserted).toBe(1)
+    // The machine's trailing-gap rule adds nothing before the surviving ' world'.
+    expect(input.draft).toBe(`hello${display} world`)
+    expect(outcome.caret).toBe('hello'.length + display.length)
+    expect(input.occurrences).toEqual([
+      { occurrenceId: 1, source: VSCODE_SOURCE, ref: refs[0]!.ref, offset: 'hello'.length, length: display.length, label: refs[0]!.label },
+    ])
+  })
+
+  it('lands each chip of a batch in order at the caret', async () => {
+    const input = new MachineLikeInput()
+    input.draft = 'ab'
+    const refs = await buildRefsFromPayload(payload({
+      spans: [
+        { startLine: 1, endLine: 1, text: 'a' },
+        { startLine: 5, endLine: 6, text: 'b\nc' },
+      ],
+    }), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs, { start: 'a'.length, end: 'a'.length })
+    const first = `@${refs[0]!.label}`
+    const second = `@${refs[1]!.label}`
+    expect(outcome.inserted).toBe(2)
+    // Both chips splice before 'b', each followed by one machine gap.
+    expect(input.draft).toBe(`a${first} ${second} b`)
+    expect(outcome.caret).toBe(`a${first} ${second} `.length)
+    expect(input.occurrences.map(entry => entry.offset)).toEqual(['a'.length, `a${first} `.length])
+  })
+
+  it('replaces the selected range rather than inserting beside it', async () => {
+    const input = new MachineLikeInput()
+    input.draft = 'keep [junk] tail'
+    const refs = await buildRefsFromPayload(payload(), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(
+      sessions, conversation, 's1', refs,
+      { start: 'keep '.length, end: 'keep [junk]'.length },
+    )
+    const display = `@${refs[0]!.label}`
+    expect(input.draft).toBe(`keep ${display} tail`)
+    expect(outcome.caret).toBe('keep '.length + display.length)
+    expect(input.occurrences[0]!.offset).toBe('keep '.length)
+  })
+
+  it('clamps an out-of-range caret into the draft', async () => {
+    const input = new MachineLikeInput()
+    input.draft = 'ctx'
+    const refs = await buildRefsFromPayload(payload(), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs, { start: 99, end: 99 })
+    const display = `@${refs[0]!.label}`
+    // Clamped to the tail: chip, one machine gap, nothing after.
+    expect(input.draft).toBe(`ctx${display} `)
+    expect(outcome.caret).toBe(input.draft.length)
+    // A negative point clamps to the head.
+    const input2 = new MachineLikeInput()
+    input2.draft = 'ctx'
+    const outcome2 = await insertVscodeReferences(servicesFor(input2).sessions, servicesFor(input2).conversation, 's1', refs, { start: -3, end: -3 })
+    expect(input2.draft).toBe(`${display} ctx`)
+    expect(outcome2.caret).toBe(display.length + 1)
+  })
+
+  it('degrades a refused chip to the canonical mention at the caret (paste geometry)', async () => {
+    const input = new MachineLikeInput()
+    input.failInsert = true
+    input.draft = 'hello world'
+    const refs = await buildRefsFromPayload(payload(), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs, { start: 'hello'.length, end: 'hello'.length })
+    expect(outcome).toEqual({ inserted: 0, textFallback: 1, failed: false, caret: 'hello'.length + refs[0]!.ref.length })
+    // Paste geometry: the mention plus the trailing-gap rule (' world'
+    // already starts with a space, so no gap), no leading separator.
+    expect(input.draft).toBe(`hello${refs[0]!.ref} world`)
+    expect(input.editRanges).toEqual([{ start: 'hello'.length, end: 'hello'.length, insertedLength: refs[0]!.ref.length }])
+  })
+
+  it('keeps the historical tail landing when no point is addressed', async () => {
+    const input = new MachineLikeInput()
+    input.draft = 'ctx'
+    const refs = await buildRefsFromPayload(payload(), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs)
+    const display = `@${refs[0]!.label}`
+    // The chip splices at the draft tail with one machine gap — identical to
+    // the pre-caret behavior.
+    expect(input.draft).toBe(`ctx${display} `)
+    expect(outcome.caret).toBe(input.draft.length)
+    expect(input.occurrences[0]!.offset).toBe('ctx'.length)
   })
 })
 
@@ -395,10 +495,14 @@ class MachineLikeInput implements SessionInputFace {
     return true
   }
 
-  setDraft(text: string, _editRange?: { start: number, end: number, insertedLength: number }): void {
+  setDraft(text: string, editRange?: { start: number, end: number, insertedLength: number }): void {
     this.draft = text
     this.draftRev++
+    if (editRange !== undefined) this.editRanges.push(editRange)
   }
+
+  /** Every editRange a setDraft call passed (the fallback-splice assertions). */
+  readonly editRanges: { start: number, end: number, insertedLength: number }[] = []
 }
 
 /** A ready selection payload for recovery tests (path already resolved). */

@@ -7,9 +7,12 @@
  * Everything here is structurally typed against the ui-conversation /
  * ui-input-trigger contracts (the browser bundle's purity gate forbids
  * `@deepseek-ai/*` value imports, and the shapes are frozen public seams).
- * Insertion goes through the session's `SessionInput.insertReference` with an
- * end-of-draft zero-width span CAS — the same machine transaction the
- * trigger-menu pipeline uses — so every chip is an atomic occurrence:
+ * Insertion goes through the session's `SessionInput.insertReference` with a
+ * revision-CAS'd span at the caller's addressed point — the composer's caret
+ * (a selected range replaces it), the point just past the previous reference
+ * for a batch, or the end-of-draft zero-width span when no point is
+ * addressable — the same machine transaction the trigger-menu pipeline uses,
+ * so every chip is an atomic occurrence:
  * backspace deletes it whole, submit serializes it through this plugin's
  * trigger-source codec, and the draft text (not any side table) is the single
  * store of what will be injected at `agent/pre-step`.
@@ -254,6 +257,11 @@ export interface InsertOutcome {
   readonly inserted: number
   /** References that landed as plain-text mentions (machine refused the chip). */
   readonly textFallback: number
+  /**
+   * Draft offset just past the last landed reference (the restored caret);
+   * undefined when nothing landed or no session composer resolved at all.
+   */
+  readonly caret?: number
   /** True when no session composer could be resolved at all. */
   readonly failed: boolean
 }
@@ -269,24 +277,40 @@ function appendMention(draft: string, mention: string): string {
   return `${draft}${separator}${mention} `
 }
 
+/** Clamp one caller-addressed range into [0, length] with start ≤ end. */
+function clampSpan(range: { start: number, end: number }, length: number): { start: number, end: number } {
+  const a = Math.max(0, Math.min(range.start, length))
+  const b = Math.max(0, Math.min(range.end, length))
+  return a <= b ? { start: a, end: b } : { start: b, end: a }
+}
+
 /**
  * Insert references as atomic chips on the addressed session's composer,
- * appending the canonical mention as plain text whenever the input machine
- * refuses the chip transaction (mid-submit phases, CAS loss after retry).
- * The host boundary parses plain-text mentions identically, so the text path
+ * at the caller's addressed point: the first reference replaces the `at`
+ * range (a bare caret is the zero-width case), every following one splices
+ * at the point just past its predecessor, and a missing `at` keeps the
+ * historical end-of-draft append. Whenever the input machine refuses the
+ * chip transaction (mid-submit phases, CAS loss after retry) the canonical
+ * mention lands as plain text over the same point — paste geometry when one
+ * was addressed, the separator-aware tail append otherwise. The host
+ * boundary parses plain-text mentions identically, so the text path
  * degrades only the chip affordance — never the context.
  *
  * @param sessions - the sessions service (scope resolution).
  * @param conversation - the conversation service (input resolver).
  * @param sessionId - the addressed session.
  * @param refs - references to land, in order.
- * @returns the per-path landing counts.
+ * @param at - the draft range the references replace (usually the composer
+ * caret; a non-zero width is the selection it replaces). Undefined = append
+ * at the draft tail.
+ * @returns the per-path landing counts plus the post-landing caret.
  */
 export async function insertVscodeReferences(
   sessions: SessionsServiceFace | undefined,
   conversation: ConversationServiceFace | undefined,
   sessionId: string | undefined,
   refs: readonly ReferenceInsertLike[],
+  at?: { readonly start: number, readonly end: number },
 ): Promise<InsertOutcome> {
   if (refs.length === 0) return { inserted: 0, textFallback: 0, failed: false }
   const actx = sessionId !== undefined ? sessions?.scope(sessionId) : undefined
@@ -302,6 +326,11 @@ export async function insertVscodeReferences(
 
   let inserted = 0
   let textFallback = 0
+  let caret: number | undefined
+  // The next span to address: the caller's range for the first reference,
+  // the point just past the previous one afterwards. undefined until a
+  // first range exists (and throughout when the caller addressed none).
+  let next: { start: number, end: number } | undefined = at === undefined ? undefined : { start: at.start, end: at.end }
   for (const ref of refs) {
     let landed = false
     for (let attempt = 0; attempt < 2 && !landed; attempt++) {
@@ -310,24 +339,53 @@ export async function insertVscodeReferences(
         await delay(150)
         continue
       }
-      landed = input.insertReference(ref, {
-        start: snapshot.draft.length,
-        end: snapshot.draft.length,
-        draftRev: snapshot.draftRev,
-      })
-      if (!landed) await delay(150)
+      const span = next === undefined
+        ? { start: snapshot.draft.length, end: snapshot.draft.length }
+        : clampSpan(next, snapshot.draft.length)
+      const beforeLen = snapshot.draft.length
+      landed = input.insertReference(ref, { ...span, draftRev: snapshot.draftRev })
+      if (landed) {
+        // The chip (plus its machine-added trailing gap) replaced [span):
+        // the next point is exactly past the inserted region, measured off
+        // the draft delta so the machine's gap rule never has to be copied.
+        const afterLen = input.state.getSnapshot().draft.length
+        caret = span.start + (afterLen - beforeLen) + (span.end - span.start)
+        next = { start: caret, end: caret }
+      } else {
+        await delay(150)
+      }
     }
     if (landed) {
       inserted++
       continue
     }
-    // Machine refused the chip transaction twice: append the canonical
+    // Machine refused the chip transaction twice: land the canonical
     // mention as plain text — the host parses it exactly the same way.
+    // With an addressed point this is paste geometry (the mention plus the
+    // machine's trailing-gap rule, no leading separator); without one it is
+    // the historical separator-aware tail append.
     const snapshot = input.state.getSnapshot()
-    input.setDraft(appendMention(snapshot.draft, ref.ref))
+    if (next === undefined) {
+      const draft = appendMention(snapshot.draft, ref.ref)
+      input.setDraft(draft)
+      caret = draft.length
+    } else {
+      const point = clampSpan(next, snapshot.draft.length).start
+      const tail = snapshot.draft.slice(point)
+      const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
+      const replacement = `${ref.ref}${gap}`
+      input.setDraft(
+        `${snapshot.draft.slice(0, point)}${replacement}${snapshot.draft.slice(point)}`,
+        { start: point, end: point, insertedLength: replacement.length },
+      )
+      caret = point + replacement.length
+      next = { start: caret, end: caret }
+    }
     textFallback++
   }
-  return { inserted, textFallback, failed: false }
+  return caret === undefined
+    ? { inserted, textFallback, failed: false }
+    : { inserted, textFallback, failed: false, caret }
 }
 
 // ---- paste recovery: rendered-mention copies land back as chips ----

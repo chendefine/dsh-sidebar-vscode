@@ -7,9 +7,12 @@
  * Everything here is structurally typed against the ui-conversation /
  * ui-input-trigger contracts (the browser bundle's purity gate forbids
  * `@deepseek-ai/*` value imports, and the shapes are frozen public seams).
- * Insertion goes through the session's `SessionInput.insertReference` with an
- * end-of-draft zero-width span CAS — the same machine transaction the
- * trigger-menu pipeline uses — so every chip is an atomic occurrence:
+ * Insertion goes through the session's `SessionInput.insertReference` with a
+ * revision-CAS'd span at the caller's addressed point — the composer's caret
+ * (a selected range replaces it), the point just past the previous reference
+ * for a batch, or the end-of-draft zero-width span when no point is
+ * addressable — the same machine transaction the trigger-menu pipeline uses,
+ * so every chip is an atomic occurrence:
  * backspace deletes it whole, submit serializes it through this plugin's
  * trigger-source codec, and the draft text (not any side table) is the single
  * store of what will be injected at `agent/pre-step`.
@@ -142,23 +145,39 @@ export interface InsertOutcome {
     readonly inserted: number;
     /** References that landed as plain-text mentions (machine refused the chip). */
     readonly textFallback: number;
+    /**
+     * Draft offset just past the last landed reference (the restored caret);
+     * undefined when nothing landed or no session composer resolved at all.
+     */
+    readonly caret?: number;
     /** True when no session composer could be resolved at all. */
     readonly failed: boolean;
 }
 /**
  * Insert references as atomic chips on the addressed session's composer,
- * appending the canonical mention as plain text whenever the input machine
- * refuses the chip transaction (mid-submit phases, CAS loss after retry).
- * The host boundary parses plain-text mentions identically, so the text path
+ * at the caller's addressed point: the first reference replaces the `at`
+ * range (a bare caret is the zero-width case), every following one splices
+ * at the point just past its predecessor, and a missing `at` keeps the
+ * historical end-of-draft append. Whenever the input machine refuses the
+ * chip transaction (mid-submit phases, CAS loss after retry) the canonical
+ * mention lands as plain text over the same point — paste geometry when one
+ * was addressed, the separator-aware tail append otherwise. The host
+ * boundary parses plain-text mentions identically, so the text path
  * degrades only the chip affordance — never the context.
  *
  * @param sessions - the sessions service (scope resolution).
  * @param conversation - the conversation service (input resolver).
  * @param sessionId - the addressed session.
  * @param refs - references to land, in order.
- * @returns the per-path landing counts.
+ * @param at - the draft range the references replace (usually the composer
+ * caret; a non-zero width is the selection it replaces). Undefined = append
+ * at the draft tail.
+ * @returns the per-path landing counts plus the post-landing caret.
  */
-export declare function insertVscodeReferences(sessions: SessionsServiceFace | undefined, conversation: ConversationServiceFace | undefined, sessionId: string | undefined, refs: readonly ReferenceInsertLike[]): Promise<InsertOutcome>;
+export declare function insertVscodeReferences(sessions: SessionsServiceFace | undefined, conversation: ConversationServiceFace | undefined, sessionId: string | undefined, refs: readonly ReferenceInsertLike[], at?: {
+    readonly start: number;
+    readonly end: number;
+}): Promise<InsertOutcome>;
 /** One mention-carrying paste segment: verbatim prose or one reference chip. */
 export type RecoveredPastePart = {
     readonly kind: 'text';
