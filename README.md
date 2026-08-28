@@ -25,7 +25,7 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.1.4
+- Version: 0.1.5
 - License: MIT
 - Platform: web (the DSH Web GUI)
 - Tests: 273 passing (13 spec files)
@@ -166,7 +166,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 |---|---|---|
 | `openAsDefault` | `false` | Brand-new sessions open this tab by default (replacing the seeded Files tab); used sessions keep their layouts. The switch also gates the chat file-click takeover and the settings「打开配置文件」takeover |
 | `serverUrl` | `/vscode` | Server base URL: same-origin gateway subpath, or a full address (e.g. `http://127.0.0.1:8000/vscode` to bypass the gateway locally; keep the `/vscode` base path) |
-| `pathMap` | `/data/workspace=/data/workspace;/opt=/opt` | DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged. Rules are prefix rewriters, **not a whitelist**: chat-side file opens of absolute paths no rule matches pass through as-is (VS Code itself reports a genuinely missing file); only an unmappable session cwd opens the default view with a notice |
+| `pathMap` | (empty = no mapping) | DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged. When empty, **no mapping is applied at all** — the session cwd and clicked files open at their raw absolute paths (the same-container default). Rules are prefix rewriters, **not a whitelist**: absolute paths no rule matches pass through as-is (VS Code itself reports a genuinely missing file) |
 | `maxLines` | `200` (range 1–2000) | Max rendered code lines per reference; overflow keeps head+tail halves and marks the omitted middle inline |
 | `maxBytes` | `20000` (range 1000–200000) | UTF-8 byte cap per reference (guards minified single-line files) |
 
@@ -177,7 +177,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 | Symptom | Fix |
 |---|---|
 | The tab stays blank / the loading hint never clears | Check `serverUrl` reachability; diagnose via "open in new window"; with a cross-origin URL the bridge is off by design (paste fallback still works) |
-| "The current workspace path cannot be mapped…" notice | The session cwd is outside the `pathMap` roots (e.g. `/tmp`); add a rule in the settings |
+| "Matched no mapping rule…" notice | The notice is now non-blocking: the cwd still opens at its raw path; add a rule only when the workbench cannot see that directory (split container/mount) |
 | No DSH command in the context menu / palette | Extension not installed, serve-web not restarted (the manifest is scanned at startup only), or the workspace is untrusted (restricted mode) — see the FAQ in `scripts/install-extension.md` |
 | No chip after sending; a code snippet appears on the clipboard | Landing failed and the readable fallback reached the clipboard (no composer / cross-origin); paste it into the composer to recover chips |
 | "Injected as a text reference…" notice | The composer was mid-submit so the chip degraded to a plain-text mention — submitting works the same |
@@ -245,7 +245,7 @@ nginx: location /vscode/ → 127.0.0.1:8000 (with WebSocket upgrade)
       case, so adding/removing users needs zero gateway sync
 ```
 
-The DSH session and the embedded workbench see **the same filesystem under the same paths**, so the default map is the identity pair `/data/workspace=/data/workspace;/opt=/opt` — pure pass-through signposts. The rules are prefix rewriters, not a whitelist: chat-side **file opens** that match no rule pass through at their original path (any readable file opens in the same-container deployment; existence is the open channel's call), and only an unmappable session **cwd** shows the notice and opens the default view (e.g. a `/tmp` session — add a rule if you want it mapped). Move the workbench to another container/mount and rewrite the prefixes via `pathMap`.
+The DSH session and the embedded workbench see **the same filesystem under the same paths**, so `pathMap` **defaults to empty = no mapping**: the session cwd and chat-clicked files are handed to the workbench at their raw absolute paths, untouched (the previous default was the identity pair `/data/workspace=/data/workspace;/opt=/opt`, which covered only those two roots and flagged everything else as unmappable). The rules are prefix rewriters, not a whitelist: even with rules configured, unmatched paths pass through unchanged (existence is the open channel's call), and no blocking notice ever appears. Move the workbench to another container/mount and configure real prefix rewrites via `pathMap`.
 
 ### Repository layout
 
@@ -259,7 +259,7 @@ src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText
 src/client/composer.tsx       # dock component: reference rail (self-adopted styles) + paste fallbacks
 src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (45 tests)
 src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (14 tests)
-src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (20 tests)
+src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (34 tests)
 src/client/settings.ts        # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
 src/client/settingsRows.tsx   # settings panel: switch row + stacked text rows + cap rows (self-adopted styles)
 src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (7 tests)

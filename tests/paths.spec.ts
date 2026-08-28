@@ -6,20 +6,20 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_PATH_MAP,
   DEFAULT_SERVER_URL,
   buildVscodeUrl,
   mapPath,
   mapPathForOpen,
   normalizeBaseUrl,
   parsePathMap,
+  reverseMapPath,
 } from '../src/client/paths.ts'
 
 describe('parsePathMap', () => {
-  it('empty or whitespace input yields the default rules', () => {
-    expect(parsePathMap('')).toEqual(parsePathMap(DEFAULT_PATH_MAP))
-    expect(parsePathMap('   ')).toEqual(parsePathMap(DEFAULT_PATH_MAP))
-    expect(parsePathMap(undefined)).toEqual(parsePathMap(DEFAULT_PATH_MAP))
+  it('empty or whitespace input yields NO rules (pass-through mode)', () => {
+    expect(parsePathMap('')).toEqual([])
+    expect(parsePathMap('   ')).toEqual([])
+    expect(parsePathMap(undefined)).toEqual([])
   })
 
   it('parses src=dst pairs joined by ;', () => {
@@ -40,8 +40,8 @@ describe('parsePathMap', () => {
     expect(parsePathMap('no-equals;/x=/y;=/z; ;/w=')).toEqual([{ from: '/x', to: '/y' }])
   })
 
-  it('falls back to the default when every entry is malformed', () => {
-    expect(parsePathMap('nope; = ;=')).toEqual(parsePathMap(DEFAULT_PATH_MAP))
+  it('falls back to pass-through when every entry is malformed', () => {
+    expect(parsePathMap('nope; = ;=')).toEqual([])
   })
 
   it('orders rules by longest source prefix first', () => {
@@ -51,8 +51,26 @@ describe('parsePathMap', () => {
   })
 })
 
-describe('mapPath (default deployment rules)', () => {
-  const rules = parsePathMap(DEFAULT_PATH_MAP)
+describe('mapPath (no rules — the unset default)', () => {
+  const rules = parsePathMap(undefined)
+
+  it('passes every absolute path through unchanged', () => {
+    expect(mapPath('/data/workspace', rules)).toBe('/data/workspace')
+    expect(mapPath('/data/workspace/myproject', rules)).toBe('/data/workspace/myproject')
+    expect(mapPath('/data/dsh-home', rules)).toBe('/data/dsh-home')
+    expect(mapPath('/tmp/scratch', rules)).toBe('/tmp/scratch')
+    expect(mapPath('/srv/data', rules)).toBe('/srv/data')
+  })
+
+  it('returns null only for non-absolute or empty input', () => {
+    expect(mapPath('relative/path', rules)).toBeNull()
+    expect(mapPath('', rules)).toBeNull()
+    expect(mapPath('   ', rules)).toBeNull()
+  })
+})
+
+describe('mapPath (identity rules)', () => {
+  const rules = parsePathMap('/data/workspace=/data/workspace;/opt=/opt')
 
   it('passes the DSH workspace prefix through unchanged (identity rule)', () => {
     expect(mapPath('/data/workspace', rules)).toBe('/data/workspace')
@@ -66,12 +84,15 @@ describe('mapPath (default deployment rules)', () => {
   })
 
   it('does not match sibling prefixes that merely share a string prefix', () => {
-    expect(mapPath('/data/workspace-other/x', rules)).toBeNull()
-    expect(mapPath('/data', rules)).toBeNull()
+    expect(mapPath('/data/workspace-other/x', rules)).toBe('/data/workspace-other/x')
+    expect(mapPath('/data', rules)).toBe('/data')
   })
 
-  it('returns null for unmappable or non-absolute paths', () => {
-    expect(mapPath('/srv/data', rules)).toBeNull()
+  it('passes unmatched absolute paths through unchanged', () => {
+    expect(mapPath('/srv/data', rules)).toBe('/srv/data')
+  })
+
+  it('returns null for non-absolute or empty paths', () => {
     expect(mapPath('relative/path', rules)).toBeNull()
     expect(mapPath('', rules)).toBeNull()
   })
@@ -92,16 +113,44 @@ describe('mapPath (custom rules)', () => {
     const rules = parsePathMap('/=/mirror')
     expect(mapPath('/anything/here', rules)).toBe('/mirror/anything/here')
   })
+
+  it('root destination prefix strips the source prefix without double slashes', () => {
+    const rules = parsePathMap('/data=/')
+    expect(mapPath('/data/dsh-home', rules)).toBe('/dsh-home')
+    expect(mapPath('/data', rules)).toBe('/')
+    const round = reverseMapPath('/dsh-home', rules)
+    expect(round).toBe('/data/dsh-home')
+  })
+
+  it('root-to-root identity rules pass everything through unchanged', () => {
+    const rules = parsePathMap('/=/')
+    expect(mapPath('/data/dsh-home', rules)).toBe('/data/dsh-home')
+    expect(reverseMapPath('/data/dsh-home', rules)).toBe('/data/dsh-home')
+  })
 })
 
-describe('mapPathForOpen (default deployment rules)', () => {
-  const rules = parsePathMap(DEFAULT_PATH_MAP)
+describe('mapPathForOpen (no rules — the unset default)', () => {
+  const rules = parsePathMap(undefined)
 
   it('passes out-of-map absolute paths through unchanged (unmapped ≠ unopenable)', () => {
     expect(mapPathForOpen('/app/dsh/packages/foo.ts', rules)).toBe('/app/dsh/packages/foo.ts')
     expect(mapPathForOpen('/tmp/scratch/notes.json', rules)).toBe('/tmp/scratch/notes.json')
     expect(mapPathForOpen('/root/.bashrc', rules)).toBe('/root/.bashrc')
   })
+
+  it('returns null only for non-absolute or empty input', () => {
+    expect(mapPathForOpen('relative/path', rules)).toBeNull()
+    expect(mapPathForOpen('', rules)).toBeNull()
+    expect(mapPathForOpen('   ', rules)).toBeNull()
+  })
+
+  it('trims whitespace before deciding', () => {
+    expect(mapPathForOpen('  /tmp/x.ts  ', rules)).toBe('/tmp/x.ts')
+  })
+})
+
+describe('mapPathForOpen (identity rules)', () => {
+  const rules = parsePathMap('/data/workspace=/data/workspace;/opt=/opt')
 
   it('keeps the identity mapping for the configured roots', () => {
     expect(mapPathForOpen('/opt/dsh/plugins/p/x.ts', rules)).toBe('/opt/dsh/plugins/p/x.ts')

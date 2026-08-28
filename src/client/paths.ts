@@ -11,14 +11,17 @@
  *   /data/workspace        (==)      /data/workspace
  *   /opt                   (==)      /opt
  *
- * so the built-in default is a pair of identity rules
- * `/data/workspace=/data/workspace;/opt=/opt` — pure pass-through markers for
- * the usual workspace roots. The rules act as PREFIX REWRITERS, not a
- * whitelist: a path no rule matches is not an error, it just reaches the
- * open channels unchanged ({@link mapPathForOpen}); only the workspace
- * FOLDER mapping treats it as unmappable ({@link mapPath}). The sidebar
- * settings row (`pathMap`) can override the rules, e.g. when the workbench
- * runs in a separate container with different mounts.
+ * The `pathMap` setting is therefore OPTIONAL and OFF by default: an unset
+ * (or fully malformed) mapping yields NO rules, and every absolute path then
+ * passes through unchanged — the workbench simply opens the raw session
+ * directory. Configure rules only when the workbench runs elsewhere (split
+ * container / different mounts): each rule rewrites one DSH-side source
+ * prefix into the VS Code-side destination prefix (`src=dst`, `;`-joined,
+ * longest source prefix wins). Even then, a path no rule matches still passes
+ * through — the rules are PREFIX REWRITERS, never a whitelist: only empty or
+ * non-absolute input is rejected ({@link mapPath} /
+ * {@link reverseMapPath}). The sidebar settings row (`pathMap`) owns the
+ * rules.
  *
  * @module dsh-sidebar-vscode/client/paths
  */
@@ -28,9 +31,6 @@ export interface PathMapRule {
   from: string
   to: string
 }
-
-/** The built-in default mapping used when the setting is empty/invalid. */
-export const DEFAULT_PATH_MAP = '/data/workspace=/data/workspace;/opt=/opt'
 
 /** The built-in default VS Code server base URL (same-origin gateway subpath). */
 export const DEFAULT_SERVER_URL = '/vscode'
@@ -45,17 +45,17 @@ function normalizePrefix(raw: string): string {
 }
 
 /**
- * Parse the user-facing `pathMap` setting (`src=dst;src2=dst2`). Empty or
- * fully-malformed input falls back to {@link DEFAULT_PATH_MAP}. Malformed
- * single entries are skipped (the rest still apply). Rules are returned
- * longest-source-prefix first (stable among equals) so the most specific
- * rule wins in {@link mapPath}.
+ * Parse the user-facing `pathMap` setting (`src=dst;src2=dst2`). Empty,
+ * unset, or fully-malformed input yields NO rules — pass-through mode (the
+ * raw paths reach the workbench unchanged). Malformed single entries are
+ * skipped (the rest still apply). Rules are returned longest-source-prefix
+ * first (stable among equals) so the most specific rule wins in
+ * {@link mapPath}.
  */
 export function parsePathMap(spec: string | undefined): readonly PathMapRule[] {
   const text = spec === undefined ? '' : spec.trim()
-  const source = text === '' ? DEFAULT_PATH_MAP : text
   const rules: PathMapRule[] = []
-  for (const part of source.split(';')) {
+  for (const part of text.split(';')) {
     const entry = part.trim()
     if (entry === '') continue
     const eq = entry.indexOf('=')
@@ -65,7 +65,6 @@ export function parsePathMap(spec: string | undefined): readonly PathMapRule[] {
     if (from === '' || to === '') continue
     rules.push({ from, to })
   }
-  if (rules.length === 0) return parsePathMap(DEFAULT_PATH_MAP)
   return [...rules].sort((a, b) => b.from.length - a.from.length)
 }
 
@@ -76,13 +75,29 @@ function under(path: string, prefix: string): boolean {
 }
 
 /**
+ * Join a rule-side prefix with the mapped remainder. The suffix keeps its
+ * leading '/', so a ROOT prefix contributes nothing — naive concatenation
+ * (`'/' + '/x'`) would yield a double-slash path VS Code cannot open and
+ * the open-channel slug cannot address. An empty or root-only suffix
+ * (the mapped path IS the prefix itself) collapses to the other side's
+ * prefix, or '/' when both are root — never to ''.
+ */
+function joinPrefix(prefix: string, suffix: string): string {
+  const base = prefix === '/' ? '' : prefix
+  if (suffix === '' || suffix === '/') return base === '' ? '/' : base
+  return base + suffix
+}
+
+/**
  * Map one DSH-side absolute path through the rules.
  *
  * Order: (1) the first rule (longest source prefix first) whose `from`
  * contains the path rewrites the prefix; (2) a path already sitting under
  * some rule's DESTINATION prefix passes through unchanged (the cwd was
- * already VS Code-side — prevents double-mapping); (3) otherwise `null`
- * (unmappable — the caller opens the base URL and shows a hint).
+ * already VS Code-side — prevents double-mapping); (3) no rule matched →
+ * pass-through: the path itself, unchanged (same-container deployment —
+ * the workbench sees the very same directory). `null` only for empty or
+ * non-absolute input.
  */
 export function mapPath(path: string, rules: readonly PathMapRule[]): string | null {
   const clean = path.trim()
@@ -90,35 +105,24 @@ export function mapPath(path: string, rules: readonly PathMapRule[]): string | n
   for (const rule of rules) {
     if (!under(clean, rule.from)) continue
     const suffix = rule.from === '/' ? clean : clean.slice(rule.from.length)
-    return `${rule.to}${suffix}`
+    return joinPrefix(rule.to, suffix)
   }
   for (const rule of rules) {
     if (under(clean, rule.to)) return clean
   }
-  return null
+  return clean
 }
 
 /**
- * Map one DSH-side path for a FILE OPEN: {@link mapPath} when a rule
- * matches, else the path itself passed through unchanged.
+ * Map one DSH-side path for a FILE OPEN: identical to {@link mapPath}.
  *
- * Rationale: unmapped ≠ unopenable. DSH and the VS Code server share one
- * filesystem in the default same-container deployment, so any absolute
- * path the session can read the workbench can open; whether the file
- * actually exists is the open channel's call (the extension stats and
- * warns "file not found", the URL-payload channel lets VS Code report
- * it). Refusing the open client-side just because no rule matched — the
- * old behavior — turned perfectly readable out-of-map files (e.g.
- * `/app`, `/tmp`) into the「文件路径无法映射到 VSCode 容器」error.
- *
- * Returns null only for input nothing sensible can be done with: empty
- * or non-absolute paths (the open channels all address POSIX absolute
- * paths).
+ * Kept as a named alias so file-open call sites read differently from the
+ * workspace-folder call site: both now behave the same (rewrite when a rule
+ * matches, pass through unchanged when none does, `null` only for empty or
+ * non-absolute input — the open channels all address POSIX absolute paths).
  */
 export function mapPathForOpen(path: string, rules: readonly PathMapRule[]): string | null {
-  const clean = path.trim()
-  if (clean === '' || !clean.startsWith('/')) return null
-  return mapPath(clean, rules) ?? clean
+  return mapPath(path, rules)
 }
 
 /**
@@ -128,6 +132,11 @@ export function mapPathForOpen(path: string, rules: readonly PathMapRule[]): str
  * already and passes through). Used when a selection reference arrives from
  * the embedded VS Code and must name the file the way the DSH session (and
  * the agent's tools) see it.
+ *
+ * Mirror of {@link mapPath}'s contract: with no rule matching, the path
+ * passes through unchanged (same-container deployment — VS Code-side and
+ * DSH-side paths are one and the same); `null` only for empty or
+ * non-absolute input.
  */
 export function reverseMapPath(path: string, rules: readonly PathMapRule[]): string | null {
   const clean = path.trim()
@@ -136,12 +145,12 @@ export function reverseMapPath(path: string, rules: readonly PathMapRule[]): str
   for (const rule of byDest) {
     if (!under(clean, rule.to)) continue
     const suffix = rule.to === '/' ? clean : clean.slice(rule.to.length)
-    return `${rule.from}${suffix}`
+    return joinPrefix(rule.from, suffix)
   }
   for (const rule of rules) {
     if (under(clean, rule.from)) return clean
   }
-  return null
+  return clean
 }
 
 /**

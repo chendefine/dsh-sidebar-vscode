@@ -1,8 +1,8 @@
 /**
  * The VSCode tab component: resolves the session's authoritative working
  * directory, maps it into the embedded VS Code server's filesystem view
- * (identity in the default same-container deployment), and embeds the
- * VS Code workbench in a same-origin iframe
+ * (pass-through when no `pathMap` rules are configured — the default),
+ * and embeds the VS Code workbench in a same-origin iframe
  * (`<base>/?folder=<mapped cwd>`).
  *
  * Design notes:
@@ -247,7 +247,9 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     }
   }, [scope.sessionId, scope.cwd])
 
-  // Path translation + iframe target.
+  // Path translation + iframe target. With no rules (the unset default)
+  // mapPath passes the raw cwd through; `unmapped` degenerates to its
+  // null-only case (non-absolute garbage) and the notice row goes quiet.
   const mapped = cwd === undefined ? undefined : mapPath(cwd, pathMap)
   const unmapped = cwd !== undefined && mapped === null
 
@@ -284,6 +286,8 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     // Primary channel: the upgraded dsh.selection-reference extension polls
     // a spool dir in the container; the node half writes the command. Only
     // tried when a workspace folder is known (it addresses the extension).
+    // mapPath never returns null for a resolved cwd (pass-through), so the
+    // extension channel is now available in the no-rules default too.
     if (workspace != null) {
       const capable = await probeCapability(workspace)
       if (capable) {

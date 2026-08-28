@@ -1,8 +1,8 @@
 /**
  * The VSCode tab component: resolves the session's authoritative working
  * directory, maps it into the embedded VS Code server's filesystem view
- * (identity in the default same-container deployment), and embeds the
- * VS Code workbench in a same-origin iframe
+ * (pass-through when no `pathMap` rules are configured — the default),
+ * and embeds the VS Code workbench in a same-origin iframe
  * (`<base>/?folder=<mapped cwd>`).
  *
  * Design notes:

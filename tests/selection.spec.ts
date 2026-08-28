@@ -15,7 +15,7 @@ import {
   type ResourceListPayload,
   type SelectionPayload,
 } from '../src/client/selection.ts'
-import { parsePathMap, reverseMapPath, DEFAULT_PATH_MAP } from '../src/client/paths.ts'
+import { parsePathMap, reverseMapPath } from '../src/client/paths.ts'
 
 function payload (overrides: Partial<SelectionPayload> = {}): SelectionPayload {
   return {
@@ -94,7 +94,7 @@ describe('envelope codec', () => {
 })
 
 describe('reverseMapPath', () => {
-  const rules = parsePathMap(DEFAULT_PATH_MAP)
+  const rules = parsePathMap('/data/workspace=/data/workspace;/opt=/opt')
 
   it('passes the default (identity) rules through unchanged', () => {
     expect(reverseMapPath('/data/workspace', rules)).toBe('/data/workspace')
@@ -117,9 +117,13 @@ describe('reverseMapPath', () => {
     expect(reverseMapPath('/x/a.ts', custom)).toBe('/data/workspace/code/a.ts')
   })
 
-  it('returns null for unmappable or relative paths', () => {
-    expect(reverseMapPath('/srv/other', rules)).toBeNull()
+  it('returns null only for non-absolute or relative paths', () => {
     expect(reverseMapPath('relative/x', rules)).toBeNull()
     expect(reverseMapPath('', rules)).toBeNull()
+  })
+
+  it('passes unmatched absolute paths through unchanged (pass-through mode)', () => {
+    expect(reverseMapPath('/srv/other', rules)).toBe('/srv/other')
+    expect(reverseMapPath('/anything/here', parsePathMap(undefined))).toBe('/anything/here')
   })
 })

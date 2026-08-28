@@ -24,7 +24,7 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.1.4
+- 版本：0.1.5
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
 - 测试：273 例全部通过（13 个规格文件）
@@ -165,7 +165,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 |---|---|---|
 | `openAsDefault` | `false` | 全新会话的侧边栏默认打开 VSCode 标签（替换「文件」种子标签）；已打开过的会话保持各自布局。该开关同时控制对话文件点击接管与设置页「打开配置文件」接管 |
 | `serverUrl` | `/vscode` | VS Code 服务器基地址：同源网关子路径，或完整地址（如 `http://127.0.0.1:8000/vscode`，绕过网关本机直连，需保留 `/vscode` 基路径） |
-| `pathMap` | `/data/workspace=/data/workspace;/opt=/opt` | DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。规则只做前缀改写、**不是白名单**：对话里点击文件时，未命中任何规则的绝对路径按原路径直接打开（文件真不存在时由 VS Code 报错兜底）；仅会话 cwd 映射不到时打开默认界面并提示 |
+| `pathMap` | （空 = 不映射） | DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。留空时**不做任何映射**，会话 cwd 与文件均按原始绝对路径直接打开（同容器部署即用此默认）。规则只做前缀改写、**不是白名单**：未命中任何规则的绝对路径原样透传（文件真不存在时由 VS Code 报错兜底） |
 | `maxLines` | `200`（范围 1–2000） | 单次引用注入的代码行数上限，超出保留首尾两半、省略中间并标注省略区间 |
 | `maxBytes` | `20000`（范围 1000–200000） | 单次引用注入的 UTF-8 字节上限（防压缩成一行的超大文件） |
 
@@ -176,7 +176,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 | 症状 | 处理 |
 |---|---|
 | 标签页长时间空白 / 加载提示不消失 | 检查「功能设置」里的 `serverUrl` 是否可达；用「在新窗口打开」直连排查；跨域地址下同源桥不可用属预期（粘贴兜底仍可用） |
-| 工具栏提示「当前工作区路径无法映射…」 | 会话 cwd 不在 `pathMap` 圈定范围内（如 `/tmp`）；按需在设置里补映射规则 |
+| 工具栏提示「未命中任何映射规则…」 | 提示已变为非阻断性说明：cwd 仍按原路径打开；仅当 workbench 看不到该目录（分离容器/挂载）时才需要在设置里补映射规则 |
 | 右键没有 DSH 命令 / 命令面板搜不到 | 扩展未装或 serve-web 未重启（清单仅启动时扫描），或工作区处于受限模式未信任——见 `scripts/install-extension.md` 常见问题表 |
 | 发送后 chip 未出现，剪贴板出现代码片段 | 注入降级为可读回退文本（无可用输入框 / 跨域）；直接粘贴进输入框即可恢复为 chip |
 | 提示「已注入为文本引用…」 | 输入框处于提交中等瞬态，chip 化被拒，已退化为纯文本 mention——提交效果相同 |
@@ -242,7 +242,7 @@ nginx: location /vscode/ → 127.0.0.1:8000（含 WebSocket upgrade）
       网关只做用户 → 实例透传，/vscode 无特例，增删用户零同步
 ```
 
-DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因此默认映射是两条恒等规则 `/data/workspace=/data/workspace;/opt=/opt`——纯透传的路标。规则是前缀改写器而非白名单：对话侧**文件打开**未命中规则时按原路径透传（同容器下任何可读文件都能开，存在性由 VS Code 判定）；仅会话 **cwd** 映射不到时提示并打开默认界面（如 `/tmp` 会话——按需补规则）。若把 workbench 挪去别的容器 / 挂载，用 `pathMap` 改成真实的前缀改写即可。
+DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因此 `pathMap` **默认留空 = 不映射**：会话 cwd 与对话点击的文件都按原始绝对路径直接交给 workbench，不做任何改写（此前默认是两条恒等规则 `/data/workspace=/data/workspace;/opt=/opt`，只覆盖这两个根，其余目录一律提示无法映射）。规则是前缀改写器而非白名单：即便配置了规则，未命中的路径仍原样透传（存在性由 VS Code 判定），不会再出现阻断性提示。若把 workbench 挪去别的容器 / 挂载，用 `pathMap` 配置真实的前缀改写即可。
 
 ### 目录结构
 
@@ -256,7 +256,7 @@ src/client/clipboardBridge.ts # 同源 iframe navigator.clipboard.writeText 信�
 src/client/composer.tsx       # dock 组件：引用 tag 栏（自注入样式）+ 粘贴兜底
 src/client/references.ts      # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（45 测试）
 src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种 payload）（14 测试）
-src/client/paths.ts           # pathMap 解析/映射/反向映射、URL 构建（20 测试）
+src/client/paths.ts           # pathMap 解析/映射/反向映射、URL 构建（34 测试）
 src/client/settings.ts        # pluginSettings 读取 + 截断上限契约（默认/边界/提交助手）（14 测试）
 src/client/settingsRows.tsx   # 功能设置面板：开关行 + 文本行（上下布局）+ 数值行（自注入样式）
 src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（7 测试）

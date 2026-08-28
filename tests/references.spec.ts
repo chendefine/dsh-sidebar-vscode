@@ -40,10 +40,10 @@ import {
 } from '../src/mentionCodec.ts'
 import { decodeVscodeResourceUri } from '../src/mentionCodec.ts'
 import type { ResourceListPayload, SelectionPayload } from '../src/client/selection.ts'
-import { parsePathMap, DEFAULT_PATH_MAP } from '../src/client/paths.ts'
+import { parsePathMap } from '../src/client/paths.ts'
 
-/** Parsed default reverse rules (VS Code side → DSH side; identity by default). */
-const RULES = parsePathMap(DEFAULT_PATH_MAP)
+/** Parsed identity reverse rules (VS Code side → DSH side). */
+const RULES = parsePathMap('/data/workspace=/data/workspace;/opt=/opt')
 
 function payload (overrides: Partial<SelectionPayload> = {}): SelectionPayload {
   return {
@@ -93,12 +93,16 @@ describe('resolveWorkspacePath', () => {
     expect(resolveWorkspacePath(item.path, item.relative, RULES, '/data/workspace/other')).toBe('/data/workspace/code/app/src/main.ts')
   })
 
-  it('falls back to the workspace-relative path when no rule matches', () => {
-    expect(resolveWorkspacePath('/elsewhere/x.ts', 'code/app/src.ts', RULES, undefined)).toBe('code/app/src.ts')
+  it('passes an unmatched absolute path through, beating the relative fallback', () => {
+    expect(resolveWorkspacePath('/elsewhere/x.ts', 'code/app/src.ts', RULES, undefined)).toBe('/elsewhere/x.ts')
+  })
+
+  it('falls back to the workspace-relative path when no rules are configured at all', () => {
+    expect(resolveWorkspacePath('/elsewhere/x.ts', 'code/app/src.ts', undefined, undefined)).toBe('code/app/src.ts')
   })
 
   it('falls back to the raw container path as a last resort', () => {
-    expect(resolveWorkspacePath('/elsewhere/x.ts', undefined, RULES, undefined)).toBe('/elsewhere/x.ts')
+    expect(resolveWorkspacePath('/elsewhere/x.ts', undefined, undefined, undefined)).toBe('/elsewhere/x.ts')
   })
 })
 
@@ -232,14 +236,14 @@ describe('buildResourceRefsFromPayload', () => {
     ])
   })
 
-  it('falls back to the relative path, then the raw container path', () => {
+  it('passes unmatched absolute paths through unchanged (raw container paths)', () => {
     const elsewhere = buildResourceRefsFromPayload(resourceList({
       resources: [
         { path: '/elsewhere/x', relative: 'x', type: 'file' },
         { path: '/elsewhere/y', type: 'folder' },
       ],
     }), { reverseRules: RULES })
-    expect(elsewhere.map(ref => ref.label)).toEqual(['x', '/elsewhere/y'])
+    expect(elsewhere.map(ref => ref.label)).toEqual(['/elsewhere/x', '/elsewhere/y'])
   })
 
   it('emits content-less mentions only — no snapshot, hash, or truncation fields', () => {
