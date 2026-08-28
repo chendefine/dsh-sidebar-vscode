@@ -106,20 +106,67 @@ describe('producedForClosing (turn scoping)', () => {
 })
 
 describe('selectProducedFiles / makeTurnTailSelect (the claim)', () => {
-  const owner = {
-    nodes: [
-      { kind: 'user' },
-      toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }] }),
-      assistant(5),
-    ],
-    seq: 5,
+  /**
+   * The owner shape the REAL render site hands the slot: ui-conversation's
+   * TurnTailNodeView builds `{ turn, seq, openFile }` — no `nodes` field —
+   * and the produced paths live in the engine Turn data under the
+   * 'deliverables' key as `{ produced: [{ seq, path }, ...] }`.
+   */
+  function turnOwner(produced: ReadonlyArray<{ seq: number, path: string }>, seq = 5): unknown {
+    return {
+      turn: { data: { get: (key: string) => key === 'deliverables' ? { produced } : undefined } },
+      seq,
+      openFile: () => {},
+    }
   }
 
-  it('claims with the produced paths when the turn wrote files', () => {
+  it('claims from the engine Turn data (the authoritative source)', () => {
+    expect(selectProducedFiles(turnOwner([
+      { seq: 3, path: '/w/a.ts' },
+      { seq: 4, path: '/w/b.ts' },
+    ]))).toEqual(['/w/a.ts', '/w/b.ts'])
+  })
+
+  it('excludes settlements after the closing seq and dedupes', () => {
+    expect(selectProducedFiles(turnOwner([
+      { seq: 3, path: '/w/a.ts' },
+      { seq: 9, path: '/w/late.ts' },
+      { seq: 4, path: '/w/a.ts' },
+    ]))).toEqual(['/w/a.ts'])
+  })
+
+  it('declines when the Turn data reports no produced files', () => {
+    expect(selectProducedFiles(turnOwner([]))).toBeNull()
+  })
+
+  it('a Turn without deliverables data falls back to the node replica (then declines)', () => {
+    // A composition that does not publish the Turn data: the nodes fallback
+    // runs and, with none, the entry declines.
+    expect(selectProducedFiles({ turn: { data: { get: () => undefined } }, seq: 5 })).toBeNull()
+    expect(selectProducedFiles({
+      turn: { data: { get: () => undefined } },
+      nodes: [
+        { kind: 'user' },
+        toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }] }),
+        assistant(5),
+      ],
+      seq: 5,
+    })).toEqual(['/w/a.ts'])
+  })
+
+  it('claims with the produced paths when the turn wrote files (nodes fallback)', () => {
+    const owner = {
+      nodes: [
+        { kind: 'user' },
+        toolResult({ card: 'diff', locations: [{ path: '/w/a.ts' }] }),
+        assistant(5),
+      ],
+      seq: 5,
+    }
     expect(selectProducedFiles(owner)).toEqual(['/w/a.ts'])
   })
 
-  it('declines for owners whose turn produced nothing', () => {
+  it('declines for owners whose turn produced nothing (nodes fallback)', () => {
     expect(selectProducedFiles({ nodes: [{ kind: 'user' }, assistant(5) ], seq: 5 })).toBeNull()
   })
 
@@ -130,18 +177,20 @@ describe('selectProducedFiles / makeTurnTailSelect (the claim)', () => {
     expect(selectProducedFiles({})).toBeNull()
     expect(selectProducedFiles({ nodes: 'not-array', seq: 1 })).toBeNull()
     expect(selectProducedFiles({ nodes: [], seq: 'x' })).toBeNull()
+    expect(selectProducedFiles({ turn: { data: { get: () => 'garbage' } }, seq: 5 })).toBeNull()
   })
 
   it('the gated select declines while the takeover is disabled and passes through otherwise', () => {
+    const enabledOwner = turnOwner([{ seq: 3, path: '/w/a.ts' }])
     const select = makeTurnTailSelect(() => false)
-    expect(select(owner)).toBeNull()
+    expect(select(enabledOwner)).toBeNull()
     const enabled = makeTurnTailSelect(() => true)
-    expect(enabled(owner)).toEqual(['/w/a.ts'])
+    expect(enabled(enabledOwner)).toEqual(['/w/a.ts'])
     // The gate is read per claim, so flipping it flips the outcome.
     let on = false
     const live = makeTurnTailSelect(() => on)
-    expect(live(owner)).toBeNull()
+    expect(live(enabledOwner)).toBeNull()
     on = true
-    expect(live(owner)).toEqual(['/w/a.ts'])
+    expect(live(enabledOwner)).toEqual(['/w/a.ts'])
   })
 })
