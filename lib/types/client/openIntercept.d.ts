@@ -134,6 +134,11 @@ export interface WorkspacesLike {
  * Files tab (a natural pairing: files belong in VS Code, not the built-in
  * editor).
  *
+ * Fail-soft at the seam like wrapSettingsOpenDocument: a workspaces
+ * service without a callable `openPath` member (a runtime whose mirror
+ * carries a different shape) installs nothing — the funnel keeps its
+ * stock behavior and the plugin still activates.
+ *
  * Chain-safety: better-sidebar wraps the same method with the identical
  * RAW-reference restore contract, so the two wrappers compose in any
  * install/dispose order. With both active and the switch on, THIS wrapper

@@ -113,6 +113,21 @@ describe('wrapWorkspacesOpenPath (option III — the runtime funnel)', () => {
     expect(service.openTabs).toEqual([{ type: 'dsh-sidebar-vscode:vscode', path: '/w/a.ts' }])
     stop()
   })
+
+  it('a service without a callable openPath member installs nothing (fail-soft seam)', () => {
+    // Same regression class as the settings takeover: a runtime whose
+    // workspaces mirror carries a different shape must not crash plugin
+    // activation — the wrapper declines with a no-op disposer.
+    for (const openPath of [undefined, 'not-a-function']) {
+      const workspaces = { openPath } as unknown as WorkspacesLike
+      const stop = wrapWorkspacesOpenPath(workspaces, {
+        takeoverEnabled: () => true,
+        reroute: () => { throw new Error('must not reroute') },
+      })
+      expect(() => stop()).not.toThrow()
+      expect(workspaces.openPath).toBe(openPath) // untouched
+    }
+  })
 })
 
 describe('openRequest vehicle', () => {

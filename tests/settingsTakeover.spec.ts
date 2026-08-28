@@ -144,6 +144,30 @@ describe('wrapSettingsOpenDocument (option IV — the settings button)', () => {
     stopOuter()
     expect(api.settings.openDocument).toBe(original)
   })
+
+  it('a missing seam (no api / no settings member / no openDocument) installs nothing and never throws', () => {
+    // The regression behind "failed to apply loader entry … (dsh-sidebar-
+    // vscode): Cannot read properties of undefined (reading 'settings')":
+    // a page whose connection service carries no `api` (an older, newer, or
+    // third-party web shell) must not cost this plugin its activation —
+    // the wrapper declines with a no-op disposer instead.
+    const shapes: Array<unknown> = [
+      undefined,
+      {},
+      { settings: undefined },
+      { settings: {} },
+      { settings: { openDocument: undefined } },
+      { settings: { openDocument: 'not-a-function' } },
+    ]
+    for (const api of shapes) {
+      const stop = wrapSettingsOpenDocument(api as never, {
+        takeoverEnabled: () => true,
+        resolvePath: () => { throw new Error('must not resolve') },
+        reroute: () => { throw new Error('must not reroute') },
+      })
+      expect(() => stop()).not.toThrow()
+    }
+  })
 })
 
 describe('closeSettingsDialog (the settings modal close seam)', () => {

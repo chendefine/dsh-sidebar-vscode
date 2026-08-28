@@ -110,9 +110,11 @@ interface ClientContextFace {
   workspaces?: {
     openPath(path: string): Promise<void>
   }
-  /** The connection service (the settings.openDocument wrapper's target). */
+  /** The connection service (the settings.openDocument wrapper's target;
+   * the api/settings members are optional — the wrapper fail-softs a page
+   * whose connection service carries a different shape). */
   connection?: {
-    api: { settings: import('./settingsTakeover.ts').SettingsApiLike }
+    api?: { settings?: import('./settingsTakeover.ts').SettingsApiLike }
   }
   effect(register: () => () => void, name?: string): void
 }
@@ -375,9 +377,12 @@ export function apply(ctx: unknown): void {
     // and opens it in the VSCode tab instead. The rerouted path is absolute
     // (the settings provider's own document), so it needs no cwd resolution
     // — and mapPathForOpen passes it through even without a mapping-rule
-    // match. Fail-soft: any miss on the resolve falls back to the untouched
-    // original method. A successful reroute also closes the settings dialog
-    // (the file is now in view; the modal would only cover the workbench).
+    // match. Fail-soft: a page whose connection service carries no
+    // `api.settings.openDocument` seam (an older/newer/third-party web
+    // shell) installs no wrapper at all, and any miss on the resolve falls
+    // back to the untouched original method. A successful reroute also
+    // closes the settings dialog (the file is now in view; the modal would
+    // only cover the workbench).
     const connection = client.connection
     const stopSettingsOpen = connection === undefined
       ? undefined

@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.1.5
+- 版本：0.1.6
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：273 例全部通过（13 个规格文件）
+- 测试：284 例全部通过（13 个规格文件）
 
 ## 功能简介
 

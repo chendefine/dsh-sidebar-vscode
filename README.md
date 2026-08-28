@@ -25,10 +25,10 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.1.5
+- Version: 0.1.6
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 273 passing (13 spec files)
+- Tests: 284 passing (13 spec files)
 
 ## Features
 
