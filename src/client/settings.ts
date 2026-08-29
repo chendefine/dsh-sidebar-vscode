@@ -2,10 +2,11 @@
  * Reads this tab's persisted pluginSettings blob. The gear popup on the
  * VSCode card (侧边卡片 → VSCode → 功能设置) renders this plugin's own
  * settings panel (settingsRows.tsx — stacked rows: description on top,
- * full-width input below), which writes `serverUrl` / `pathMap` (and the
- * cap keys) into `pluginSettings['dsh-sidebar-vscode:vscode']` in the
+ * full-width input below), which writes `serverUrl` (and the cap keys)
+ * into `pluginSettings['dsh-sidebar-vscode:vscode']` in the
  * better-sidebar prefs document; the tab component reads the same keys
- * each render.
+ * each render. `pathMap` has NO panel row (rare, split-container only):
+ * it is honored when present in the settings document; unset = pass-through.
  *
  * Also owns the numeric capture-cap contract (`maxLines` / `maxBytes`):
  * the code defaults, the UI bounds, and the pure display/commit helpers

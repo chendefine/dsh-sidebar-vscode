@@ -44,6 +44,25 @@ function makeFrame () {
   return { frame, written }
 }
 
+/**
+ * A fake CROSS-ORIGIN iframe: the browser hands the parent a restricted
+ * window proxy whose every non-sanctioned property read (`navigator`
+ * included) throws SecurityError — "Failed to read a named property
+ * 'navigator' from 'Window': Blocked a frame with origin … from accessing
+ * a cross-origin frame." Modeled with a get-trap that throws.
+ */
+function makeCrossOriginFrame (): HTMLIFrameElement {
+  const contentWindow = new Proxy({} as Record<PropertyKey, unknown>, {
+    get (_target, property) {
+      throw new DOMException(
+        `Failed to read a named property '${String(property)}' from 'Window': Blocked a frame with origin "http://127.0.0.1:3080" from accessing a cross-origin frame.`,
+        'SecurityError',
+      )
+    },
+  })
+  return { contentWindow } as unknown as HTMLIFrameElement
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
 })
@@ -128,5 +147,22 @@ describe('clipboard bridge write policy', () => {
     void frame.contentWindow?.navigator.clipboard?.writeText?.(ENVELOPE)
     expect(sink).not.toHaveBeenCalled()
     expect(written).toEqual([ENVELOPE])
+  })
+
+  it('cross-origin workbench window: navigator read throws, install no-ops instead of crashing', () => {
+    const frame = makeCrossOriginFrame()
+    const sink = vi.fn(() => true)
+    let dispose: () => void = () => {}
+    expect(() => { dispose = installClipboardBridge(frame, sink) }).not.toThrow()
+    expect(sink).not.toHaveBeenCalled()
+    expect(() => dispose()).not.toThrow()
+    expect(() => dispose()).not.toThrow() // safe to call twice
+  })
+
+  it('missing contentWindow: install no-ops', () => {
+    const frame = { contentWindow: null } as unknown as HTMLIFrameElement
+    const sink = vi.fn(() => true)
+    expect(() => installClipboardBridge(frame, sink)).not.toThrow()
+    expect(sink).not.toHaveBeenCalled()
   })
 })

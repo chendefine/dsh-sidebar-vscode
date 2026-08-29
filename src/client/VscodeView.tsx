@@ -7,13 +7,16 @@
  *
  * Design notes:
  * - The iframe is NOT sandboxed and NOT keyed away on `visible === false`:
- *   the default deployment serves the VS Code server behind the same gateway
- *   (cookies flow, WebSocket terminal works) and the VS Code session should
+ *   the workbench is served same-origin (through the host half's built-in
+ *   `/sidebar/vscode` proxy, or the deployment's gateway subpath — cookies
+ *   flow, the WebSocket terminal works) and the VS Code session should
  *   survive tab switches inside the sidebar.
  * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
  * (`session.cwd`); the scope's optional cwd is used as a fast path.
  * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
- *   snapshot each render, so gear-popup edits apply on the next render.
+ *   snapshot each render, so edits apply on the next render (`serverUrl`
+ *   through the gear popup; `pathMap` is settings-document-only — no
+ *   panel row, honored when present).
  * - All chrome follows the DSH appearance (light / dark / system) through
  *   the host's `--dsw-alias-*` tokens — see `adoptTabStyles` below.
  *
@@ -23,7 +26,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TabComponentProps } from 'dsh-better-sidebar'
 import { readSetting, readSettingValue } from './settings.ts'
-import { buildVscodeUrl, mapPath, mapPathForOpen, normalizeBaseUrl, parsePathMap } from './paths.ts'
+import {
+  buildVscodeUrl,
+  DEFAULT_SERVER_URL,
+  isFullServerUrl,
+  mapPath,
+  mapPathForOpen,
+  normalizeBaseUrl,
+  parsePathMap,
+  PROXY_MOUNT,
+} from './paths.ts'
 import { installClipboardBridge } from './clipboardBridge.ts'
 import type { ClipboardPayload } from './selection.ts'
 import { getReferenceLander, setFallbackOptions } from './composer.tsx'
@@ -200,7 +212,136 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   const { scope, store } = props
 
   // Shared settings (read each render; the gear popup writes the prefs doc).
-  const serverUrl = normalizeBaseUrl(readSetting(store, 'serverUrl'))
+  //
+  // Iframe-base rule: the prefix is decided by PROXY REACHABILITY ALONE —
+  // whenever the host's built-in proxy is serving, the workbench opens at
+  // the same-origin mount `/sidebar/vscode`, whatever `serverUrl` holds.
+  // `serverUrl` only names the UPSTREAM (and the fallback base):
+  //
+  // - unset → DEFAULT_SERVER_URL (`http://127.0.0.1:8000`, a bare local
+  //   `code serve-web`), pushed to the host like any full URL;
+  // - a full URL (base path and `?tkn=` token included) → pushed via
+  //   POST /sidebar-vscode/api/proxy.config; reachable → mount, otherwise
+  //   the direct cross-origin iframe plus a notice (old host half,
+  //   unreachable-from-host address);
+  // - an explicit relative subpath → never pushed; the host's own
+  //   (env-default) proxy state decides via POST /sidebar-vscode/api/
+  //   proxy.status: serving → mount, else the subpath itself (gateway
+  //   semantics — the only shape that still reaches the gateway).
+  const rawServerUrl = readSetting(store, 'serverUrl')
+  const effectiveServerUrl = rawServerUrl.trim() === '' ? DEFAULT_SERVER_URL : normalizeBaseUrl(rawServerUrl)
+  const fullUrl = isFullServerUrl(effectiveServerUrl)
+  const [baseState, setBaseState] = useState<'resolving' | 'mount' | 'direct'>('resolving')
+  const pushedUrl = useRef<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    setBaseState('resolving')
+    // Once a handshake lands on 'direct', keep watching the host: its own
+    // probe loop keeps retrying the adopted/env upstream (a serve-web that
+    // booted slower than `dsh web` — e.g. both restarted together — answers
+    // late), and the workbench must graduate to the mount when it starts
+    // serving. Cheap loopback POST, stopped by unmount / setting change.
+    let graduate: (() => void) | null = null
+    const watchServing = (): void => {
+      const timer = window.setInterval(() => {
+        if (cancelled) return
+        void (async () => {
+          try {
+            const response = await fetch('/sidebar-vscode/api/proxy.status', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: '{}',
+            })
+            const parsed: { ok?: boolean, value?: { serving?: boolean } } | null = await response.json().catch(() => null)
+            if (cancelled) return
+            if (response.ok && parsed?.ok === true && parsed.value?.serving === true) {
+              setBaseState('mount')
+              graduate?.()
+            }
+          } catch {
+            // keep watching — the host half may itself be restarting
+          }
+        })()
+      }, 5000)
+      graduate = () => { window.clearInterval(timer) }
+    }
+    if (!fullUrl) {
+      // An explicit subpath cannot name an upstream: release any previously
+      // pushed one (the host returns to its env/default) and let the host's
+      // own proxy state pick the winner. The reset is awaited so the status
+      // ask right behind it cannot observe the released upstream.
+      const previous = pushedUrl.current
+      pushedUrl.current = null
+      void (async () => {
+        if (previous !== null) {
+          await fetch('/sidebar-vscode/api/proxy.config', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ reset: true }),
+          }).catch(() => {})
+        }
+        try {
+          const response = await fetch('/sidebar-vscode/api/proxy.status', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          })
+          const parsed: { ok?: boolean, value?: { serving?: boolean } } | null = await response.json().catch(() => null)
+          if (cancelled) return
+          if (response.ok && parsed?.ok === true && parsed.value?.serving === true) {
+            setBaseState('mount')
+            return
+          }
+          setBaseState('direct')
+          watchServing()
+        } catch {
+          if (!cancelled) {
+            setBaseState('direct')
+            watchServing()
+          }
+        }
+      })()
+      return () => { cancelled = true; graduate?.() }
+    }
+    void (async () => {
+      try {
+        const response = await fetch('/sidebar-vscode/api/proxy.config', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: effectiveServerUrl }),
+        })
+        const parsed: { ok?: boolean, value?: { reachable?: boolean } } | null = await response.json().catch(() => null)
+        if (cancelled) return
+        if (response.ok && parsed?.ok === true) {
+          // Adopted either way (the host keeps probing an unreachable
+          // one, claiming the mount with honest 502s): remember the push
+          // NOW, so a later switch to a relative subpath resets it.
+          pushedUrl.current = effectiveServerUrl
+          if (parsed.value?.reachable === true) {
+            setBaseState('mount')
+            return
+          }
+        }
+        // Unreachable NOW (serve-web may still be warming up): the host
+        // adopted the config and keeps probing — fall back to the direct
+        // iframe but keep watching for it to start serving.
+        setBaseState('direct')
+        setFlash(t('proxyFallback'))
+        watchServing()
+      } catch {
+        if (!cancelled) {
+          setBaseState('direct')
+          setFlash(t('proxyFallback'))
+          watchServing()
+        }
+      }
+    })()
+    return () => { cancelled = true; graduate?.() }
+  }, [effectiveServerUrl, fullUrl])
+  // The iframe base resolution must settle before the first load (a flip
+  // afterwards would reload the workbench once).
+  const resolvingBase = baseState === 'resolving'
+  const serverUrl = baseState === 'mount' ? PROXY_MOUNT : effectiveServerUrl
   const pathMap = parsePathMap(readSetting(store, 'pathMap'))
 
   // Session cwd resolution: fast path via scope, authoritative via the API.
@@ -339,8 +480,11 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     : buildVscodeUrl(serverUrl, mapped ?? null)
 
   // Hold the iframe until the cwd resolves (avoids loading the default
-  // workspace first and flipping to ?folder= a moment later).
-  const ready = cwd !== undefined || cwdFailed
+  // workspace first and flipping to ?folder= a moment later) and until the
+  // iframe base settles (proxy.config handshake, or the proxy.status ask
+  // for an unset serverUrl) — a flip after the first load would reload the
+  // workbench once for nothing.
+  const ready = (cwd !== undefined || cwdFailed) && !resolvingBase
 
   // Load state: the overlay hides on the iframe's load event; a src change
   // or a manual reload re-shows it. Cross-origin load failures can't be

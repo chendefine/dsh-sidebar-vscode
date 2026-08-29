@@ -7,13 +7,16 @@
  *
  * Design notes:
  * - The iframe is NOT sandboxed and NOT keyed away on `visible === false`:
- *   the default deployment serves the VS Code server behind the same gateway
- *   (cookies flow, WebSocket terminal works) and the VS Code session should
+ *   the workbench is served same-origin (through the host half's built-in
+ *   `/sidebar/vscode` proxy, or the deployment's gateway subpath — cookies
+ *   flow, the WebSocket terminal works) and the VS Code session should
  *   survive tab switches inside the sidebar.
  * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
  * (`session.cwd`); the scope's optional cwd is used as a fast path.
  * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
- *   snapshot each render, so gear-popup edits apply on the next render.
+ *   snapshot each render, so edits apply on the next render (`serverUrl`
+ *   through the gear popup; `pathMap` is settings-document-only — no
+ *   panel row, honored when present).
  * - All chrome follows the DSH appearance (light / dark / system) through
  *   the host's `--dsw-alias-*` tokens — see `adoptTabStyles` below.
  *

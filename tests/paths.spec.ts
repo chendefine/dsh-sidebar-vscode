@@ -189,7 +189,7 @@ describe('mapPathForOpen (custom rules)', () => {
 })
 
 describe('normalizeBaseUrl', () => {
-  it('empty input falls back to the gateway subpath default', () => {
+  it('empty input falls back to the full-URL default (a bare local serve-web)', () => {
     expect(normalizeBaseUrl('')).toBe(DEFAULT_SERVER_URL)
     expect(normalizeBaseUrl(undefined)).toBe(DEFAULT_SERVER_URL)
     expect(normalizeBaseUrl('   ')).toBe(DEFAULT_SERVER_URL)

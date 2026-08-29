@@ -3,11 +3,13 @@
  * owning every row end-to-end instead of the better-sidebar declarative
  * `pluginToggles` rows:
  *
- * - the serverUrl / pathMap TEXT rows: the declarative row always lays
- *   its control out to the RIGHT of the title/description (a fixed
- *   left-right split with a 200px input), which cramps these two long
- *   free-form values; here each renders stacked — title/description on
- *   top, the input alone on its own full-width line below;
+ * - the serverUrl TEXT row: the declarative row always lays its control
+ *   out to the RIGHT of the title/description (a fixed left-right split
+ *   with a 200px input), which cramps this long free-form value; here it
+ *   renders stacked — title/description on top, the input alone on its
+ *   own full-width line below. (`pathMap` deliberately has NO row: the
+ *   rare split-container rewrite lives in the settings document only —
+ *   the read side still honors it when present;)
  * - the maxLines / maxBytes NUMBER rows, which the declarative row
  *   cannot express anyway:
  *   - pre-filled defaults: an unset field shows the effective code
@@ -46,7 +48,7 @@ const CAP_COPY: Record<CapSpec['key'], { title: CopyKey, desc: CopyKey }> = {
 /** One stacked text row of the panel (a free-form pluginSettings string). */
 interface TextSpec {
   /** The pluginSettings key the value persists under. */
-  readonly key: 'serverUrl' | 'pathMap'
+  readonly key: 'serverUrl'
   /** Row title copy key. */
   readonly title: CopyKey
   /** Row description copy key. */
@@ -63,12 +65,6 @@ const TEXT_SPECS: readonly TextSpec[] = [
     title: 'settingServerUrl',
     desc: 'settingServerUrlDesc',
     placeholder: 'settingServerUrlPlaceholder',
-  },
-  {
-    key: 'pathMap',
-    title: 'settingPathMap',
-    desc: 'settingPathMapDesc',
-    placeholder: 'settingPathMapPlaceholder',
   },
 ]
 
@@ -94,9 +90,9 @@ const SETTINGS_STYLE_ID = 'dsh-sidebar-vscode-settings-css'
  * better-sidebar settings popup rows (l2 hairline, 12px radius, layer-3
  * fill) over the host's `--dsw-alias-*` design tokens, plus the
  * `[data-invalid]` range-enforcement state. Cap rows keep the popup's
- * left-right split (76px-class numeric input right); text rows stack —
+ * left-right split (76px-class numeric input right); the text row stacks —
  * the title/description block on top, the input alone full-width below.
- * No top margin: since the text rows moved in, this panel is the popup's
+ * No top margin: since the text row moved in, this panel is the popup's
  * ONLY body (there is no declarative row list above it to separate from).
  */
 const SETTINGS_CSS = `
@@ -397,9 +393,9 @@ function CapRow(props: { spec: CapSpec, raw: unknown, onWrite: (value: number) =
 }
 
 /**
- * The settings panel body: the default-tab switch, the stacked text rows
- * (serverUrl / pathMap), then one {@link CapRow} per declared cap spec,
- * reading and writing this descriptor's own pluginSettings blob.
+ * The settings panel body: the default-tab switch, the serverUrl text
+ * row, then one {@link CapRow} per declared cap spec, reading and writing
+ * this descriptor's own pluginSettings blob.
  */
 export function CapSettingsPanel(props: CapSettingsPanelProps): React.ReactNode {
   const { pluginSettings, updatePluginSetting, service } = props

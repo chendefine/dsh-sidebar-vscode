@@ -26,8 +26,10 @@
  * user activation and may reject; nothing depends on it).
  *
  * Cross-origin editor URLs (the `serverUrl` setting pointing at another
- * host) cannot be bridged — the install call simply no-ops there, leaving
- * the composer-side paste fallback as the only path.
+ * origin) cannot be bridged — reading `navigator` off a cross-origin
+ * window proxy throws SecurityError, which the install call catches and
+ * turns into a no-op disposer, leaving the composer-side paste fallback
+ * as the only path.
  *
  * @module dsh-sidebar-vscode/client/clipboardBridge
  */
@@ -75,7 +77,19 @@ export function installClipboardBridge(
   } catch {
     return () => {}
   }
-  const clip = win?.navigator?.clipboard
+  // Reading any property beyond the sanctioned few off a CROSS-ORIGIN
+  // window proxy (`navigator` included) throws SecurityError — optional
+  // chaining only short-circuits null/undefined, never throws — so the
+  // lookup itself must be guarded. The bridge is same-origin-only by
+  // design; a cross-origin workbench (a full-URL `serverUrl` on another
+  // origin) degrades to the no-op disposer here instead of crashing the
+  // tab: the composer-side paste fallback remains the delivery path.
+  let clip: BridgeWindow['navigator']['clipboard'] | undefined
+  try {
+    clip = win?.navigator?.clipboard
+  } catch {
+    return () => {}
+  }
   if (win === null || clip === undefined || typeof clip.writeText !== 'function') {
     return () => {}
   }

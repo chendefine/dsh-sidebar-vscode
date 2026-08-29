@@ -25,7 +25,7 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.1.6
+- Version: 0.2.0
 - License: MIT
 - Platform: web (the DSH Web GUI)
 - Tests: 284 passing (13 spec files)
@@ -73,7 +73,14 @@ editor selection                    explorer
 ### Prerequisites
 
 - A DSH host (Web GUI) with [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) ≥ 0.12 installed (an optional peer: without it tab registration silently skips while the paste fallbacks keep working; the dev baseline is 0.16);
-- A `code serve-web` instance reachable from the browser. In the default topology it runs **inside the dsh-runtime container**, reverse-proxied through the gateway's same-origin `/vscode` subpath (see [deployment topology](#deployment-topology-why-the-defaults)) so the browser session carries over and WebSockets work;
+- A `code serve-web` instance reachable from the browser — pick a wiring shape:
+  1. **Built-in proxy (the default; the choice for gateway-less deployments: Windows, LAN `dsh web`)** — an EMPTY `serverUrl` defaults to `http://127.0.0.1:8000` (a bare local `code serve-web` — the CLI's own defaults), or paste any full address it prints (base path and `?tkn=` token included). The address is pushed via `/sidebar-vscode/api/proxy.config` and mounted as the **same-origin `/sidebar/vscode/`** on the very port `dsh web` listens on (transparent HTTP forwarding, WebSocket upgrade pipe, token auto-append) — zero nginx, zero start flags:
+     ```sh
+     code serve-web            # zero-config: port 8000, root path
+     ```
+     Routing self-corrects to the `serverBasePath` baked in the index HTML, so `--server-base-path` is optional (non-mount bases get an identity mirror; root upstreams a `<quality>-<commit>` shim). When the host cannot reach the address yet, the tab falls back to the direct iframe with a notice and switches to the mount automatically once the proxy serves. Tip: run serve-web with `--server-base-path /sidebar/vscode` to gather every request under the single mount prefix (identity mount, no mirror/shim). Pre-configure without settings via `DSH_SIDEBAR_VSCODE_UPSTREAM` (full URLs; default `http://127.0.0.1:8000`; `off` disables). If `/sidebar/vscode` is owned by another plugin the feature backs off with a warning;
+  2. **Gateway same-origin subpath (the reference topology)** — serve-web runs inside the dsh-runtime container behind the gateway's `/vscode` reverse proxy (see [deployment topology](#deployment-topology-why-the-defaults)); same-host deployments may leave `serverUrl` empty (the built-in proxy takes over). Only when serve-web is NOT reachable from the DSH host (a split gateway) configure it explicitly (`serverUrl` = `/vscode`, or the env var pointing at the real address);
+  3. **Cross-origin direct URL (automatic fallback shape)** — appears only when the host half cannot proxy: the clipboard signal bridge is off (paste fallback keeps working), selections degrade to copy → paste;
 - The companion VS Code extension `dsh.selection-reference` installed into that serve-web instance (it provides the context-menu commands and the keybinding; **the chat file-open channel needs ≥ 0.1.1** — see below).
 
 ### The plugin itself
@@ -160,13 +167,13 @@ Select files/folders in the explorer (multi- and mixed-select work), right-click
 
 ### Settings
 
-Settings live under "side card → VSCode → 功能设置" (the tab card's gear popup); all five rows render through this plugin's own panel and persist in better-sidebar's `pluginSettings['dsh-sidebar-vscode:vscode']` — **not** in cordis.patch.yml:
+Settings live under "side card → VSCode → 功能设置" (the tab card's gear popup); the four panel rows render through this plugin's own settings UI and persist in better-sidebar's `pluginSettings['dsh-sidebar-vscode:vscode']` — **not** in cordis.patch.yml (`pathMap` below is read from the same blob but deliberately has no panel row):
 
 | Key | Default | Description |
 |---|---|---|
 | `openAsDefault` | `false` | Brand-new sessions open this tab by default (replacing the seeded Files tab); used sessions keep their layouts. The switch also gates the chat file-click takeover and the settings「打开配置文件」takeover |
-| `serverUrl` | `/vscode` | Server base URL: same-origin gateway subpath, or a full address (e.g. `http://127.0.0.1:8000/vscode` to bypass the gateway locally; keep the `/vscode` base path) |
-| `pathMap` | (empty = no mapping) | DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged. When empty, **no mapping is applied at all** — the session cwd and clicked files open at their raw absolute paths (the same-container default). Rules are prefix rewriters, **not a whitelist**: absolute paths no rule matches pass through as-is (VS Code itself reports a genuinely missing file) |
+| `serverUrl` | (empty = `http://127.0.0.1:8000`) | The full address `code serve-web` prints (base path and `?tkn=` token included); empty = the default `http://127.0.0.1:8000` (a bare local server). Whenever the proxy is reachable the workbench opens at the same-origin `/sidebar/vscode/`; a host-unreachable full URL falls back to a direct connection (same-origin bridge degrades); an explicit relative subpath (e.g. `/vscode`) is used with gateway semantics when the proxy is off |
+| `pathMap` | (empty = no mapping) | Config-file only — no settings-panel row (rare, split-container deployments only). DSH prefix → VS Code container prefix as `src=dst` pairs joined by `;`; longest source prefix wins; a path already under a destination passes through unchanged. When empty, **no mapping is applied at all** — the session cwd and clicked files open at their raw absolute paths (the same-container default). Rules are prefix rewriters, **not a whitelist**: absolute paths no rule matches pass through as-is (VS Code itself reports a genuinely missing file) |
 | `maxLines` | `200` (range 1–2000) | Max rendered code lines per reference; overflow keeps head+tail halves and marks the omitted middle inline |
 | `maxBytes` | `20000` (range 1000–200000) | UTF-8 byte cap per reference (guards minified single-line files) |
 
@@ -176,7 +183,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 
 | Symptom | Fix |
 |---|---|
-| The tab stays blank / the loading hint never clears | Check `serverUrl` reachability; diagnose via "open in new window"; with a cross-origin URL the bridge is off by design (paste fallback still works) |
+| The tab stays blank / the loading hint never clears | Check `serverUrl` reachability; diagnose via "open in new window"; with a cross-origin URL the bridge is off by design (paste fallback still works). On the built-in proxy, confirm serve-web answers at the configured upstream (default `http://127.0.0.1:8000`; any base path works) |
 | "Matched no mapping rule…" notice | The notice is now non-blocking: the cwd still opens at its raw path; add a rule only when the workbench cannot see that directory (split container/mount) |
 | No DSH command in the context menu / palette | Extension not installed, serve-web not restarted (the manifest is scanned at startup only), or the workspace is untrusted (restricted mode) — see the FAQ in `scripts/install-extension.md` |
 | No chip after sending; a code snippet appears on the clipboard | Landing failed and the readable fallback reached the clipboard (no composer / cross-origin); paste it into the composer to recover chips |
@@ -245,24 +252,39 @@ nginx: location /vscode/ → 127.0.0.1:8000 (with WebSocket upgrade)
       case, so adding/removing users needs zero gateway sync
 ```
 
-The DSH session and the embedded workbench see **the same filesystem under the same paths**, so `pathMap` **defaults to empty = no mapping**: the session cwd and chat-clicked files are handed to the workbench at their raw absolute paths, untouched (the previous default was the identity pair `/data/workspace=/data/workspace;/opt=/opt`, which covered only those two roots and flagged everything else as unmappable). The rules are prefix rewriters, not a whitelist: even with rules configured, unmatched paths pass through unchanged (existence is the open channel's call), and no blocking notice ever appears. Move the workbench to another container/mount and configure real prefix rewrites via `pathMap`.
+Deployments without a gateway tier (Windows, a bare LAN `dsh web`) need no self-managed nginx
+either: the plugin's host half registers the equivalent reverse proxy on the port `dsh web` itself
+listens on (`src/vscodeProxy.ts`, mounted at `/sidebar/vscode`). HTTP prefix routes forward
+transparently and keep the browser's `Host` (serve-web bakes `remoteAuthority` pointing at the DSH
+port, so every workbench URL stays same-origin); the WebSocket upgrade registers at the exact path
+`<upstream-base-path>/<quality>-<commit>` — the only path the browser socket factory ever connects
+to (serve-web's `handleUpgrade` ignores the path). The routing base follows the `serverBasePath`
+baked in the index HTML, not the probe URL: non-mount bases get an identity mirror at their own
+path, root upstreams a discovered `<quality>-<commit>` shim. The index probe follows up to three
+redirects and adopts the final origin, so an upstream behind a redirecting reverse proxy (e.g. an
+enforced http→https hop) still discovers — and forwards — correctly. The upstream comes from a
+full-URL `serverUrl` (pushed via `proxy.config`) or `DSH_SIDEBAR_VSCODE_UPSTREAM` (default
+`http://127.0.0.1:8000`, `off` to disable).
+
+The DSH session and the embedded workbench see **the same filesystem under the same paths**, so `pathMap` **defaults to empty = no mapping**: the session cwd and chat-clicked files are handed to the workbench at their raw absolute paths, untouched (the previous default was the identity pair `/data/workspace=/data/workspace;/opt=/opt`, which covered only those two roots and flagged everything else as unmappable). The rules are prefix rewriters, not a whitelist: even with rules configured, unmatched paths pass through unchanged (existence is the open channel's call), and no blocking notice ever appears. Move the workbench to another container/mount and configure real prefix rewrites via `pathMap` (in the settings document — it has no panel row).
 
 ### Repository layout
 
 ```
 src/index.ts                  # host-half entry: agent/created → pre-step boundary (inject: agents)
+src/vscodeProxy.ts            # host half: same-origin /vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel) (37 tests)
 src/mention.ts                # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (36 tests)
 src/mentionCodec.ts           # shared pure logic: canonical URI codecs (2 schemes)/truncation/hashing (42 tests)
 src/client/index.tsx          # browser-half entry: tab + dock + @ source + dicts (ctx.effect, HMR-safe)
 src/client/VscodeView.tsx     # tab component: cwd → path mapping → iframe + toolbar/notices + bridge
-src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText signal patch (8 tests)
+src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText signal patch (10 tests; no-ops on the cross-origin SecurityError throw)
 src/client/composer.tsx       # dock component: reference rail (self-adopted styles) + paste fallbacks
-src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (45 tests)
-src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (14 tests)
+src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (46 tests)
+src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (15 tests)
 src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (34 tests)
 src/client/settings.ts        # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
 src/client/settingsRows.tsx   # settings panel: switch row + stacked text rows + cap rows (self-adopted styles)
-src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (7 tests)
+src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (10 tests)
 src/client/defaultTab.ts      # "open VSCode by default": pristine-seed detection + swap rails + watcher (22 tests)
 src/client/i18n.ts            # locale service wiring + t()
 src/client/locales.ts         # zh/en dictionaries
@@ -273,7 +295,7 @@ scripts/install-extension.sh  # one-command extension install (vsce package → 
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
 screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 269 tests / 13 files (per-file counts noted above)
+tests/*.spec.ts               # vitest specs — 323 tests / 14 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 dsh.plugin.json               # plugin manifest (metadata)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
@@ -292,7 +314,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (269 tests)
+pnpm test         # vitest run (323 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.
@@ -321,7 +343,8 @@ git tag v<version> && git push origin main --tags
 
 ### Known limits
 
-- With a cross-origin `serverUrl` the same-origin clipboard bridge is unavailable (browser same-origin policy) — only the paste fallback remains;
+- In the direct-connection fallback (host cannot proxy) the same-origin clipboard bridge is unavailable (browser same-origin policy) — only the paste fallback remains; when it is merely boot timing (serve-web becoming ready after `dsh web`), the client polls `proxy.status`'s `serving` every 5s and switches back to the mount automatically — no manual refresh needed;
+- The built-in proxy targets a single upstream (the last-pushed `serverUrl` wins — multiple sessions pushing different addresses share one globally); upstreams must be directly reachable over http(s) (self-signed TLS needs system trust; embedded credentials in the URL are unsupported); the proxy does no auth stripping — tokens are appended as-is. The mount inherits the dsh web port's exposure: every client that can reach the port may use the proxied workbench (the `?tkn=` token gates the upstream, not the mount — the proxy appends it transparently), so keep the port behind the same trust boundary as the GUI itself (loopback / trusted gateway);
 - Selection injection is always on; there is no switch;
 - Host-half changes take effect only after a `dsh web` restart;
 - tsdown emits deprecation warnings for `external` / `noExternal` (output is correct; migration to `deps.*` is future work).

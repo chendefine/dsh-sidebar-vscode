@@ -25,6 +25,15 @@
  *   the path; this route hands the path to this plugin's own fenced channel
  *   so the file can open inside the embedded VS Code instead.
  *
+ * - the same-origin VS Code reverse proxy (see `src/vscodeProxy.ts`),
+ *   mounted at `/sidebar/vscode`: an HTTP prefix route plus the discovered
+ *   WebSocket upgrade path, so gateway-less deployments (Windows, LAN)
+ *   still get a same-origin workbench iframe. `/sidebar-vscode/api/
+ *   proxy.config` lets the browser half push the `serverUrl` setting (a
+ *   full serve-web URL, base path + token) as the proxy's upstream, with a
+ *   bounded reachability probe in the answer; `proxy.status` reports the
+ *   live mounting state for the iframe-base choice.
+ *
  * @module dsh-sidebar-vscode
  */
 import type { Context } from '@deepseek-ai/cordis';

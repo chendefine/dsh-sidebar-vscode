@@ -24,7 +24,7 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.1.6
+- 版本：0.2.0
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
 - 测试：284 例全部通过（13 个规格文件）
@@ -72,7 +72,14 @@
 ### 前提
 
 - DSH 宿主（Web GUI）+ 已安装 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) ≥ 0.12（可选 peer：缺席时标签页注册静默跳过，粘贴兜底仍可用；开发基线 0.16）；
-- 一个浏览器可达的 `code serve-web` 实例。默认拓扑下它与 dsh-runtime **同容器**，经网关同源子路径 `/vscode` 反代（见[部署拓扑](#部署拓扑默认值的依据)），浏览器登录态自动携带，WebSocket 终端等全功能可用；
+- 一个浏览器可达的 `code serve-web` 实例。接入形态按部署环境任选：
+  1. **内置反代（默认，Windows / 局域网直跑 `dsh web` 首选）**——`serverUrl` 留空即默认 `http://127.0.0.1:8000`（本机裸启动 `code serve-web` 的完整地址），或直填 serve-web 输出的任意完整地址（可含基路径与 `?tkn=` 令牌）。地址经 `/sidebar-vscode/api/proxy.config` 推给宿主半，在 `dsh web` 自己监听的端口上挂载为**同源 `/sidebar/vscode/`**（HTTP 透传 + WebSocket 管道 + 令牌自动附加），零 nginx、零启动参数：
+     ```sh
+     code serve-web            # CLI 默认：8000 端口、根路径
+     ```
+     路由以首页 HTML 烘焙的真实 `serverBasePath` 自动校正——serve-web 加不加 `--server-base-path` 都行（非挂载点基路径注册恒等镜像，根路径注册 `<quality>-<commit>` 补片）。宿主暂时探不到该地址时自动回退直连 iframe 并提示，代理就绪后自动切回挂载点。免配置预启用可设 `DSH_SIDEBAR_VSCODE_UPSTREAM`（同样接受完整地址；默认 `http://127.0.0.1:8000`；`off` 关闭）。`/sidebar/vscode` 被其他插件占用时仅告警退出，不影响插件其余功能；
+  2. **网关同源反代（参考拓扑）**——serve-web 与 dsh-runtime 同容器，经网关子路径 `/vscode` 反代（见[部署拓扑](#部署拓扑默认值的依据)）；同机部署留空 serverUrl 也可（内置反代接管）。仅当 serve-web 不在 DSH 宿主可达范围内时才需显式配置（`serverUrl` 填 `/vscode` 或预配置环境变量指向真实地址）；
+  3. **跨域直连（自动降级形态）**——仅当宿主半无法反代时自动出现：同源剪贴板桥不可用（粘贴兜底仍在），选区发送走「复制 → 粘贴」链路；
 - 配套 VS Code 扩展 `dsh.selection-reference` 已装入该 serve-web 实例（提供右键命令与快捷键；**对话文件点击打开通道需 ≥ 0.1.1**，见下）。
 
 ### 插件本体
@@ -159,13 +166,13 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 
 ### 设置
 
-设置页「侧边卡片 → VSCode → 功能设置」（标签卡片齿轮弹窗），五行均由本插件自有面板渲染，持久化在 better-sidebar `pluginSettings['dsh-sidebar-vscode:vscode']`，**不在 cordis.patch.yml**：
+设置页「侧边卡片 → VSCode → 功能设置」（标签卡片齿轮弹窗），四行由本插件自有面板渲染，持久化在 better-sidebar `pluginSettings['dsh-sidebar-vscode:vscode']`，**不在 cordis.patch.yml**（下表的 `pathMap` 仍从同一 blob 读取，但刻意不设面板行）：
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `openAsDefault` | `false` | 全新会话的侧边栏默认打开 VSCode 标签（替换「文件」种子标签）；已打开过的会话保持各自布局。该开关同时控制对话文件点击接管与设置页「打开配置文件」接管 |
-| `serverUrl` | `/vscode` | VS Code 服务器基地址：同源网关子路径，或完整地址（如 `http://127.0.0.1:8000/vscode`，绕过网关本机直连，需保留 `/vscode` 基路径） |
-| `pathMap` | （空 = 不映射） | DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。留空时**不做任何映射**，会话 cwd 与文件均按原始绝对路径直接打开（同容器部署即用此默认）。规则只做前缀改写、**不是白名单**：未命中任何规则的绝对路径原样透传（文件真不存在时由 VS Code 报错兜底） |
+| `serverUrl` | （空 = `http://127.0.0.1:8000`） | `code serve-web` 输出的完整地址（可含基路径与 `?tkn=` 令牌）；留空 = 默认 `http://127.0.0.1:8000`（本机裸启动）。代理可达时一律挂载为同源 `/sidebar/vscode/` 打开；宿主不可达时完整地址回退直连（同源桥降级）；显式相对子路径（如 `/vscode`）在代理关闭时按网关语义使用 |
+| `pathMap` | （空 = 不映射） | 仅配置文件——无设置面板行（少见，分容器部署才需要）。DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。留空时**不做任何映射**，会话 cwd 与文件均按原始绝对路径直接打开（同容器部署即用此默认）。规则只做前缀改写、**不是白名单**：未命中任何规则的绝对路径原样透传（文件真不存在时由 VS Code 报错兜底） |
 | `maxLines` | `200`（范围 1–2000） | 单次引用注入的代码行数上限，超出保留首尾两半、省略中间并标注省略区间 |
 | `maxBytes` | `20000`（范围 1000–200000） | 单次引用注入的 UTF-8 字节上限（防压缩成一行的超大文件） |
 
@@ -175,7 +182,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 
 | 症状 | 处理 |
 |---|---|
-| 标签页长时间空白 / 加载提示不消失 | 检查「功能设置」里的 `serverUrl` 是否可达；用「在新窗口打开」直连排查；跨域地址下同源桥不可用属预期（粘贴兜底仍可用） |
+| 标签页长时间空白 / 加载提示不消失 | 检查「功能设置」里的 `serverUrl` 是否可达；用「在新窗口打开」直连排查；跨域地址下同源桥不可用属预期（粘贴兜底仍可用）。用内置反代时确认 serve-web 已在配置的上游应答（默认 `http://127.0.0.1:8000`，任意基路径均可） |
 | 工具栏提示「未命中任何映射规则…」 | 提示已变为非阻断性说明：cwd 仍按原路径打开；仅当 workbench 看不到该目录（分离容器/挂载）时才需要在设置里补映射规则 |
 | 右键没有 DSH 命令 / 命令面板搜不到 | 扩展未装或 serve-web 未重启（清单仅启动时扫描），或工作区处于受限模式未信任——见 `scripts/install-extension.md` 常见问题表 |
 | 发送后 chip 未出现，剪贴板出现代码片段 | 注入降级为可读回退文本（无可用输入框 / 跨域）；直接粘贴进输入框即可恢复为 chip |
@@ -242,24 +249,35 @@ nginx: location /vscode/ → 127.0.0.1:8000（含 WebSocket upgrade）
       网关只做用户 → 实例透传，/vscode 无特例，增删用户零同步
 ```
 
-DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因此 `pathMap` **默认留空 = 不映射**：会话 cwd 与对话点击的文件都按原始绝对路径直接交给 workbench，不做任何改写（此前默认是两条恒等规则 `/data/workspace=/data/workspace;/opt=/opt`，只覆盖这两个根，其余目录一律提示无法映射）。规则是前缀改写器而非白名单：即便配置了规则，未命中的路径仍原样透传（存在性由 VS Code 判定），不会再出现阻断性提示。若把 workbench 挪去别的容器 / 挂载，用 `pathMap` 配置真实的前缀改写即可。
+没有网关层的部署（Windows / 局域网直跑 `dsh web`）不需要自建 nginx：插件宿主半在 `dsh web`
+自己监听的端口上注册同等的反代（`src/vscodeProxy.ts`，挂载点 `/sidebar/vscode`）。HTTP 前缀路由
+透传且保留浏览器 `Host`（serve-web 因此把 `remoteAuthority` 烘焙成 DSH 端口，一切回程 URL 走同源）；
+WebSocket upgrade 以精确路径 `<上游基路径>/<quality>-<commit>` 注册——浏览器 socket 工厂只连这一
+路径，serve-web 的 `handleUpgrade` 不校验路径。路由基路径以首页 HTML 烘焙的 `serverBasePath`
+为准（探测入口 URL 说了不算）：非挂载点基路径额外注册恒等镜像，根路径上游注册 `<quality>-<commit>`
+补片。首页探测最多跟随三次重定向并采纳最终 origin，因此上游即便挂在会重定向的反代后面（如强制
+http→https 跳转）也能正确发现并转发。上游优先取 `serverUrl` 的完整地址（经 `proxy.config` 推送），
+其次 `DSH_SIDEBAR_VSCODE_UPSTREAM`（默认 `http://127.0.0.1:8000`，`off` 可关）。
+
+DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因此 `pathMap` **默认留空 = 不映射**：会话 cwd 与对话点击的文件都按原始绝对路径直接交给 workbench，不做任何改写（此前默认是两条恒等规则 `/data/workspace=/data/workspace;/opt=/opt`，只覆盖这两个根，其余目录一律提示无法映射）。规则是前缀改写器而非白名单：即便配置了规则，未命中的路径仍原样透传（存在性由 VS Code 判定），不会再出现阻断性提示。若把 workbench 挪去别的容器 / 挂载，在设置文档里用 `pathMap` 配置真实的前缀改写即可（该键无设置面板行）。
 
 ### 目录结构
 
 ```
 src/index.ts                  # host 半入口：agent/created → pre-step 边界挂载（inject: agents）
+src/vscodeProxy.ts            # host 半：/vscode 同源反代（HTTP 透传 + WS upgrade 管道 + 路径/令牌改写 + configure 通道）（37 测试）
 src/mention.ts                # host 半核心：解析改写/去重/新鲜度/<text-selection> 等注入（36 测试）
 src/mentionCodec.ts           # 共享纯逻辑：两种 scheme 规范 URI 编解码/截断/哈希归一（42 测试）
 src/client/index.tsx          # browser 半入口：注册 tab + dock + @ 触发源 + 词典（ctx.effect，HMR 安全）
 src/client/VscodeView.tsx     # 标签组件：cwd → 路径映射 → iframe + 工具栏/提示 + 桥装载
-src/client/clipboardBridge.ts # 同源 iframe navigator.clipboard.writeText 信号补丁（8 测试）
+src/client/clipboardBridge.ts # 同源 iframe navigator.clipboard.writeText 信号补丁（10 测试；跨域读取抛 SecurityError 时 no-op）
 src/client/composer.tsx       # dock 组件：引用 tag 栏（自注入样式）+ 粘贴兜底
-src/client/references.ts      # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（45 测试）
-src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种 payload）（14 测试）
+src/client/references.ts      # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（46 测试）
+src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种 payload）（15 测试）
 src/client/paths.ts           # pathMap 解析/映射/反向映射、URL 构建（34 测试）
 src/client/settings.ts        # pluginSettings 读取 + 截断上限契约（默认/边界/提交助手）（14 测试）
 src/client/settingsRows.tsx   # 功能设置面板：开关行 + 文本行（上下布局）+ 数值行（自注入样式）
-src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（7 测试）
+src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（10 测试）
 src/client/defaultTab.ts      # 「默认打开 VSCode」：pristine 种子检测 + 换种护栏 + 监听（22 测试）
 src/client/i18n.ts            # locale 服务挂接 + t()
 src/client/locales.ts         # zh/en 词典
@@ -270,7 +288,7 @@ scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 �
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
 screenshot.png                # 产品使用截图（见上方「界面截图」）
-tests/*.spec.ts               # vitest 单测，共 269 例 / 13 文件（如上括注分文件计数）
+tests/*.spec.ts               # vitest 单测，共 323 例 / 14 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 dsh.plugin.json               # 插件清单（元数据）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
@@ -289,7 +307,7 @@ lib/                          # 构建产物（随仓库提交：link: 部署直
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc 声明 + tsdown 双 bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run（269 例）
+pnpm test         # vitest run（323 例）
 ```
 
 重建后硬刷新浏览器即可（link: 依赖 + 内容 rev 查询参数自动破缓存）；host 半改动需重启 `dsh web`。
@@ -318,7 +336,8 @@ git tag v<version> && git push origin main --tags
 
 ### 已知限制
 
-- 跨域 `serverUrl` 下同源剪贴板桥不可用（浏览器同源限制），仅剩粘贴兜底；
+- 宿主反代不可达时的直连回退形态下,同源剪贴板桥不可用(浏览器同源限制),仅剩粘贴兜底;若只是启动时序问题(serve-web 比 `dsh web` 晚就绪),客户端每 5s 轮询 `proxy.status` 的 `serving`,代理就绪后自动切回挂载点,无需手动刷新;
+- 内置反代面向单上游(最后写入的 `serverUrl` 生效——多会话推送不同地址时全局共享一个);上游须 `http(s)` 直达(自签 TLS 需系统信任,URL 内嵌凭证不支持),代理不做鉴权剥离,令牌按原样附加。挂载路径继承 dsh web 端口的暴露面:能访问该端口的客户端即可使用被代理的工作台(`?tkn=` 令牌只保护上游、不保护挂载——代理会透明追加),请让端口与 GUI 本体处于同一信任边界(回环/受信网关);
 - 选中注入常开，无开关；
 - host 半代码改动需 `dsh web` 重启后生效；
 - 构建时 tsdown 对 `external` / `noExternal` 报弃用警告（构建产物正确，迁移到 `deps.*` 待后续）。

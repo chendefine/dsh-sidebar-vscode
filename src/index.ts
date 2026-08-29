@@ -25,6 +25,15 @@
  *   the path; this route hands the path to this plugin's own fenced channel
  *   so the file can open inside the embedded VS Code instead.
  *
+ * - the same-origin VS Code reverse proxy (see `src/vscodeProxy.ts`),
+ *   mounted at `/sidebar/vscode`: an HTTP prefix route plus the discovered
+ *   WebSocket upgrade path, so gateway-less deployments (Windows, LAN)
+ *   still get a same-origin workbench iframe. `/sidebar-vscode/api/
+ *   proxy.config` lets the browser half push the `serverUrl` setting (a
+ *   full serve-web URL, base path + token) as the proxy's upstream, with a
+ *   bounded reachability probe in the answer; `proxy.status` reports the
+ *   live mounting state for the iframe-base choice.
+ *
  * @module dsh-sidebar-vscode
  */
 
@@ -40,6 +49,7 @@ import {
   writeOpenCommand,
 } from './openChannel.ts'
 import { isTrustedApiRequest } from './trust-fence.ts'
+import { createVscodeProxy, parseUpstreamUrl, type ProxyPluginContext, PROXY_MOUNT } from './vscodeProxy.ts'
 
 /** Cordis plugin name (the Loader entry; matches the client bundle id). */
 export const name = 'dsh-sidebar-vscode'
@@ -109,6 +119,14 @@ export function apply(ctx: Context): void {
   })
   /* v8 ignore stop */
 
+  // ── Same-origin /vscode reverse proxy ──────────────────────────────────
+  // Probe-gated and fail-soft: an unreachable or conflicting upstream only
+  // logs, never failing plugin activation (see vscodeProxy.ts). The
+  // `proxy.config` route below lets the browser half push the `serverUrl`
+  // setting (a full `code serve-web` URL, base path + token included) as
+  // the proxy's upstream.
+  const proxy = createVscodeProxy(ctx as unknown as ProxyPluginContext)
+
   // ── Extension command channel routes ───────────────────────────────────
   // POST /sidebar-vscode/api/open.capability {folder} → {ok, value:{present}}
   // POST /sidebar-vscode/api/open.request   {folder, path, nonce, …} → {ok}
@@ -164,6 +182,40 @@ export function apply(ctx: Context): void {
       }
       try {
         const payload = await readJsonBody(req)
+        if (method === 'proxy.status') {
+          // No fields required: the browser half asks whether the built-in
+          // proxy is serving, so an UNSET serverUrl can open the workbench
+          // at the mount instead of the gateway-subpath default.
+          const { mounted, prefix, serving } = proxy.status()
+          writeJson(res, 200, { ok: true, value: { mounted, prefix, serving } })
+          return
+        }
+        if (method === 'proxy.config') {
+          const record = payload as { url?: unknown, reset?: unknown } | null
+          if (record !== null && record.reset === true) {
+            proxy.configure(null)
+            writeJson(res, 200, { ok: true, value: { mounted: null } })
+            return
+          }
+          if (record === null || typeof record.url !== 'string' || record.url.trim() === '') {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'url must be a non-empty string (or {"reset":true})' } })
+            return
+          }
+          const config = parseUpstreamUrl(record.url)
+          if (config === null) {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-upstream', message: 'url must be an http(s) URL without embedded credentials — the full address code serve-web prints, base path and query included' } })
+            return
+          }
+          // Bounded liveness probe BEFORE adopting: the browser half falls
+          // back to the direct cross-origin iframe when the DSH host
+          // cannot reach the pasted address (e.g. a remote serve-web).
+          // The fetched page doubles as the discovery seed, so the adopt
+          // below does not refetch it.
+          const fetched = await proxy.probeUpstream(config)
+          proxy.configure(config, fetched ?? undefined)
+          writeJson(res, 200, { ok: true, value: { mounted: `${PROXY_MOUNT}/`, reachable: fetched !== null } })
+          return
+        }
         if (method === 'open.capability') {
           const record = payload as { folder?: unknown } | null
           if (record === null || typeof record.folder !== 'string' || record.folder === '') {

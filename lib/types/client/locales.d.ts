@@ -11,17 +11,14 @@ export declare const NS = "vscodeTab";
 export declare const zh: {
     readonly title: "VSCode";
     readonly settingServerUrl: "VSCode 服务地址";
-    readonly settingServerUrlDesc: "VS Code 服务器基地址：同域网关子路径（默认 /vscode）或完整地址（如 http://127.0.0.1:8000/vscode，绕过网关本机直连，需保留 /vscode 基路径）";
-    readonly settingServerUrlPlaceholder: "/vscode";
-    readonly settingPathMap: "工作区路径映射";
-    readonly settingPathMapDesc: "DSH 路径前缀 → VSCode 容器路径前缀，格式 源=目标，多条用 ; 分隔；留空 = 不映射，直接使用原始目录（仅 workbench 与 DSH 不同容器/挂载时才需要配置）";
-    readonly settingPathMapPlaceholder: "留空 = 直接使用原始目录；示例：/data/workspace=/mnt/vscode";
+    readonly settingServerUrlDesc: "code serve-web 输出的完整地址（可含基路径与 ?tkn= 令牌）；留空 = 默认 http://127.0.0.1:8000（本机裸启动）。只要内置代理在服务，一律挂载为同源 /sidebar/vscode/ 打开，功能完整；宿主暂不可达时回退直连并自动等待代理就绪后切回（同源桥降级期间粘贴兜底仍可用）。网关子路径（如 /vscode）仍可显式填写：代理未就绪时按网关语义使用";
+    readonly settingServerUrlPlaceholder: "留空 = http://127.0.0.1:8000；或 http://127.0.0.1:8000/vscode/?tkn=…";
     readonly loading: "正在打开 VSCode …";
     readonly loadHint: "长时间空白？请检查「功能设置」里的服务地址是否可达，或用「在新窗口打开」排查";
     readonly reload: "刷新";
     readonly openNewWindow: "在新窗口打开";
     readonly workspace: "工作区";
-    readonly unmapped: "当前工作区路径未命中任何映射规则，已按原路径打开；若工作台看不到该目录，可在「功能设置」里配置路径映射";
+    readonly unmapped: "当前工作区路径未命中任何映射规则，已按原路径打开；若工作台看不到该目录，可在设置文档里配置 pathMap 路径映射";
     readonly cwdFailed: "无法获取会话工作目录，已打开 VSCode 默认界面";
     readonly settingMaxLines: "引用最大行数";
     readonly settingMaxLinesDesc: "单次引用注入的代码行数上限，超出时保留首尾两半、省略中间并标注省略区间；未设置时默认 200，可填范围 1–2000";
@@ -33,6 +30,7 @@ export declare const zh: {
     readonly openUnmapped: "文件路径不是容器内绝对路径，未能在 VS Code 中打开（绝对路径不再要求命中映射规则，未匹配时按原路径打开）";
     readonly injectedAsText: "已注入为文本引用（输入框暂不可写入，提交效果相同）";
     readonly injectFailed: "未能注入：当前没有可用的对话输入框";
+    readonly proxyFallback: "内置代理暂不可达该地址（或宿主半为旧版本），已回退为直连：同源选区桥不可用，粘贴兜底仍可用";
     readonly produced: "本次产出";
     readonly producedOpen: "在 VS Code 中打开";
     readonly railReferences: "VS Code 代码引用";

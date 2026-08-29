@@ -26,8 +26,10 @@
  * user activation and may reject; nothing depends on it).
  *
  * Cross-origin editor URLs (the `serverUrl` setting pointing at another
- * host) cannot be bridged — the install call simply no-ops there, leaving
- * the composer-side paste fallback as the only path.
+ * origin) cannot be bridged — reading `navigator` off a cross-origin
+ * window proxy throws SecurityError, which the install call catches and
+ * turns into a no-op disposer, leaving the composer-side paste fallback
+ * as the only path.
  *
  * @module dsh-sidebar-vscode/client/clipboardBridge
  */

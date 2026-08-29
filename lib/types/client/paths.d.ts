@@ -20,8 +20,9 @@
  * longest source prefix wins). Even then, a path no rule matches still passes
  * through — the rules are PREFIX REWRITERS, never a whitelist: only empty or
  * non-absolute input is rejected ({@link mapPath} /
- * {@link reverseMapPath}). The sidebar settings row (`pathMap`) owns the
- * rules.
+ * {@link reverseMapPath}). The `pathMap` key is settings-document-only
+ * (no settings-panel row — see settingsRows.tsx); empty/unset is the
+ * same-container default.
  *
  * @module dsh-sidebar-vscode/client/paths
  */
@@ -30,8 +31,21 @@ export interface PathMapRule {
     from: string;
     to: string;
 }
-/** The built-in default VS Code server base URL (same-origin gateway subpath). */
-export declare const DEFAULT_SERVER_URL = "/vscode";
+/**
+ * The default `serverUrl`: the full address of a locally started
+ * `code serve-web` without a token or base path (the CLI's own defaults).
+ * An unset setting means exactly this URL — pushed to the host's built-in
+ * proxy as the upstream, with the direct cross-origin iframe as fallback.
+ */
+export declare const DEFAULT_SERVER_URL = "http://127.0.0.1:8000";
+/**
+ * The browser-facing mount of the host half's built-in reverse proxy.
+ * Must stay in sync with `PROXY_MOUNT` in `src/vscodeProxy.ts` (duplicated
+ * here because the client bundle must not import the node-http module).
+ */
+export declare const PROXY_MOUNT = "/sidebar/vscode";
+/** Whether a raw `serverUrl` value is a full URL (vs a same-origin subpath). */
+export declare function isFullServerUrl(raw: string | undefined): boolean;
 /**
  * Parse the user-facing `pathMap` setting (`src=dst;src2=dst2`). Empty,
  * unset, or fully-malformed input yields NO rules — pass-through mode (the
@@ -78,9 +92,9 @@ export declare function mapPathForOpen(path: string, rules: readonly PathMapRule
 export declare function reverseMapPath(path: string, rules: readonly PathMapRule[]): string | null;
 /**
  * Normalize the `serverUrl` setting into a usable base: empty → the
- * same-origin gateway subpath ({@link DEFAULT_SERVER_URL}); trailing slashes
- * dropped; a value with neither a URL scheme nor a leading '/' is treated as
- * a subpath and anchored to the page root.
+ * full-URL default ({@link DEFAULT_SERVER_URL}); trailing slashes dropped;
+ * a value with neither a URL scheme nor a leading '/' is treated as a
+ * subpath and anchored to the page root.
  */
 export declare function normalizeBaseUrl(raw: string | undefined): string;
 /**

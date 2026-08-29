@@ -3,11 +3,13 @@
  * owning every row end-to-end instead of the better-sidebar declarative
  * `pluginToggles` rows:
  *
- * - the serverUrl / pathMap TEXT rows: the declarative row always lays
- *   its control out to the RIGHT of the title/description (a fixed
- *   left-right split with a 200px input), which cramps these two long
- *   free-form values; here each renders stacked — title/description on
- *   top, the input alone on its own full-width line below;
+ * - the serverUrl TEXT row: the declarative row always lays its control
+ *   out to the RIGHT of the title/description (a fixed left-right split
+ *   with a 200px input), which cramps this long free-form value; here it
+ *   renders stacked — title/description on top, the input alone on its
+ *   own full-width line below. (`pathMap` deliberately has NO row: the
+ *   rare split-container rewrite lives in the settings document only —
+ *   the read side still honors it when present;)
  * - the maxLines / maxBytes NUMBER rows, which the declarative row
  *   cannot express anyway:
  *   - pre-filled defaults: an unset field shows the effective code
@@ -48,8 +50,8 @@ export interface CapSettingsPanelProps {
  */
 export declare function adoptSettingsStyles(): () => void;
 /**
- * The settings panel body: the default-tab switch, the stacked text rows
- * (serverUrl / pathMap), then one {@link CapRow} per declared cap spec,
- * reading and writing this descriptor's own pluginSettings blob.
+ * The settings panel body: the default-tab switch, the serverUrl text
+ * row, then one {@link CapRow} per declared cap spec, reading and writing
+ * this descriptor's own pluginSettings blob.
  */
 export declare function CapSettingsPanel(props: CapSettingsPanelProps): React.ReactNode;
