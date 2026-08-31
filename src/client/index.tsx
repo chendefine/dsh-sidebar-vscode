@@ -13,9 +13,11 @@
  * - a mention paster (composer dock) that recovers copied reference items —
  *   whitespace-mangled or canonical mention text — back into chips;
  * - the chat-open takeover (openIntercept.ts / turnTail.tsx): the
- *   produced-files row and the runtime's `workspaces.openPath` funnel are
- *   rerouted so chat file clicks open inside the VSCode tab, gated by the
- *   same `openAsDefault` switch as the default-tab swap;
+ *   produced-files row and the runtime's chat file-open funnel (the
+ *   gateway-era `remote.session.openWorkspacePath` Host Remote, or the
+ *   legacy `workspaces.openPath` client service) are rerouted so chat file
+ *   clicks open inside the VSCode tab, gated by the same `openAsDefault`
+ *   switch as the default-tab swap;
  * - the settings-open takeover (settingsTakeover.ts): the settings page's
  *   「打开配置文件」button resolves the configuration file through this
  *   plugin's fenced node-half route and opens it inside the VSCode tab
@@ -36,10 +38,11 @@ import { watchDefaultTab, OPEN_AS_DEFAULT_KEY, type DefaultTabServiceFace } from
 import {
   rerouteChatOpen,
   resolveAgainst,
+  wrapRemoteOpenWorkspacePath,
   wrapWorkspacesOpenPath,
 } from './openIntercept.ts'
 import { adoptTurnTailStyles, registerTurnTailVscode } from './turnTail.tsx'
-import { closeSettingsDialog, wrapSettingsOpenDocument } from './settingsTakeover.ts'
+import { closeSettingsDialog, wrapRemoteOpenSettingsDocument, wrapSettingsOpenDocument } from './settingsTakeover.ts'
 import { fetchSettingsDocumentPath } from './openChannelApi.ts'
 import {
   ComposerDock,
@@ -112,6 +115,15 @@ interface ClientContextFace {
   workspaces?: {
     openPath(path: string): Promise<void>
   }
+  /**
+   * Nested service injection (cordis `ctx.inject`): parks a child fiber until
+   * every named service exists, runs the body with a scope that may read
+   * them, and honors the body's returned disposer when a service withdraws
+   * or the plugin unloads. Optional so the body below can park on services
+   * the OLD runtime never provides (the remote session namespace) without
+   * blocking activation — the fail-soft contract of every takeover seam.
+   */
+  inject?(deps: readonly string[], body: (scope: { get(name: string): unknown }) => (() => void) | void): unknown
   /** The connection service (the settings.openDocument wrapper's target;
    * the api/settings members are optional — the wrapper fail-softs a page
    * whose connection service carries a different shape). */
@@ -383,9 +395,9 @@ export function apply(ctx: unknown): void {
     }
     const openInVscode = (sessionId: string, path: string): void => {
       // The turn-tail inject carries its sessionId (its produced paths may
-      // be workspace-relative); the openPath wrapper passes '' and falls
-      // back to the CURRENT session's cwd (its callers resolve absolutes
-      // already — ui-conversation's apply.ts).
+      // be workspace-relative); both openPath wrappers pass '' and fall back
+      // to the CURRENT session's cwd (their callers resolve absolutes
+      // already — ui-chat's openFile, formerly ui-conversation's apply.ts).
       const cwd = sessionId !== ''
         ? client.sessions?.list?.getSnapshot()?.byId?.[sessionId]?.cwd
         : currentCwd()
@@ -403,12 +415,37 @@ export function apply(ctx: unknown): void {
       openInVscode,
     )
 
-    // Option III — the runtime's single remaining funnel (tool-row path
-    // links, prose file mentions), which ALSO repairs the headless hole:
-    // better-sidebar declines its own takeover when its built-in Files tab
-    // is disabled, letting opens die on the Host OS opener
-    // (`spawn xdg-open ENOENT`); this wrapper keeps them landing here
-    // regardless of that setting.
+    // Option III — the runtime's single remaining chat file-open funnel
+    // (tool-row path links, prose file mentions), which ALSO repairs the
+    // headless hole: better-sidebar declines its own takeover when its
+    // built-in Files tab is disabled, letting opens die on the Host OS
+    // opener (`spawn xdg-open ENOENT`); this wrapper keeps them landing
+    // here regardless of that setting. Two era-specific seams, exactly one
+    // of which ever installs:
+    //
+    // - the gateway-era runtime routes the opens through the
+    //   `remote.session.openWorkspacePath` Host Remote (ui-chat's injected
+    //   `openFile` is its only production caller) — the workspace controller
+    //   now owning the 'workspaces' service key carries no opener, so the
+    //   legacy wrapper below installs nothing there. The namespace service
+    //   is reached through a NESTED inject: the child fiber parks until
+    //   'remote.session' exists (on the old runtime that is never — there
+    //   the legacy wrapper keeps the takeover), runs the wrap, and honors
+    //   the returned restore disposer on service withdraw, on plugin
+    //   unload, and on HMR re-apply (no manual dispose needed: cordis
+    //   parents the fiber to this plugin's own context).
+    // - the pre-gateway runtime through `workspaces.openPath` (legacy).
+    if (client.inject !== undefined) {
+      client.inject(['remote.session'], scope => {
+        const session = scope.get('remote.session')
+        if (session === null || typeof session !== 'object') return undefined
+        return wrapRemoteOpenWorkspacePath(session, {
+          takeoverEnabled,
+          reroute: path => { openInVscode('', path) },
+        })
+      })
+    }
+
     const workspaces = client.workspaces
     const stopOpenPath = workspaces === undefined
       ? undefined
@@ -423,12 +460,33 @@ export function apply(ctx: unknown): void {
     // and opens it in the VSCode tab instead. The rerouted path is absolute
     // (the settings provider's own document), so it needs no cwd resolution
     // — and mapPathForOpen passes it through even without a mapping-rule
-    // match. Fail-soft: a page whose connection service carries no
-    // `api.settings.openDocument` seam (an older/newer/third-party web
-    // shell) installs no wrapper at all, and any miss on the resolve falls
-    // back to the untouched original method. A successful reroute also
-    // closes the settings dialog (the file is now in view; the modal would
-    // only cover the workbench).
+    // match. Fail-soft: a page whose runtime carries neither seam (an
+    // older/newer/third-party web shell) installs no wrapper at all, and any
+    // miss on the resolve falls back to the untouched original method. A
+    // successful reroute also closes the settings dialog (the file is now in
+    // view; the modal would only cover the workbench). Two era-specific
+    // seams, exactly one of which ever intercepts:
+    //
+    // - the gateway-era runtime routes the button through the
+    //   `remote.settings.openSettingsDocument` Host Remote
+    //   (SettingsDocumentStore.open is its only production caller) — the
+    //   legacy connection.api member below installs nothing there. Same
+    //   nested-inject parking as the remote.session seam above.
+    // - the pre-gateway runtime through `connection.api.settings
+    //   .openDocument` (legacy).
+    if (client.inject !== undefined) {
+      client.inject(['remote.settings'], scope => {
+        const settings = scope.get('remote.settings')
+        if (settings === null || typeof settings !== 'object') return undefined
+        return wrapRemoteOpenSettingsDocument(settings, {
+          takeoverEnabled,
+          resolvePath: () => fetchSettingsDocumentPath(),
+          reroute: path => { rerouteChatOpen(betterSidebar, TAB_ID, path) },
+          closeDialog: () => { closeSettingsDialog() },
+        })
+      })
+    }
+
     const connection = client.connection
     const stopSettingsOpen = connection === undefined
       ? undefined

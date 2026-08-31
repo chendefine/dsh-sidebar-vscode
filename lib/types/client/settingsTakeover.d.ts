@@ -1,9 +1,10 @@
 /**
- * The settings-page takeover seam: a wrapper around
- * `connection.api.settings.openDocument` — the wire method behind the
- * settings page's「打开配置文件」button — so the click lands the
- * configuration file inside the embedded VS Code instead of the Host OS
- * opener.
+ * The settings-page takeover seam: a wrapper around the wire method behind
+ * the settings page's「打开配置文件」button — the gateway-era
+ * `remote.settings.openSettingsDocument` Host Remote, or the legacy
+ * `connection.api.settings.openDocument` client-service member — so the
+ * click lands the configuration file inside the embedded VS Code instead of
+ * the Host OS opener.
  *
  * Why this seam exists: the stock button asks the Host to hand
  * `$DSH_HOME/settings.yaml` to the platform opener (macOS: a text editor;
@@ -20,10 +21,11 @@
  *
  * Fail-soft by construction: the wrapper declines (gate off, settings
  * provider absent, node half not reloaded yet, any transport error) by
- * calling the untouched original — and a page whose connection service
- * carries no `api.settings.openDocument` seam at all gets no wrapper
- * installed (see wrapSettingsOpenDocument) — the button never breaks
- * because of this plugin, it merely keeps its stock behavior.
+ * calling the untouched original — and a page whose runtime carries neither
+ * seam (no `remote.settings` namespace, no `api.settings.openDocument`
+ * member) gets no wrapper installed at all (see wrapSettingsOpenDocument /
+ * wrapRemoteOpenSettingsDocument) — the button never breaks because of this
+ * plugin, it merely keeps its stock behavior.
  *
  * Dependency-free by design (mirrors openIntercept.ts's wrappers) so the
  * takeover logic is unit-testable in isolation.
@@ -98,6 +100,55 @@ export interface SettingsTakeoverDeps {
 export declare function wrapSettingsOpenDocument(api: {
     settings?: SettingsApiLike | undefined;
 } | undefined, deps: SettingsTakeoverDeps): () => void;
+/**
+ * The funnel's result faces (structural subset of the runtime's
+ * `RemoteResult`: `{ ok: true, value } | { ok: false, error }` — the only
+ * production caller, SettingsDocumentStore.open, reads `result.ok` and, on
+ * failure, `result.error.message`).
+ */
+export type RemoteSettingsOpenResult = {
+    ok: true;
+    value: {
+        opened: true;
+    };
+} | {
+    ok: false;
+    error: Error;
+};
+/**
+ * The remote settings namespace slice the wrapper replaces.
+ * `openSettingsDocument` is optional because the seam is fail-soft: a
+ * namespace without the mounted method (older runtime, method unmounted)
+ * installs nothing.
+ */
+export interface RemoteSettingsLike {
+    openSettingsDocument?(signal?: AbortSignal): Promise<RemoteSettingsOpenResult>;
+}
+/**
+ * Wrap `remote.settings.openSettingsDocument` — the settings-document funnel
+ * of the gateway-era client runtime — with the SAME takeover gate and
+ * reroute as the legacy `connection.api.settings.openDocument` wrapper above.
+ *
+ * Why this seam exists: the runtime that retired `connection.api` routes the
+ * button through the `settings/openSettingsDocument` Host Remote
+ * (SettingsDocumentStore.open is its only production caller), which hands the
+ * materialized document to the Host's native opener (`xdg-open` — dead on a
+ * headless container). The legacy wrapper above therefore installs nothing on
+ * this runtime; on the pre-gateway runtime the reverse holds — the
+ * `remote.settings` namespace never appears and the legacy member keeps the
+ * takeover. Exactly one of the two ever intercepts.
+ *
+ * Mechanics (property redefinition of the gateway's getter-only namespace
+ * methods, per-access original, restore-only-ours) live in
+ * `redefineGetterMethod` (openIntercept.ts). A taken-over call resolves with
+ * the native receipt's success shape so the button's busy state clears
+ * without surfacing the Host opener's failure.
+ *
+ * @param settings - the remote settings namespace service to wrap.
+ * @param deps - per-call takeover decisions (the same gate as the chat seams').
+ * @returns the disposer restoring the original property descriptor (HMR-safe).
+ */
+export declare function wrapRemoteOpenSettingsDocument(settings: RemoteSettingsLike, deps: SettingsTakeoverDeps): () => void;
 /** Structural document face the dialog close needs (dispatch only). */
 export interface DocumentDispatchFace {
     dispatchEvent(event: unknown): boolean;

@@ -1,7 +1,9 @@
 /**
  * Unit tests for the chat-open takeover's shared plumbing (openIntercept.ts)
- * — the openRequest vehicle, the reroute driver, and the
- * `workspaces.openPath` wrapper (research option III).
+ * — the openRequest vehicle, the reroute driver, and the two era-specific
+ * wrappers of the runtime's chat file-open funnel (`remote.session
+ * .openWorkspacePath` on the gateway-era runtime, `workspaces.openPath` on
+ * the legacy one).
  *
  * @module dsh-sidebar-vscode/tests/openIntercept.spec
  */
@@ -15,9 +17,12 @@ import {
   nextNonce,
   rerouteChatOpen,
   resolveAgainst,
+  wrapRemoteOpenWorkspacePath,
   wrapWorkspacesOpenPath,
   type InterceptServiceFace,
   type OpenTabSeed,
+  type RemoteOpenResult,
+  type RemoteSessionLike,
   type WorkspacesLike,
 } from '../src/client/openIntercept.ts'
 
@@ -51,7 +56,7 @@ function makeService(state?: object): RecordingService {
   return service as unknown as RecordingService & InterceptServiceFace
 }
 
-describe('wrapWorkspacesOpenPath (option III — the runtime funnel)', () => {
+describe('wrapWorkspacesOpenPath (option III — the legacy runtime funnel)', () => {
   it('intercepts opens when enabled, reroutes, and resolves as success', async () => {
     const rerouted: string[] = []
     const opened: string[] = []
@@ -127,6 +132,197 @@ describe('wrapWorkspacesOpenPath (option III — the runtime funnel)', () => {
       expect(() => stop()).not.toThrow()
       expect(workspaces.openPath).toBe(openPath) // untouched
     }
+  })
+})
+
+/**
+ * A fake of the gateway's remote session namespace, mirroring how the client
+ * projection mounts namespace methods: `openWorkspacePath` is a configurable,
+ * getter-only own property returning a FRESH invocation closure per access
+ * (the closure the stock getter mints reads the live mount each time).
+ */
+function makeRemoteSession(options?: {
+  onCall?: (request: unknown, signal?: AbortSignal) => RemoteOpenResult
+}): RemoteSessionLike & {
+  calls: Array<{ request: unknown, signal?: AbortSignal }>
+  getterReads: number
+  __remount(next: (request: unknown, signal?: AbortSignal) => Promise<RemoteOpenResult>): void
+} {
+  const calls: Array<{ request: unknown, signal?: AbortSignal }> = []
+  let invocation: (request: unknown, signal?: AbortSignal) => Promise<RemoteOpenResult> = (
+    request, signal,
+  ) => {
+    calls.push({ request, signal })
+    return Promise.resolve(options?.onCall?.(request, signal) ?? { ok: true, value: { opened: true } })
+  }
+  const service = {
+    calls,
+    getterReads: 0,
+    get openWorkspacePath() {
+      service.getterReads += 1
+      return (request: unknown, signal?: AbortSignal) => invocation(request, signal)
+    },
+    /** Swap what the next getter read yields (a namespace remount). */
+    __remount(next: (request: unknown, signal?: AbortSignal) => Promise<RemoteOpenResult>): void {
+      invocation = next
+    },
+  }
+  return service as typeof service & RemoteSessionLike
+}
+
+describe('wrapRemoteOpenWorkspacePath (option III — the gateway-era runtime funnel)', () => {
+  it('intercepts opens when enabled, reroutes, and resolves the native success receipt', async () => {
+    const rerouted: string[] = []
+    const session = makeRemoteSession()
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      reroute: path => { rerouted.push(path) },
+    })
+    await expect(session.openWorkspacePath!({ path: '/w/a.ts' }))
+      .resolves.toEqual({ ok: true, value: { opened: true } })
+    expect(rerouted).toEqual(['/w/a.ts'])
+    expect(session.calls).toEqual([]) // the Host remote never ran — no xdg-open
+    stop()
+  })
+
+  it('passes the caller signal through untouched on the fall-through', async () => {
+    const session = makeRemoteSession()
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => false,
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    const signal = new AbortController().signal
+    await session.openWorkspacePath!({ path: '/w/a.ts' }, signal)
+    expect(session.calls).toEqual([{ request: { path: '/w/a.ts' }, signal }])
+    stop()
+  })
+
+  it('falls through on empty, missing, and malformed request paths', async () => {
+    const session = makeRemoteSession()
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    await session.openWorkspacePath!({ path: '' })
+    await session.openWorkspacePath!({} as { path: string })
+    await session.openWorkspacePath!(null as unknown as { readonly path: string }, undefined)
+    expect(session.calls).toHaveLength(3)
+    stop()
+  })
+
+  it('re-reads the stock method per access, so a remount under the wrapper stays live', async () => {
+    const session = makeRemoteSession()
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => false,
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    const before = session.getterReads
+    await session.openWorkspacePath!({ path: '/w/a.ts' })
+    expect(session.getterReads).toBeGreaterThan(before)
+    // The host unmounts and remounts the method (a fresh invocation closure)
+    // while our wrapper is installed: the next fall-through must reach the
+    // NEW closure, never a snapshot of the old one.
+    let remounted = false
+    session.__remount(async () => {
+      remounted = true
+      return { ok: true, value: { opened: true } }
+    })
+    await session.openWorkspacePath!({ path: '/w/b.ts' })
+    expect(remounted).toBe(true)
+    stop()
+  })
+
+  it('restore puts back the exact original descriptor', () => {
+    const session = makeRemoteSession()
+    const original = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
+    const stop = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get)
+      .not.toBe(original?.get)
+    stop()
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')).toEqual(original)
+  })
+
+  it('restore is a no-op after the host unmounted or replaced the property', () => {
+    const session = makeRemoteSession()
+    // …the gateway's unmount path deletes the own property wholesale: the
+    // disposer must not resurrect the stale descriptor.
+    const stop1 = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    delete (session as RemoteSessionLike).openWorkspacePath
+    expect(() => stop1()).not.toThrow()
+    expect('openWorkspacePath' in session).toBe(false)
+
+    // …and a host re-install under our wrapper must survive our dispose.
+    // (Re-mount a stock-shaped method first: the delete above removed it.)
+    const remount = (): () => Promise<RemoteOpenResult> =>
+      () => Promise.resolve({ ok: true, value: { opened: true } })
+    Object.defineProperty(session, 'openWorkspacePath', {
+      configurable: true,
+      enumerable: true,
+      get: remount,
+    })
+    const stop2 = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).not.toBe(remount)
+    const replacement = (): { ok: true, value: { opened: true } } => ({ ok: true, value: { opened: true } })
+    const replacementGetter = (): unknown => replacement
+    Object.defineProperty(session, 'openWorkspacePath', {
+      configurable: true,
+      enumerable: true,
+      get: replacementGetter,
+    })
+    stop2()
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).toBe(replacementGetter)
+    expect(session.openWorkspacePath).toBe(replacement)
+  })
+
+  it('wrappers compose and unwrap in stack order', () => {
+    const session = makeRemoteSession()
+    const original = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
+    const stopOuter = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    const outer = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get
+    const stopInner = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).not.toBe(outer)
+    stopInner()
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).toBe(outer)
+    stopOuter()
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')).toEqual(original)
+  })
+
+  it('a namespace without the mounted method installs nothing (fail-soft seam)', () => {
+    // No own property at all (method not mounted)…
+    const bare = {} as RemoteSessionLike
+    expect(() => wrapRemoteOpenWorkspacePath(bare, {
+      takeoverEnabled: () => true,
+      reroute: () => { throw new Error('must not reroute') },
+    })()).not.toThrow()
+    expect('openWorkspacePath' in bare).toBe(false)
+    // …a plain value property (a foreign runtime shape)…
+    const valued = { openWorkspacePath: () => Promise.resolve({ ok: true, value: { opened: true } }) } as unknown as RemoteSessionLike
+    const valuedOriginal = valued.openWorkspacePath
+    expect(() => wrapRemoteOpenWorkspacePath(valued, {
+      takeoverEnabled: () => true,
+      reroute: () => { throw new Error('must not reroute') },
+    })()).not.toThrow()
+    expect(valued.openWorkspacePath).toBe(valuedOriginal)
+    // …and a getter that yields a non-function.
+    const odd = { get openWorkspacePath() { return 42 } } as unknown as RemoteSessionLike
+    expect(() => wrapRemoteOpenWorkspacePath(odd, {
+      takeoverEnabled: () => true,
+      reroute: () => { throw new Error('must not reroute') },
+    })()).not.toThrow()
+    expect(odd.openWorkspacePath).toBe(42)
+  })
+
+  it('the reroute lands the same openTab/meta vehicle as the legacy wrapper', async () => {
+    const service = makeService()
+    const session = makeRemoteSession()
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      reroute: path => { rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', path) },
+    })
+    await session.openWorkspacePath!({ path: '/w/a.ts' })
+    expect(service.openTabs).toEqual([{ type: 'dsh-sidebar-vscode:vscode', path: '/w/a.ts' }])
+    expect(service.updates).toHaveLength(1)
+    stop()
   })
 })
 

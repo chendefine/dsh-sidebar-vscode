@@ -13,9 +13,11 @@
  * - a mention paster (composer dock) that recovers copied reference items —
  *   whitespace-mangled or canonical mention text — back into chips;
  * - the chat-open takeover (openIntercept.ts / turnTail.tsx): the
- *   produced-files row and the runtime's `workspaces.openPath` funnel are
- *   rerouted so chat file clicks open inside the VSCode tab, gated by the
- *   same `openAsDefault` switch as the default-tab swap;
+ *   produced-files row and the runtime's chat file-open funnel (the
+ *   gateway-era `remote.session.openWorkspacePath` Host Remote, or the
+ *   legacy `workspaces.openPath` client service) are rerouted so chat file
+ *   clicks open inside the VSCode tab, gated by the same `openAsDefault`
+ *   switch as the default-tab swap;
  * - the settings-open takeover (settingsTakeover.ts): the settings page's
  *   「打开配置文件」button resolves the configuration file through this
  *   plugin's fenced node-half route and opens it inside the VSCode tab

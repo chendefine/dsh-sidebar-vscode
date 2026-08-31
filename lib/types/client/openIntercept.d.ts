@@ -150,3 +150,81 @@ export interface WorkspacesLike {
  * @returns the disposer restoring the original method (HMR-safe).
  */
 export declare function wrapWorkspacesOpenPath(workspaces: WorkspacesLike, deps: OpenInterceptDeps): () => void;
+/**
+ * Redefine one gateway-namespace method with a per-access replacement.
+ *
+ * The gateway's client projection mounts Remote namespace methods
+ * (`remote.<ns>.<method>`) as configurable, getter-only own properties — no
+ * setter, so plain assignment throws — and every getter access returns a
+ * FRESH invocation closure resolved against the live mount. This helper
+ * redefines the property with its own getter that re-invokes the original
+ * getter on every access and hands the yielded closure through
+ * `makeInterceptor`, so each caller still resolves a fresh chain against the
+ * live mount — exactly the stock semantics.
+ *
+ * The disposer restores the saved descriptor, but only while OUR getter is
+ * still the installed one: the gateway deletes the property when it unmounts
+ * the method and re-creates it on remount, and clobbering either state with
+ * the saved (stale) descriptor would resurrect a dead mount.
+ *
+ * Fail-soft at the seam: a target carrying no such own property, a non-getter
+ * descriptor (a plain value method — a foreign runtime shape), or a getter
+ * that does not yield a callable installs nothing.
+ *
+ * @param target - the namespace service object (or any face carrying the method).
+ * @param method - the own property name to redefine.
+ * @param makeInterceptor - wraps one original closure; invoked once per
+ * property access, so the interceptor never holds a stale mount.
+ * @returns the disposer restoring the original descriptor (HMR-safe).
+ */
+export declare function redefineGetterMethod<Original extends (...args: never[]) => unknown>(target: object, method: string, makeInterceptor: (original: Original) => Original): () => void;
+/**
+ * The funnel's result faces (structural subset of the runtime's `RemoteResult`:
+ * `{ ok: true, value } | { ok: false, error }`).
+ */
+export type RemoteOpenResult = {
+    ok: true;
+    value: {
+        opened: true;
+    };
+} | {
+    ok: false;
+    error: Error;
+};
+/**
+ * The remote session namespace slice the wrapper replaces. `openWorkspacePath`
+ * is optional because the seam is fail-soft: a namespace without the mounted
+ * method (older runtime, method unmounted) installs nothing.
+ */
+export interface RemoteSessionLike {
+    openWorkspacePath?(request: {
+        readonly path: string;
+    }, signal?: AbortSignal): Promise<RemoteOpenResult>;
+}
+/**
+ * Wrap `remote.session.openWorkspacePath` — the chat file-open funnel of the
+ * gateway-era client runtime — with the SAME takeover gate and reroute as the
+ * legacy `workspaces.openPath` wrapper above.
+ *
+ * Why this seam exists: the runtime that replaced `workspaces.openPath` routes
+ * every chat-side file open through the `session/openWorkspacePath` Host
+ * Remote (ui-chat's injected `openFile` — the Read/Write/... tool-row path
+ * links and prose file mentions — is its only production caller), which drives
+ * the Host's native opener (`xdg-open` — dead on a headless container). The
+ * service now owning the `workspaces` key (the workspace controller) carries
+ * no opener at all, so the legacy wrapper above installs nothing there and
+ * this seam takes over instead. On the pre-gateway runtime the reverse holds:
+ * this wrapper is never installed (the namespace service never appears) and
+ * the legacy one keeps the takeover.
+ *
+ * Mechanics (property redefinition, per-access original, restore-only-ours)
+ * live in {@link redefineGetterMethod}; fail-soft at the seam like
+ * wrapWorkspacesOpenPath: a service carrying no such property (method not
+ * mounted, or a runtime whose namespace shape differs) installs nothing and
+ * the funnel keeps its stock behavior.
+ *
+ * @param session - the remote session namespace service to wrap.
+ * @param deps - per-call takeover decisions (the same gate as the turn-tail claim's).
+ * @returns the disposer restoring the original property descriptor (HMR-safe).
+ */
+export declare function wrapRemoteOpenWorkspacePath(session: RemoteSessionLike, deps: OpenInterceptDeps): () => void;

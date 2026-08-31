@@ -1,9 +1,11 @@
 /**
- * Unit tests for the settings-page takeover wrapper (settingsTakeover.ts) —
- * the seam behind the settings page's「打开配置文件」button (research
- * option IV): intercept `connection.api.settings.openDocument`, resolve the
- * document through this plugin's own route, and reroute the open into the
- * VSCode tab; every decline falls back to the untouched stock method.
+ * Unit tests for the settings-page takeover wrappers (settingsTakeover.ts) —
+ * the seams behind the settings page's「打开配置文件」button (research
+ * option IV): intercept the wire method (the gateway-era
+ * `remote.settings.openSettingsDocument`, or the legacy
+ * `connection.api.settings.openDocument`), resolve the document through this
+ * plugin's own route, and reroute the open into the VSCode tab; every decline
+ * falls back to the untouched stock method.
  *
  * @module dsh-sidebar-vscode/tests/settingsTakeover.spec
  */
@@ -11,7 +13,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   closeSettingsDialog,
+  wrapRemoteOpenSettingsDocument,
   wrapSettingsOpenDocument,
+  type RemoteSettingsOpenResult,
+  type RemoteSettingsLike,
   type SettingsOpenResponse,
 } from '../src/client/settingsTakeover.ts'
 
@@ -167,6 +172,189 @@ describe('wrapSettingsOpenDocument (option IV — the settings button)', () => {
       })
       expect(() => stop()).not.toThrow()
     }
+  })
+})
+
+/**
+ * A fake of the gateway's remote settings namespace, mirroring how the
+ * client projection mounts namespace methods: `openSettingsDocument` is a
+ * configurable, getter-only own property returning a FRESH invocation
+ * closure per access.
+ */
+function makeRemoteSettings() {
+  const calls: Array<{ signal?: AbortSignal }> = []
+  const settings = {
+    calls,
+    get openSettingsDocument() {
+      return (signal?: AbortSignal): Promise<RemoteSettingsOpenResult> => {
+        calls.push({ signal })
+        return Promise.resolve({ ok: true, value: { opened: true } })
+      }
+    },
+  }
+  return settings as typeof settings & RemoteSettingsLike
+}
+
+describe('wrapRemoteOpenSettingsDocument (option IV — the gateway-era settings button)', () => {
+  it('intercepts when enabled: resolves the path, reroutes, closes the dialog, acknowledges the native receipt', async () => {
+    const settings = makeRemoteSettings()
+    const order: string[] = []
+    const rerouted: string[] = []
+    const stop = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => true,
+      resolvePath: () => Promise.resolve('/data/dsh-home/settings.yaml'),
+      reroute: path => { rerouted.push(path); order.push('reroute') },
+      closeDialog: () => { order.push('close') },
+    })
+    await expect(settings.openSettingsDocument!())
+      .resolves.toEqual({ ok: true, value: { opened: true } })
+    expect(rerouted).toEqual(['/data/dsh-home/settings.yaml'])
+    expect(order).toEqual(['reroute', 'close'])
+    expect(settings.calls).toEqual([]) // the Host remote never ran — no xdg-open
+    stop()
+  })
+
+  it('falls through untouched when the switch is off — resolvePath is not even asked', async () => {
+    const settings = makeRemoteSettings()
+    let resolved = 0
+    const signal = new AbortController().signal
+    const stop = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => false,
+      resolvePath: () => { resolved += 1; return Promise.resolve('/x/settings.yaml') },
+      reroute: () => { throw new Error('must not reroute') },
+      closeDialog: () => { throw new Error('must not close') },
+    })
+    await expect(settings.openSettingsDocument!(signal)).resolves.toEqual({ ok: true, value: { opened: true } })
+    expect(resolved).toBe(0)
+    expect(settings.calls).toEqual([{ signal }]) // exact signal passthrough
+    stop()
+  })
+
+  it('an unresolvable document (null / empty path) falls back to the stock remote', async () => {
+    for (const path of [null, '']) {
+      const settings = makeRemoteSettings()
+      const stop = wrapRemoteOpenSettingsDocument(settings, {
+        takeoverEnabled: () => true,
+        resolvePath: () => Promise.resolve(path),
+        reroute: () => { throw new Error('must not reroute') },
+        closeDialog: () => { throw new Error('must not close') },
+      })
+      await settings.openSettingsDocument!()
+      expect(settings.calls).toHaveLength(1) // the stock behavior served the click
+      stop()
+    }
+  })
+
+  it('restore puts back the exact original descriptor; a host re-install survives our dispose', () => {
+    const settings = makeRemoteSettings()
+    const original = Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')
+    const stop = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => false,
+      resolvePath: () => Promise.resolve('/x'),
+      reroute: () => {},
+    })
+    expect(Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')?.get).not.toBe(original?.get)
+    stop()
+    expect(Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')).toEqual(original)
+
+    // Re-mount a stock-shaped method, wrap again, then let the HOST replace
+    // the property under us: our disposer must not clobber the replacement.
+    const remount = (): (() => Promise<RemoteSettingsOpenResult>) =>
+      () => Promise.resolve({ ok: true, value: { opened: true } })
+    Object.defineProperty(settings, 'openSettingsDocument', {
+      configurable: true,
+      enumerable: true,
+      get: remount,
+    })
+    const stop2 = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => false,
+      resolvePath: () => Promise.resolve('/x'),
+      reroute: () => {},
+    })
+    const replacementGetter = (): unknown => 42
+    Object.defineProperty(settings, 'openSettingsDocument', {
+      configurable: true,
+      enumerable: true,
+      get: replacementGetter,
+    })
+    stop2()
+    expect(Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')?.get).toBe(replacementGetter)
+  })
+
+  it('re-reads the stock method per access, so a remount under the wrapper stays live', async () => {
+    const settings = makeRemoteSettings()
+    const stop = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => true,
+      resolvePath: () => Promise.resolve(null), // decline → fall through
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    await settings.openSettingsDocument!()
+    expect(settings.calls).toHaveLength(1)
+    // The host remounts (a fresh invocation closure) while we are installed:
+    // the next call must reach the NEW closure, never a stale snapshot.
+    let remounted = false
+    Object.defineProperty(settings, 'openSettingsDocument', {
+      configurable: true,
+      enumerable: true,
+      get: () => () => {
+        remounted = true
+        return Promise.resolve({ ok: true, value: { opened: true } } as RemoteSettingsOpenResult)
+      },
+    })
+    await settings.openSettingsDocument!()
+    expect(remounted).toBe(true)
+    stop()
+  })
+
+  it('a namespace without the mounted method installs nothing (fail-soft seam)', () => {
+    // No own property at all…
+    const bare = {} as RemoteSettingsLike
+    expect(() => wrapRemoteOpenSettingsDocument(bare, {
+      takeoverEnabled: () => true,
+      resolvePath: () => { throw new Error('must not resolve') },
+      reroute: () => { throw new Error('must not reroute') },
+    })()).not.toThrow()
+    expect('openSettingsDocument' in bare).toBe(false)
+    // …a plain value property (a foreign runtime shape)…
+    const valued = {
+      openSettingsDocument: () => Promise.resolve({ ok: true, value: { opened: true } }),
+    } as unknown as RemoteSettingsLike
+    const valuedOriginal = valued.openSettingsDocument
+    expect(() => wrapRemoteOpenSettingsDocument(valued, {
+      takeoverEnabled: () => true,
+      resolvePath: () => { throw new Error('must not resolve') },
+      reroute: () => { throw new Error('must not reroute') },
+    })()).not.toThrow()
+    expect(valued.openSettingsDocument).toBe(valuedOriginal)
+    // …and a getter that yields a non-function.
+    const odd = { get openSettingsDocument() { return 42 } } as unknown as RemoteSettingsLike
+    expect(() => wrapRemoteOpenSettingsDocument(odd, {
+      takeoverEnabled: () => true,
+      resolvePath: () => { throw new Error('must not resolve') },
+      reroute: () => { throw new Error('must not reroute') },
+    })()).not.toThrow()
+    expect(odd.openSettingsDocument).toBe(42)
+  })
+
+  it('wrappers compose and unwrap in stack order', () => {
+    const settings = makeRemoteSettings()
+    const original = Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')
+    const stopOuter = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => false,
+      resolvePath: () => Promise.resolve('/x'),
+      reroute: () => {},
+    })
+    const outer = Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')?.get
+    const stopInner = wrapRemoteOpenSettingsDocument(settings, {
+      takeoverEnabled: () => false,
+      resolvePath: () => Promise.resolve('/x'),
+      reroute: () => {},
+    })
+    expect(Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')?.get).not.toBe(outer)
+    stopInner()
+    expect(Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')?.get).toBe(outer)
+    stopOuter()
+    expect(Object.getOwnPropertyDescriptor(settings, 'openSettingsDocument')).toEqual(original)
   })
 })
 
