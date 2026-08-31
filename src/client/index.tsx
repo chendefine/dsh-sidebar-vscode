@@ -50,6 +50,7 @@ import {
   type FallbackOptions,
   type MentionPaster,
   type ReferenceLander,
+  type ReferenceRemover,
 } from './composer.tsx'
 import { CapSettingsPanel, adoptSettingsStyles } from './settingsRows.tsx'
 import {
@@ -57,6 +58,7 @@ import {
   buildResourceRefsFromPayload,
   insertVscodeReferences,
   pasteRecoveredMentions,
+  removeVscodeReferences,
   VSCODE_SOURCE,
   type ConversationServiceFace,
   type SessionsServiceFace,
@@ -91,7 +93,7 @@ interface ClientContextFace {
       name: string
       id: string
       order?: number
-      inject?: () => { lander: ReferenceLander }
+      inject?: () => { lander: ReferenceLander, pasteMentions?: MentionPaster, removeRef?: ReferenceRemover }
     }, component: unknown): () => void
   }
   locale: Parameters<typeof attachLocale>[0]
@@ -151,6 +153,36 @@ function composerDisplayedFor(
   return sessions?.list?.getSnapshot().current === sessionId
 }
 
+/**
+ * The addressed session's live composer caret, in the plane the machine
+ * addresses edits in — the bridge path's insertion point.
+ *
+ * Lexical hosts answer through the input resolver's keyboard face
+ * (`conversation.input.keyboard(id).caretSpan()`): the editor's own
+ * selection projection, per-session correct and kept through focus loss
+ * into the VS Code iframe. Hosts without the face fall back to the DOM
+ * selection of the displayed composer (the modern contenteditable mapping,
+ * or the old textarea), gated on the displayed session matching — only the
+ * displayed conversation's surface is meaningful there.
+ */
+function readComposerPoint(
+  client: ClientContextFace,
+  sessionId: string | undefined,
+): { readonly start: number, readonly end: number } | undefined {
+  if (sessionId === undefined) return undefined
+  const keyboard = client.conversation?.input.keyboard
+  if (keyboard !== undefined) {
+    try {
+      return keyboard(sessionId).caretSpan()
+    } catch {
+      // No shell for the id (never-focused session): fall through to the DOM.
+    }
+  }
+  return composerDisplayedFor(client.sessions, sessionId)
+    ? readActiveComposerSelection()
+    : undefined
+}
+
 /** The tab descriptor this plugin registers. */
 export function vscodeTab(): TabDescriptor {
   return {
@@ -197,12 +229,15 @@ export function apply(ctx: unknown): void {
   // fallback) and the tab's clipboard bridge. The lander builds one chip per
   // span (editor selections) or per resource (explorer files/folders) and
   // lands them on the addressed session's input machine — at the addressed
-  // draft range: the caller's paste selection when it has one, else (the
-  // bridge path, which holds no composer element) the displayed composer's
-  // live caret whenever it belongs to the addressed session, else the draft
-  // tail. The chip's ref IS the canonical mention, so submit serialization
-  // needs no state. The paster lands recovered mention copies (rendered-chip
-  // text pasted back) the same way — at the paste selection, prose preserved.
+  // range: the caller's paste selection when it has one, else (the bridge
+  // path, which holds no composer element) the addressed session's live
+  // composer caret — the machine's own selection projection on Lexical
+  // hosts, the displayed composer's DOM selection otherwise — else the
+  // draft tail. The chip's ref IS the canonical mention, so submit
+  // serialization needs no state. The paster lands recovered mention copies
+  // (rendered-chip text pasted back) the same way — at the paste selection,
+  // prose preserved. The remover strips one reference's chips without
+  // flattening the others (the rail's close affordance).
   const lander: ReferenceLander = (
     sessionId: string | undefined,
     payload: ClipboardPayload,
@@ -210,16 +245,12 @@ export function apply(ctx: unknown): void {
     at?: { readonly start: number, readonly end: number },
   ) => {
     return (async () => {
-      // Read the displayed composer's selection before any await: every
+      // Read the addressed composer's selection before any await: every
       // async gap is a window where a machine write could flush a new value
-      // through React and collapse the textarea selection to the tail.
+      // through React and collapse the surface's selection to the tail.
       // The bridge path passes no `at`: resolve the insertion point here.
-      // Only the displayed conversation's caret is meaningful — a composer
-      // that belongs to another session holds a different session's draft —
-      // so anything else (mismatch, no live composer) keeps the historical
-      // end-of-draft append.
-      const ownPoint = at === undefined && composerDisplayedFor(client.sessions, sessionId)
-      const point = at !== undefined ? at : ownPoint ? readActiveComposerSelection() : undefined
+      const ownPoint = at === undefined
+      const point = at !== undefined ? at : ownPoint ? readComposerPoint(client, sessionId) : undefined
       const refs = isResourceList(payload)
         ? buildResourceRefsFromPayload(payload, {
           reverseRules: options.reverseRules,
@@ -233,9 +264,11 @@ export function apply(ctx: unknown): void {
         })
       const outcome = await insertVscodeReferences(client.sessions, client.conversation, sessionId, refs, point)
       // Caret restore is the point owner's duty: a caller that passed `at`
-      // restores through its own element (the paste fallbacks); only the
-      // point this wrapper resolved itself from the DOM is restored here.
-      if (ownPoint && outcome.caret !== undefined && composerDisplayedFor(client.sessions, sessionId)) {
+      // restores through its own surface (the paste fallbacks); only the
+      // point this wrapper resolved itself is restored here — and only when
+      // it came from the DOM (a machine-resolved point leaves the editor's
+      // own post-insert selection, already right after the chip, alone).
+      if (ownPoint && point !== undefined && outcome.caret !== undefined && client.conversation?.input.keyboard === undefined) {
         restoreActiveComposerCaret(outcome.caret)
       }
       return outcome
@@ -243,6 +276,9 @@ export function apply(ctx: unknown): void {
   }
   const pasteMentions: MentionPaster = (sessionId, parts, selection) => {
     return pasteRecoveredMentions(client.sessions, client.conversation, sessionId, parts, selection)
+  }
+  const removeRef: ReferenceRemover = (sessionId, ref) => {
+    void removeVscodeReferences(client.sessions, client.conversation, sessionId, ref)
   }
   client.effect(() => {
     setReferenceLander(lander)
@@ -259,7 +295,7 @@ export function apply(ctx: unknown): void {
       name: 'conversation.input.dock',
       id: 'dsh-sidebar-vscode-composer',
       order: 30,
-      inject: () => ({ lander, pasteMentions }),
+      inject: () => ({ lander, pasteMentions, removeRef }),
     }, ComposerDock))
     return () => {
       stop()

@@ -12,13 +12,18 @@ import { describe, expect, it } from 'vitest'
 import {
   buildRefsFromPayload,
   buildResourceRefsFromPayload,
+  clipboardOfDetect,
+  detectLengthOf,
+  detectOfClipboard,
   groupRailTags,
   hashSnapshot,
   insertVscodeReferences,
+  isLexicalInput,
   parseRecoveredPaste,
   pasteRecoveredMentions,
   refsFromRecoveredMentions,
   removeRefRanges,
+  removeVscodeReferences,
   resolveWorkspacePath,
   VSCODE_SOURCE,
   type ConversationServiceFace,
@@ -291,8 +296,10 @@ class FakeInput implements SessionInputFace {
 }
 
 function servicesFor<T extends SessionInputFace> (input: T, opts: { scope?: boolean, throwFor?: boolean } = {}) {
+  const bailOf = input as unknown as { bail?: unknown }
+  const scope: unknown = typeof bailOf.bail === 'function' ? { bail: bailOf.bail } : {}
   const sessions: SessionsServiceFace = {
-    scope: () => (opts.scope === false ? undefined : {}),
+    scope: () => (opts.scope === false ? undefined : scope),
   }
   const conversation: ConversationServiceFace = {
     input: {
@@ -364,7 +371,7 @@ describe('insertVscodeReferences', () => {
   })
 })
 
-describe('insertVscodeReferences at the caret', () => {
+describe('insertVscodeReferences at the caret (textarea-era machine)', () => {
   it('lands one chip at the caret mid-draft, keeping both sides', async () => {
     const input = new MachineLikeInput()
     input.draft = 'hello world'
@@ -564,7 +571,7 @@ describe('parseRecoveredPaste', () => {
   })
 })
 
-describe('pasteRecoveredMentions', () => {
+describe('pasteRecoveredMentions (textarea-era machine)', () => {
   it('lands prose plus one chip at the caret, mid-draft', async () => {
     const input = new MachineLikeInput()
     input.draft = 'hello world'
@@ -759,5 +766,416 @@ describe('removeRefRanges', () => {
       occurrenceId: 1, source: VSCODE_SOURCE, ref: ref.ref, offset: 2, length: ref.label.length + 1, label: ref.label,
     }]
     expect(removeRefRanges(draft, occurrences, ref.ref)).toBe('')
+  })
+})
+
+// ---- the Lexical-era machine (DSH >= 0.1.2-alpha.2) ----
+
+/** One document part of the modern single-paragraph composer model. */
+type ModernPart = { kind: 'text', text: string } | { kind: 'chip', ref: ReferenceInsertLike }
+
+/**
+ * A faithful mini-model of the Lexical-era SessionInputShell: the draft is
+ * the CLIPBOARD projection (chips expand to clipboardText), spans are
+ * DETECT-projection offsets (chips are one ￼ char), insertReference refuses
+ * out-of-bounds spans (span-map null), setDraft REPLACES the whole document
+ * as plain text, and the scoped bail events apply span-addressed writes the
+ * way the input hub's listeners do.
+ */
+class ModernInput implements SessionInputFace {
+  /** The Lexical marker the host probe looks for. */
+  readonly editor: unknown = Object.freeze({})
+  parts: ModernPart[] = []
+  draftRev = 0
+  phase = 'plain'
+  failInsert = false
+  failInsertText = false
+  /** Every whole-draft write (the destructive path — asserted empty). */
+  readonly drafts: string[] = []
+  /** Every insert-text transaction the hub applied. */
+  readonly insertTexts: { text: string, span: { start: number, end: number } }[] = []
+  /** Every consume-token transaction the hub applied. */
+  readonly consumed: { start: number, end: number }[] = []
+
+  get detectText (): string {
+    return this.parts.map(part => part.kind === 'text' ? part.text : '￼').join('')
+  }
+
+  get clipboardText (): string {
+    return this.parts.map(part => part.kind === 'text' ? part.text : part.ref.clipboardText).join('')
+  }
+
+  get occurrences (): OccurrenceLike[] {
+    const rows: OccurrenceLike[] = []
+    let clipboard = 0
+    let seq = 0
+    for (const part of this.parts) {
+      if (part.kind === 'text') {
+        clipboard += part.text.length
+        continue
+      }
+      seq += 1
+      rows.push({
+        occurrenceId: seq,
+        source: part.ref.source,
+        ref: part.ref.ref,
+        offset: clipboard,
+        length: part.ref.clipboardText.length,
+        label: part.ref.label,
+        clipboardText: part.ref.clipboardText,
+      })
+      clipboard += part.ref.clipboardText.length
+    }
+    return rows
+  }
+
+  readonly state = {
+    getSnapshot: (): InputStateLike => ({
+      draft: this.clipboardText,
+      draftRev: this.draftRev,
+      phase: this.phase,
+      occurrences: this.occurrences,
+    }),
+  }
+
+  /** Split the document at one detect offset → [before, after]. */
+  private splitAt (detectOffset: number): [ModernPart[], ModernPart[]] {
+    const before: ModernPart[] = []
+    const after: ModernPart[] = []
+    let base = 0
+    for (const part of this.parts) {
+      if (part.kind === 'chip') {
+        // Chips are atomic: wholly before once the split passes their edge.
+        if (detectOffset >= base + 1) before.push(part)
+        else after.push(part)
+        base += 1
+        continue
+      }
+      const within = Math.max(0, Math.min(part.text.length, detectOffset - base))
+      if (within > 0) before.push({ kind: 'text', text: part.text.slice(0, within) })
+      if (within < part.text.length) after.push({ kind: 'text', text: part.text.slice(within) })
+      base += part.text.length
+    }
+    return [before, after]
+  }
+
+  private replaceDetectSpan (span: { start: number, end: number }, nodes: ModernPart[]): void {
+    const [head] = this.splitAt(span.start)
+    const [, tail] = this.splitAt(span.end)
+    this.parts = [...head, ...nodes, ...tail]
+    this.draftRev += 1
+  }
+
+  insertReference (ref: ReferenceInsertLike, span: TokenSpanLike): boolean {
+    if (this.failInsert) return false
+    if (this.phase !== 'plain' && this.phase !== 'claimed') return false
+    if (span.draftRev !== this.draftRev) return false
+    const detect = this.detectText
+    // The span-map contract: out-of-bounds spans never resolve.
+    if (span.start < 0 || span.end < span.start || span.end > detect.length) return false
+    const gap = detect[span.end] === ' ' ? '' : ' '
+    this.replaceDetectSpan(span, gap === '' ? [{ kind: 'chip', ref }] : [{ kind: 'chip', ref }, { kind: 'text', text: ' ' }])
+    return true
+  }
+
+  setDraft (text: string): void {
+    this.parts = text === '' ? [] : [{ kind: 'text', text }]
+    this.draftRev += 1
+    this.drafts.push(text)
+  }
+
+  /** The hub's 'slash/input-insert-text' listener body. */
+  private applyInsertText (request: { text: string, span: TokenSpanLike }): boolean {
+    if (this.failInsertText) return false
+    if (request.span.draftRev !== this.draftRev) return false
+    const detect = this.detectText
+    const span = request.span
+    if (span.start < 0 || span.end < span.start || span.end > detect.length) return false
+    this.replaceDetectSpan(span, request.text === '' ? [] : [{ kind: 'text', text: request.text }])
+    this.insertTexts.push({ text: request.text, span: { start: span.start, end: span.end } })
+    return true
+  }
+
+  /** The hub's 'slash/input-consume-token' listener body. */
+  private applyConsumeToken (request: { guard: { kind: 'span', span: TokenSpanLike } }): boolean {
+    const span = request.guard.span
+    if (span.draftRev !== this.draftRev) return false
+    if (span.start === span.end) return false
+    const detect = this.detectText
+    if (span.start < 0 || span.end > detect.length) return false
+    this.replaceDetectSpan(span, [])
+    this.consumed.push({ start: span.start, end: span.end })
+    return true
+  }
+
+  /** The session scope's bail face (bound arrow — handed to servicesFor). */
+  readonly bail = (thisArg: unknown, event: string, request: unknown): boolean | undefined => {
+    if (event === 'slash/input-insert-text') return this.applyInsertText(request as { text: string, span: TokenSpanLike })
+    if (event === 'slash/input-consume-token') {
+      return this.applyConsumeToken(request as { guard: { kind: 'span', span: TokenSpanLike } })
+    }
+    return undefined
+  }
+}
+
+describe('projection-plane helpers', () => {
+  const occurrences: OccurrenceLike[] = [
+    // "see " + chip(10) + " and " + chip(4) + "!"  (clipboard offsets)
+    { occurrenceId: 1, source: VSCODE_SOURCE, ref: 'a', offset: 4, length: 10, label: 'a' },
+    { occurrenceId: 2, source: VSCODE_SOURCE, ref: 'b', offset: 19, length: 4, label: 'b' },
+  ]
+  const draft = `see ${'x'.repeat(10)} and ${'y'.repeat(4)}!`
+
+  it('computes the detect length (one char per chip)', () => {
+    expect(detectLengthOf({ draft, occurrences })).toBe('see ￼ and ￼!'.length)
+  })
+
+  it('maps clipboard offsets to detect offsets (inside/at a chip → trailing edge)', () => {
+    expect(detectOfClipboard(0, occurrences)).toBe(0)
+    expect(detectOfClipboard(4, occurrences)).toBe(4) // chip leading edge
+    expect(detectOfClipboard(9, occurrences)).toBe(5) // inside → trailing edge
+    expect(detectOfClipboard(14, occurrences)).toBe(5) // chip end → trailing edge
+    expect(detectOfClipboard(15, occurrences)).toBe(6) // ' and ' tail
+    expect(detectOfClipboard(draft.length, occurrences)).toBe('see ￼ and ￼!'.length)
+  })
+
+  it('maps detect offsets back to clipboard offsets', () => {
+    expect(clipboardOfDetect(4, occurrences)).toBe(4)   // the first chip's leading edge
+    expect(clipboardOfDetect(5, occurrences)).toBe(14)  // past the first chip
+    expect(clipboardOfDetect(10, occurrences)).toBe(19) // the second chip's leading edge
+    expect(clipboardOfDetect(11, occurrences)).toBe(23) // past the second chip
+    expect(clipboardOfDetect(12, occurrences)).toBe(24) // the trailing '!'
+  })
+
+  it('detects the Lexical host by the editor marker', () => {
+    expect(isLexicalInput(new ModernInput())).toBe(true)
+    expect(isLexicalInput(new FakeInput())).toBe(false)
+  })
+})
+
+describe('insertVscodeReferences (Lexical machine)', () => {
+  it('lands one chip at the caret mid-draft (detect plane)', async () => {
+    const input = new ModernInput()
+    input.parts = [{ kind: 'text', text: 'hello world' }]
+    const refs = await buildRefsFromPayload(payload(), {})
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs, { start: 'hello'.length, end: 'hello'.length })
+    expect(outcome.inserted).toBe(1)
+    // The machine adds no gap of its own: the existing space after the caret
+    // already separates the chip from ' world'.
+    expect(outcome.caret).toBe('hello￼'.length)
+    expect(input.detectText).toBe('hello￼ world')
+    expect(input.clipboardText).toBe(`hello${refs[0]!.clipboardText} world`)
+    expect(input.occurrences).toMatchObject([{ offset: 'hello'.length, length: refs[0]!.clipboardText.length }])
+    expect(input.drafts).toEqual([])
+  })
+
+  it('lands a second chip after a first one without flattening it (the reported regression)', async () => {
+    const input = new ModernInput()
+    const first = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: first }, { kind: 'text', text: ' ' }]
+    input.draftRev = 1
+    const second = (await buildRefsFromPayload(payload({ spans: [{ startLine: 5, endLine: 6, text: 'b\nc' }] }), {}))[0]!
+    const { sessions, conversation } = servicesFor(input)
+    // No addressed point: the historical tail landing, now in detect coords.
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', [second])
+    expect(outcome.inserted).toBe(1)
+    expect(outcome.textFallback).toBe(0)
+    expect(input.drafts).toEqual([]) // the old code fell to setDraft here, wiping chip #1
+    expect(input.detectText).toBe('￼ ￼ ')
+    expect(input.occurrences).toHaveLength(2)
+    expect(input.occurrences.map(row => row.ref)).toEqual([first.ref, second.ref])
+    expect(input.clipboardText).toBe(`${first.clipboardText} ${second.clipboardText} `)
+  })
+
+  it('lands at the caret between two existing chips', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    const b = (await buildRefsFromPayload(payload({ spans: [{ startLine: 5, endLine: 6, text: 'b\nc' }] }), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: ' mid ' }, { kind: 'chip', ref: b }]
+    input.draftRev = 1
+    const c = (await buildRefsFromPayload(payload({ spans: [{ startLine: 9, endLine: 9, text: 'z' }] }), {}))[0]!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', [c], { start: '￼ '.length, end: '￼ '.length })
+    expect(outcome.inserted).toBe(1)
+    // 'm' follows the caret, so the machine appends its own separating space.
+    expect(input.detectText).toBe('￼ ￼ mid ￼')
+    expect(input.drafts).toEqual([])
+    expect(input.occurrences).toHaveLength(3)
+  })
+
+  it('clamps an out-of-range caret into the detect length, not the clipboard length', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: ' tail' }]
+    input.draftRev = 1
+    const b = (await buildRefsFromPayload(payload(), {}))[0]!
+    const { sessions, conversation } = servicesFor(input)
+    // 99 is beyond even the clipboard length — the clamp must still land a chip.
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', [b], { start: 99, end: 99 })
+    expect(outcome.inserted).toBe(1)
+    expect(input.detectText).toBe('￼ tail￼ ')
+    expect(input.drafts).toEqual([])
+  })
+
+  it('degrades a refused chip to mention text through the insert-text event, keeping chips intact', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: ' ctx' }]
+    input.draftRev = 1
+    input.failInsert = true
+    const b = (await buildRefsFromPayload(payload({ spans: [{ startLine: 5, endLine: 6, text: 'b\nc' }] }), {}))[0]!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', [b], { start: '￼ '.length, end: '￼ '.length })
+    expect(outcome).toMatchObject({ inserted: 0, textFallback: 1 })
+    expect(outcome.caret).toBe('￼ '.length + b.ref.length + 1)
+    expect(input.drafts).toEqual([]) // no whole-draft write: chip #1 survives
+    expect(input.occurrences).toHaveLength(1)
+    expect(input.insertTexts).toEqual([{ text: `${b.ref} `, span: { start: '￼ '.length, end: '￼ '.length } }])
+    expect(input.detectText).toBe(`￼ ${b.ref} ctx`)
+  })
+
+  it('appends as mention text at the tail through the event when no point is addressed', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: 'ctx' }]
+    input.draftRev = 1
+    input.failInsert = true
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', [a])
+    expect(outcome.textFallback).toBe(1)
+    expect(input.drafts).toEqual([])
+    expect(input.detectText).toBe(`￼ctx ${a.ref} `)
+  })
+
+  it('falls back to the whole-draft write only when the host has no event seam', async () => {
+    const input = new ModernInput()
+    input.failInsert = true
+    input.parts = [{ kind: 'text', text: 'ctx' }]
+    const refs = await buildRefsFromPayload(payload(), {})
+    const sessions: SessionsServiceFace = { scope: () => ({}) } // a scope without bail
+    const conversation: ConversationServiceFace = { input: { for: () => input } }
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs)
+    expect(outcome.textFallback).toBe(1)
+    expect(input.drafts).toEqual([`ctx ${refs[0]!.ref} `])
+  })
+})
+
+describe('pasteRecoveredMentions (Lexical machine)', () => {
+  it('lands prose plus chips at the paste selection without whole-draft writes', async () => {
+    const input = new ModernInput()
+    input.parts = [{ kind: 'text', text: 'hello world' }]
+    const parsed = parseRecoveredPaste(`see ${mangledCopy(ref())} now`)!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await pasteRecoveredMentions(sessions, conversation, 's1', parsed.parts, { start: 5, end: 5 })
+    expect(outcome.inserted).toBe(1)
+    expect(input.drafts).toEqual([])
+    // The machine adds no gap of its own: the surviving ' world' already
+    // starts with its separating space.
+    expect(input.detectText).toBe('hellosee ￼ now world')
+    expect(input.occurrences).toHaveLength(1)
+    expect(outcome.caret).toBe('hellosee ￼ now'.length)
+  })
+
+  it('keeps existing chips when landing a paste among them', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: ' tail' }]
+    input.draftRev = 1
+    const parsed = parseRecoveredPaste(mangledCopy(ref()))!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await pasteRecoveredMentions(sessions, conversation, 's1', parsed.parts, { start: 2, end: 2 })
+    expect(outcome.inserted).toBe(1)
+    expect(input.drafts).toEqual([])
+    expect(input.occurrences).toHaveLength(2)
+  })
+
+  it('lands canonical mention text through the event when the phase is frozen', async () => {
+    const input = new ModernInput()
+    input.parts = [{ kind: 'text', text: 'ctx' }]
+    input.phase = 'submitting'
+    const parsed = parseRecoveredPaste(`see ${mangledCopy(ref())}`)!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await pasteRecoveredMentions(sessions, conversation, 's1', parsed.parts, { start: 3, end: 3 })
+    expect(outcome.inserted).toBe(0)
+    expect(outcome.textFallback).toBe(1)
+    expect(input.drafts).toEqual([])
+    expect(input.detectText).toBe(`ctxsee ${parsed.refs[0]!.ref} `)
+  })
+
+  it('degrades one refused chip to mention text, keeping prose and other chips', async () => {
+    const input = new ModernInput()
+    input.failInsert = true
+    input.parts = [{ kind: 'text', text: 'ctx' }]
+    const parsed = parseRecoveredPaste(`see ${mangledCopy(ref())} now`)!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await pasteRecoveredMentions(sessions, conversation, 's1', parsed.parts, { start: 3, end: 3 })
+    expect(outcome).toMatchObject({ inserted: 0, textFallback: 1 })
+    expect(input.drafts).toEqual([])
+    expect(input.detectText).toBe(`ctxsee ${parsed.refs[0]!.ref}  now`)
+  })
+})
+
+describe('removeVscodeReferences', () => {
+  it('removes every chip of one reference through consume-token, keeping the others', async () => {
+    const input = new ModernInput()
+    const a1 = (await buildRefsFromPayload(payload(), {}))[0]!
+    const a2 = a1
+    const b = (await buildRefsFromPayload(payload({ spans: [{ startLine: 5, endLine: 6, text: 'b\nc' }] }), {}))[0]!
+    input.parts = [
+      { kind: 'chip', ref: a1 },
+      { kind: 'text', text: ' and ' },
+      { kind: 'chip', ref: a2 },
+      { kind: 'text', text: ' plus ' },
+      { kind: 'chip', ref: b },
+    ]
+    input.draftRev = 1
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await removeVscodeReferences(sessions, conversation, 's1', a1.ref)
+    expect(outcome).toEqual({ removed: 2, degraded: false })
+    expect(input.drafts).toEqual([]) // the old rail flattened every chip here
+    expect(input.occurrences).toHaveLength(1)
+    expect(input.occurrences[0]!.ref).toBe(b.ref)
+    // Seam rule: each removed chip took one doubled space with it; the
+    // interstitial words and the other chip survive untouched.
+    expect(input.detectText).toBe('and plus ￼')
+  })
+
+  it('clears a whitespace-only remainder to the empty draft', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'text', text: '  ' }, { kind: 'chip', ref: a }, { kind: 'text', text: ' ' }]
+    input.draftRev = 1
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await removeVscodeReferences(sessions, conversation, 's1', a.ref)
+    expect(outcome.degraded).toBe(false)
+    expect(input.detectText).toBe('')
+    expect(input.drafts).toEqual([])
+  })
+
+  it('degrades to the whole-draft splice when the machine refuses', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: ' tail' }]
+    input.draftRev = 1
+    const sessions: SessionsServiceFace = { scope: () => ({}) } // no bail seam
+    const conversation: ConversationServiceFace = { input: { for: () => input } }
+    const outcome = await removeVscodeReferences(sessions, conversation, 's1', a.ref)
+    expect(outcome).toEqual({ removed: 1, degraded: true })
+    expect(input.drafts).toEqual(['tail'])
+  })
+
+  it('uses the legacy whole-draft splice on textarea-era machines', async () => {
+    const input = new MachineLikeInput()
+    const refs = await buildRefsFromPayload(payload(), {})
+    input.draft = `@${refs[0]!.label} tail`
+    input.occurrences.push({
+      occurrenceId: 1, source: VSCODE_SOURCE, ref: refs[0]!.ref, offset: 0,
+      length: refs[0]!.label.length + 1, label: refs[0]!.label,
+    })
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await removeVscodeReferences(sessions, conversation, 's1', refs[0]!.ref)
+    expect(outcome).toEqual({ removed: 1, degraded: false })
+    expect(input.draft).toBe('tail')
   })
 })

@@ -7,15 +7,33 @@
  * Everything here is structurally typed against the ui-conversation /
  * ui-input-trigger contracts (the browser bundle's purity gate forbids
  * `@deepseek-ai/*` value imports, and the shapes are frozen public seams).
- * Insertion goes through the session's `SessionInput.insertReference` with a
- * revision-CAS'd span at the caller's addressed point — the composer's caret
- * (a selected range replaces it), the point just past the previous reference
- * for a batch, or the end-of-draft zero-width span when no point is
- * addressable — the same machine transaction the trigger-menu pipeline uses,
- * so every chip is an atomic occurrence:
- * backspace deletes it whole, submit serializes it through this plugin's
- * trigger-source codec, and the draft text (not any side table) is the single
- * store of what will be injected at `agent/pre-step`.
+ *
+ * TWO host generations are served, keyed by one structural probe
+ * ({@link isLexicalInput} — the Lexical-era shell owns an `editor`; the
+ * textarea-era machine does not):
+ *
+ * - Lexical hosts (DSH ≥ 0.1.2-alpha.2): the draft is the CLIPBOARD
+ *   projection (each chip expands to its `clipboardText` — here the full
+ *   canonical mention) while `TokenSpan`s are DETECT-projection offsets
+ *   (each chip is one `￼` char); the two planes diverge as soon as any chip
+ *   exists. Insertion still goes through `SessionInput.insertReference`
+ *   with a revision-CAS'd detect span; plain-text degradation rides the
+ *   scoped `'slash/input-insert-text'` bail event (a span-addressed editor
+ *   write that never flattens other chips — unlike `setDraft`, which
+ *   replaces the whole editor as plain text); chip removal rides
+ *   `'slash/input-consume-token'`. Spans and returned carets are detect
+ *   offsets; {@link detectLengthOf}/{@link detectOfClipboard}/
+ *   {@link clipboardOfDetect} translate between the planes through the
+ *   occurrence table.
+ *
+ * - Textarea-era hosts: one text plane — the draft itself. The historical
+ *   span math (draft-tail append, `setDraft` splice with an edit range)
+ *   stays exactly as it was.
+ *
+ * In both worlds every chip is an atomic occurrence: backspace deletes it
+ * whole, submit serializes it through this plugin's trigger-source codec,
+ * and the draft text (not any side table) is the single store of what will
+ * be injected at `agent/pre-step`.
  *
  * @module dsh-sidebar-vscode/client/references
  */
@@ -77,6 +95,8 @@ export interface OccurrenceLike {
   readonly offset: number
   readonly length: number
   readonly label: string
+  /** Clipboard/persistence projection of the chip (Lexical hosts carry it). */
+  readonly clipboardText?: string
   readonly invalid?: boolean
 }
 
@@ -92,12 +112,22 @@ export interface InputStateLike {
 export interface SessionInputFace {
   insertReference(ref: ReferenceInsertLike, span: TokenSpanLike): boolean
   /**
-   * Draft write; the machine's own face also accepts the DOM-observed edit
-   * shape (narrowing the occurrence reconciliation), passed through as the
-   * optional second argument when the caller knows the paste's range.
+   * Whole-draft write. On Lexical hosts this REPLACES the editor content as
+   * plain text — flattening every chip — so it is this plugin's last-resort
+   * fallback only; the textarea-era machine treated it as a splice and kept
+   * its occurrences reconciled by diff-scan.
    */
   setDraft(text: string, editRange?: { readonly start: number, readonly end: number, readonly insertedLength: number }): void
   readonly state: { getSnapshot(): InputStateLike }
+}
+
+/**
+ * The Lexical-era composer keyboard face (`conversation.input.keyboard(id)`
+ * answers the per-session shell structurally). `caretSpan` reads the live
+ * editor selection — the user's last caret — in detect coordinates.
+ */
+export interface ComposerKeyboardFace {
+  caretSpan(): { readonly start: number, readonly end: number }
 }
 
 /** Sessions service face: session-scope context resolution. */
@@ -107,7 +137,88 @@ export interface SessionsServiceFace {
 
 /** Conversation service face: the per-session input resolver. */
 export interface ConversationServiceFace {
-  readonly input: { for(actx: unknown): SessionInputFace }
+  readonly input: {
+    for(actx: unknown): SessionInputFace
+    /** Lexical hosts: the per-session keyboard face (may throw on unknown ids). */
+    keyboard?(sessionId: string): ComposerKeyboardFace
+  }
+}
+
+/**
+ * Scoped input-mutation events the Lexical-era hub listens for on every
+ * session scope (declared public in the ui-conversation input contract —
+ * the host's own trigger pipeline dispatches through the same seam).
+ * Structural and optional: absence simply keeps the legacy write paths.
+ */
+export interface SessionScopeFace {
+  bail?(
+    thisArg: unknown,
+    event: 'slash/input-insert-text' | 'slash/input-consume-token',
+    request: unknown,
+  ): boolean | undefined
+}
+
+// ---- host generation probe + projection-plane translation ----
+
+/**
+ * Whether one input facade is the Lexical-era shell. The shell owns its
+ * editor (`readonly editor: LexicalEditor`); the textarea-era machine never
+ * did. Everything plane-sensitive branches on this single probe.
+ */
+export function isLexicalInput(input: SessionInputFace): boolean {
+  return 'editor' in input && (input as { editor?: unknown }).editor !== undefined
+}
+
+/** Occurrence table sorted by offset (the machine's published invariant). */
+function sortedOccurrences(occurrences: readonly OccurrenceLike[]): readonly OccurrenceLike[] {
+  return [...occurrences].sort((a, b) => a.offset - b.offset)
+}
+
+/**
+ * Length of the detect projection: the clipboard draft minus every chip's
+ * expansion beyond its single detect character.
+ */
+export function detectLengthOf(snapshot: { readonly draft: string, readonly occurrences: readonly OccurrenceLike[] }): number {
+  const chips = snapshot.occurrences.reduce((sum, occ) => sum + Math.max(0, occ.length - 1), 0)
+  return Math.max(0, snapshot.draft.length - chips)
+}
+
+/**
+ * Clipboard offset → detect offset (host parity with
+ * `detectOffsetOfClipboardOffset`): offsets before a chip map before it;
+ * offsets at or inside a chip's expansion snap to the chip's trailing edge.
+ */
+export function detectOfClipboard(clipboardOffset: number, occurrences: readonly OccurrenceLike[]): number {
+  let adjust = 0
+  for (const occ of sortedOccurrences(occurrences)) {
+    const end = occ.offset + occ.length
+    if (clipboardOffset >= end) {
+      adjust += Math.max(0, occ.length - 1)
+      continue
+    }
+    if (clipboardOffset <= occ.offset) return clipboardOffset - adjust
+    // Inside the expansion: the chip's trailing detect edge.
+    return occ.offset - adjust + 1
+  }
+  return clipboardOffset - adjust
+}
+
+/**
+ * Detect offset → clipboard offset: the inverse of {@link detectOfClipboard}.
+ * A detect offset at a chip's leading edge maps before its expansion; at the
+ * trailing edge (leading+1) it maps after it.
+ */
+export function clipboardOfDetect(detectOffset: number, occurrences: readonly OccurrenceLike[]): number {
+  let adjust = 0
+  for (const occ of sortedOccurrences(occurrences)) {
+    const detectStart = occ.offset - adjust
+    if (detectOffset >= detectStart + 1) {
+      adjust += Math.max(0, occ.length - 1)
+      continue
+    }
+    break
+  }
+  return detectOffset + adjust
 }
 
 // ---- payload → reference chips ----
@@ -258,8 +369,10 @@ export interface InsertOutcome {
   /** References that landed as plain-text mentions (machine refused the chip). */
   readonly textFallback: number
   /**
-   * Draft offset just past the last landed reference (the restored caret);
-   * undefined when nothing landed or no session composer resolved at all.
+   * Offset just past the last landed reference (the restored caret), in the
+   * plane the addressed composer's selection speaks — detect coordinates on
+   * Lexical hosts, draft coordinates on textarea-era ones; undefined when
+   * nothing landed or no session composer resolved at all.
    */
   readonly caret?: number
   /** True when no session composer could be resolved at all. */
@@ -284,23 +397,61 @@ function clampSpan(range: { start: number, end: number }, length: number): { sta
   return a <= b ? { start: a, end: b } : { start: b, end: a }
 }
 
+/** Dispatch one scoped input event (`'slash/input-insert-text'`); false when unhandled. */
+function bailInsertText(actx: unknown, request: unknown): boolean {
+  const scope = actx as SessionScopeFace | undefined
+  if (scope === null || scope === undefined || typeof scope.bail !== 'function') return false
+  try {
+    return scope.bail(scope, 'slash/input-insert-text', request) === true
+  } catch {
+    return false
+  }
+}
+
+/** Dispatch one scoped input event (`'slash/input-consume-token'`); false when unhandled. */
+function bailConsumeToken(actx: unknown, request: unknown): boolean {
+  const scope = actx as SessionScopeFace | undefined
+  if (scope === null || scope === undefined || typeof scope.bail !== 'function') return false
+  try {
+    return scope.bail(scope, 'slash/input-consume-token', request) === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The machine's trailing-gap rule, evaluated through the clipboard draft:
+ * a chip (or mention) landing at `clipboardPoint` is followed by one space
+ * unless the text there already starts with one — including at the draft
+ * end, where the machine appends the gap itself.
+ */
+function trailingGapAt(snapshot: InputStateLike, clipboardPoint: number): string {
+  return snapshot.draft[clipboardPoint] === ' ' ? '' : ' '
+}
+
 /**
  * Insert references as atomic chips on the addressed session's composer,
  * at the caller's addressed point: the first reference replaces the `at`
  * range (a bare caret is the zero-width case), every following one splices
  * at the point just past its predecessor, and a missing `at` keeps the
- * historical end-of-draft append. Whenever the input machine refuses the
- * chip transaction (mid-submit phases, CAS loss after retry) the canonical
- * mention lands as plain text over the same point — paste geometry when one
- * was addressed, the separator-aware tail append otherwise. The host
- * boundary parses plain-text mentions identically, so the text path
- * degrades only the chip affordance — never the context.
+ * historical end-of-draft append. Spans are detect-projection offsets on
+ * Lexical hosts ({@link isLexicalInput}) and draft offsets on textarea-era
+ * ones — `at` must come from the same plane (the keyboard face's
+ * `caretSpan()`, the composer DOM mapping, or a textarea selection).
+ *
+ * Whenever the input machine refuses the chip transaction (mid-submit
+ * phases, CAS loss after retry) the canonical mention lands as plain text
+ * over the same point — on Lexical hosts through the span-addressed
+ * `'slash/input-insert-text'` event so every OTHER chip survives intact,
+ * and only on textarea-era hosts through the whole-draft `setDraft` write.
+ * The host boundary parses plain-text mentions identically, so the text
+ * path degrades only the chip affordance — never the context.
  *
  * @param sessions - the sessions service (scope resolution).
  * @param conversation - the conversation service (input resolver).
  * @param sessionId - the addressed session.
  * @param refs - references to land, in order.
- * @param at - the draft range the references replace (usually the composer
+ * @param at - the range the references replace (usually the composer
  * caret; a non-zero width is the selection it replaces). Undefined = append
  * at the draft tail.
  * @returns the per-path landing counts plus the post-landing caret.
@@ -323,6 +474,10 @@ export async function insertVscodeReferences(
   } catch {
     return { inserted: 0, textFallback: 0, failed: true }
   }
+  const lexical = isLexicalInput(input)
+  /** The current span-addressable length: detect plane or the draft itself. */
+  const planeLength = (snapshot: InputStateLike): number =>
+    lexical ? detectLengthOf(snapshot) : snapshot.draft.length
 
   let inserted = 0
   let textFallback = 0
@@ -340,15 +495,16 @@ export async function insertVscodeReferences(
         continue
       }
       const span = next === undefined
-        ? { start: snapshot.draft.length, end: snapshot.draft.length }
-        : clampSpan(next, snapshot.draft.length)
-      const beforeLen = snapshot.draft.length
+        ? { start: planeLength(snapshot), end: planeLength(snapshot) }
+        : clampSpan(next, planeLength(snapshot))
+      const beforeLen = planeLength(snapshot)
       landed = input.insertReference(ref, { ...span, draftRev: snapshot.draftRev })
       if (landed) {
         // The chip (plus its machine-added trailing gap) replaced [span):
         // the next point is exactly past the inserted region, measured off
-        // the draft delta so the machine's gap rule never has to be copied.
-        const afterLen = input.state.getSnapshot().draft.length
+        // the plane's own length delta so the machine's gap rule never has
+        // to be copied.
+        const afterLen = planeLength(input.state.getSnapshot())
         caret = span.start + (afterLen - beforeLen) + (span.end - span.start)
         next = { start: caret, end: caret }
       } else {
@@ -361,24 +517,48 @@ export async function insertVscodeReferences(
     }
     // Machine refused the chip transaction twice: land the canonical
     // mention as plain text — the host parses it exactly the same way.
-    // With an addressed point this is paste geometry (the mention plus the
-    // machine's trailing-gap rule, no leading separator); without one it is
-    // the historical separator-aware tail append.
     const snapshot = input.state.getSnapshot()
     if (next === undefined) {
-      const draft = appendMention(snapshot.draft, ref.ref)
-      input.setDraft(draft)
-      caret = draft.length
+      // No addressed point: the separator-aware tail append.
+      const separator = snapshot.draft !== '' && !/\s$/u.test(snapshot.draft) ? ' ' : ''
+      const text = `${separator}${ref.ref} `
+      const tail = planeLength(snapshot)
+      if (bailInsertText(actx, { text, span: { start: tail, end: tail, draftRev: snapshot.draftRev } })) {
+        caret = tail + text.length
+      } else {
+        const draft = appendMention(snapshot.draft, ref.ref)
+        input.setDraft(draft)
+        caret = draft.length
+      }
     } else {
-      const point = clampSpan(next, snapshot.draft.length).start
-      const tail = snapshot.draft.slice(point)
-      const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
-      const replacement = `${ref.ref}${gap}`
-      input.setDraft(
-        `${snapshot.draft.slice(0, point)}${replacement}${snapshot.draft.slice(point)}`,
-        { start: point, end: point, insertedLength: replacement.length },
-      )
-      caret = point + replacement.length
+      const span = clampSpan(next, planeLength(snapshot))
+      if (lexical) {
+        const clipboardStart = clipboardOfDetect(span.start, snapshot.occurrences)
+        const clipboardEnd = clipboardOfDetect(span.end, snapshot.occurrences)
+        const gap = trailingGapAt(snapshot, clipboardEnd)
+        const text = `${ref.ref}${gap}`
+        if (bailInsertText(actx, { text, span: { ...span, draftRev: snapshot.draftRev } })) {
+          caret = span.start + text.length
+        } else {
+          input.setDraft(
+            `${snapshot.draft.slice(0, clipboardStart)}${text}${snapshot.draft.slice(clipboardEnd)}`,
+            { start: clipboardStart, end: clipboardEnd, insertedLength: text.length },
+          )
+          caret = span.start + text.length
+        }
+      } else {
+        // Paste geometry (the mention plus the trailing-gap rule, no leading
+        // separator) over the addressed draft point.
+        const point = span.start
+        const tail = snapshot.draft.slice(point)
+        const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
+        const replacement = `${ref.ref}${gap}`
+        input.setDraft(
+          `${snapshot.draft.slice(0, point)}${replacement}${snapshot.draft.slice(point)}`,
+          { start: point, end: point, insertedLength: replacement.length },
+        )
+        caret = point + replacement.length
+      }
       next = { start: caret, end: caret }
     }
     textFallback++
@@ -463,13 +643,14 @@ export function parseRecoveredPaste(text: string): RecoveredPaste | null {
 /** Outcome of landing one recovered paste on a session's composer. */
 export interface PasteLandingOutcome extends InsertOutcome {
   /**
-   * Draft offset just past the landed paste region (the restored caret);
-   * undefined when no session composer resolved at all.
+   * Offset just past the landed paste region (the restored caret), in the
+   * plane the addressed composer's selection speaks; undefined when no
+   * session composer resolved at all.
    */
   readonly caret?: number
 }
 
-/** Chip display text — the exact range an occurrence occupies in the draft. */
+/** Chip display text — what a chip occupies in the draft's text planes. */
 function chipDisplay(ref: ReferenceInsertLike): string {
   return `@${ref.label}`
 }
@@ -477,18 +658,27 @@ function chipDisplay(ref: ReferenceInsertLike): string {
 /**
  * Land one parsed paste on the addressed session's composer at the paste
  * selection: the prose inserts verbatim and every mention becomes an atomic
- * chip, in ONE draft write followed by per-chip upgrades from the LAST chip
- * backwards (earlier spans keep their offsets while later ones mutate the
- * draft). A chip upgrade the machine refuses (transient phases, CAS loss)
- * degrades that one mention to its canonical plain-text mention over the
- * same range — the host boundary parses it identically, so only the chip
- * affordance is lost, never the context.
+ * chip.
+ *
+ * Lexical hosts ({@link isLexicalInput}): one cursor walk over the parts in
+ * detect coordinates — each prose run rides the span-addressed
+ * `'slash/input-insert-text'` event and each mention a chip
+ * `insertReference` at the cursor, the cursor advancing by the measured
+ * detect delta after every step. Chips already in the draft survive
+ * untouched (no whole-draft write ever happens), and a chip step the
+ * machine refuses (transient phases, CAS loss) degrades that one mention
+ * to its canonical plain text over the same range.
+ *
+ * Textarea-era hosts: the historical algorithm — ONE whole-draft write of
+ * the pasted display text followed by per-chip upgrades from the LAST chip
+ * backwards — stays verbatim.
  *
  * @param sessions - the sessions service (scope resolution).
  * @param conversation - the conversation service (input resolver).
  * @param sessionId - the addressed session.
  * @param parts - the parsed paste (see {@link parseRecoveredPaste}).
- * @param selection - the draft range the paste replaces (usually the caret).
+ * @param selection - the range the paste replaces (usually the caret), in
+ * the plane the addressed composer's selection speaks.
  * @returns per-path landing counts plus the post-landing caret.
  */
 export async function pasteRecoveredMentions(
@@ -511,6 +701,107 @@ export async function pasteRecoveredMentions(
     return { inserted: 0, textFallback: 0, failed: true }
   }
 
+  if (isLexicalInput(input)) return pasteLexical(actx, input, parts, refs, selection)
+  return pasteLegacy(input, parts, refs, selection)
+}
+
+/** The Lexical-host paste: a detect-coordinate cursor walk over the parts. */
+async function pasteLexical(
+  actx: unknown,
+  input: SessionInputFace,
+  parts: readonly RecoveredPastePart[],
+  refs: readonly { readonly kind: 'ref' }[],
+  selection: { readonly start: number, readonly end: number },
+): Promise<PasteLandingOutcome> {
+  // Frozen phases (mid-submit) still accept span-addressed text writes: the
+  // paste lands as canonical mention text for the next message instead of
+  // evaporating — without flattening whatever chips the draft still shows.
+  const before = input.state.getSnapshot()
+  if (before.phase !== 'plain' && before.phase !== 'claimed') {
+    const textual = parts.map(part => part.kind === 'text' ? part.text : `${part.ref.ref} `).join('')
+    const span = clampSpan(selection, detectLengthOf(before))
+    if (bailInsertText(actx, { text: textual, span: { ...span, draftRev: before.draftRev } })) {
+      return { inserted: 0, textFallback: refs.length, failed: false, caret: span.start + textual.length }
+    }
+    const clipboardStart = clipboardOfDetect(span.start, before.occurrences)
+    const clipboardEnd = clipboardOfDetect(span.end, before.occurrences)
+    input.setDraft(
+      `${before.draft.slice(0, clipboardStart)}${textual}${before.draft.slice(clipboardEnd)}`,
+      { start: clipboardStart, end: clipboardEnd, insertedLength: textual.length },
+    )
+    return { inserted: 0, textFallback: refs.length, failed: false, caret: span.start + textual.length }
+  }
+
+  // Cursor walk: every step re-reads the machine (fresh revision) and
+  // measures its own delta, so concurrent edits only ever cost a retry.
+  let cursor = clampSpan(selection, detectLengthOf(before))
+  let inserted = 0
+  let textFallback = 0
+  for (const part of parts) {
+    if (part.kind === 'text') {
+      if (part.text !== '') {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const snapshot = input.state.getSnapshot()
+          if (bailInsertText(actx, { text: part.text, span: { ...cursor, draftRev: snapshot.draftRev } })) break
+        }
+        cursor = { start: cursor.start + part.text.length, end: cursor.start + part.text.length }
+      }
+      continue
+    }
+    let landed = false
+    for (let attempt = 0; attempt < 2 && !landed; attempt++) {
+      const snapshot = input.state.getSnapshot()
+      if (snapshot.phase !== 'plain' && snapshot.phase !== 'claimed') {
+        await delay(150)
+        continue
+      }
+      const span = clampSpan(cursor, detectLengthOf(snapshot))
+      const beforeLen = detectLengthOf(snapshot)
+      landed = input.insertReference(part.ref, { ...span, draftRev: snapshot.draftRev })
+      if (landed) {
+        // The chip (plus its machine-added trailing gap) replaced [span).
+        const afterLen = detectLengthOf(input.state.getSnapshot())
+        const caret = span.start + (afterLen - beforeLen) + (span.end - span.start)
+        cursor = { start: caret, end: caret }
+      } else {
+        await delay(150)
+      }
+    }
+    if (landed) {
+      inserted++
+      continue
+    }
+    // Refused (transient phase, CAS loss): splice the canonical mention
+    // over the same range, with the machine's own trailing-gap rule — the
+    // host boundary parses it identically, so only the chip affordance is
+    // lost, never the context.
+    const snapshot = input.state.getSnapshot()
+    const span = clampSpan(cursor, detectLengthOf(snapshot))
+    const clipboardStart = clipboardOfDetect(span.start, snapshot.occurrences)
+    const clipboardEnd = clipboardOfDetect(span.end, snapshot.occurrences)
+    const gap = trailingGapAt(snapshot, clipboardEnd)
+    const text = `${part.ref.ref}${gap}`
+    if (bailInsertText(actx, { text, span: { ...span, draftRev: snapshot.draftRev } })) {
+      cursor = { start: span.start + text.length, end: span.start + text.length }
+    } else {
+      input.setDraft(
+        `${snapshot.draft.slice(0, clipboardStart)}${text}${snapshot.draft.slice(clipboardEnd)}`,
+        { start: clipboardStart, end: clipboardEnd, insertedLength: text.length },
+      )
+      cursor = { start: span.start + text.length, end: span.start + text.length }
+    }
+    textFallback++
+  }
+  return { inserted, textFallback, failed: false, caret: cursor.start }
+}
+
+/** The textarea-era paste algorithm, kept verbatim for old hosts. */
+async function pasteLegacy(
+  input: SessionInputFace,
+  parts: readonly RecoveredPastePart[],
+  refs: readonly { readonly kind: 'ref' }[],
+  selection: { readonly start: number, readonly end: number },
+): Promise<PasteLandingOutcome> {
   const before = input.state.getSnapshot()
   // Frozen phases (mid-submit) still accept plain draft writes: the paste
   // lands as canonical mention text for the next message instead of evaporating.
@@ -664,4 +955,131 @@ export function removeRefRanges(
     next = next.slice(0, cutStart) + next.slice(cutEnd)
   }
   return next.trim() === '' ? '' : next.replace(/[ \t]+$/u, '')
+}
+
+/**
+ * Compute one chip's removal window in the draft's own coordinates: the
+ * occurrence range, widened by the seam rule (a doubled space around the
+ * chip collapses to one; at the draft head the following space is eaten).
+ * @param draft - the clipboard-projection draft.
+ * @param range - the occurrence's [start, end) window.
+ * @returns the widened window to cut.
+ */
+function removalWindow(draft: string, range: { readonly start: number, readonly end: number }): { readonly start: number, readonly end: number } {
+  let cutStart = range.start
+  let cutEnd = range.end
+  if (draft[cutEnd] === ' ' && (cutStart === 0 || draft[cutStart - 1] === ' ')) {
+    if (cutStart === 0) cutEnd++
+    else cutStart--
+  }
+  return { start: cutStart, end: cutEnd }
+}
+
+/** Outcome of removing one reference's chips from a session's composer. */
+export interface RefRemovalOutcome {
+  /** Chips removed as atomic occurrences. */
+  readonly removed: number
+  /** True when the machine refused and the whole-draft fallback ran instead. */
+  readonly degraded: boolean
+}
+
+/**
+ * Remove every chip citing one reference from the addressed session's
+ * draft — the reference rail's close affordance.
+ *
+ * Lexical hosts: one span-addressed `'slash/input-consume-token'`
+ * transaction per chip (highest offset first, fresh snapshot before each),
+ * so every OTHER chip in the draft survives with its rendering intact —
+ * `setDraft` would flatten them all to raw mention text. The seam rule is
+ * the same {@link removalWindow} the legacy splice used. A whitespace-only
+ * remainder clears to the empty draft. A machine that refuses every
+ * transaction degrades to the whole-draft `setDraft` write once.
+ *
+ * Textarea-era hosts: the historical whole-draft splice
+ * ({@link removeRefRanges}) directly.
+ *
+ * @param sessions - the sessions service (scope resolution).
+ * @param conversation - the conversation service (input resolver).
+ * @param sessionId - the addressed session.
+ * @param ref - the canonical mention to remove.
+ * @returns how many chips left the draft, and whether the write degraded.
+ */
+export async function removeVscodeReferences(
+  sessions: SessionsServiceFace | undefined,
+  conversation: ConversationServiceFace | undefined,
+  sessionId: string | undefined,
+  ref: string,
+): Promise<RefRemovalOutcome> {
+  const actx = sessionId !== undefined ? sessions?.scope(sessionId) : undefined
+  if (actx === undefined || conversation === undefined) {
+    return { removed: 0, degraded: true }
+  }
+  let input: SessionInputFace
+  try {
+    input = conversation.input.for(actx)
+  } catch {
+    return { removed: 0, degraded: true }
+  }
+
+  let removed = 0
+  if (isLexicalInput(input)) {
+    let refusals = 0
+    let degrade = false
+    for (;;) {
+      const snapshot = input.state.getSnapshot()
+      const targets = snapshot.occurrences
+        .filter(occurrence => occurrence.source === VSCODE_SOURCE && occurrence.ref === ref)
+      if (targets.length === 0) break
+      const last = targets[targets.length - 1]!
+      const window = removalWindow(snapshot.draft, { start: last.offset, end: last.offset + last.length })
+      const span = {
+        start: detectOfClipboard(window.start, snapshot.occurrences),
+        end: detectOfClipboard(window.end, snapshot.occurrences),
+        draftRev: snapshot.draftRev,
+      }
+      if (bailConsumeToken(actx, { guard: { kind: 'span', span } })) {
+        removed++
+        refusals = 0
+        continue
+      }
+      // Refused (a concurrent edit moved the revision): the next iteration
+      // re-reads the fresh snapshot; two consecutive refusals degrade.
+      refusals++
+      if (refusals >= 2) {
+        degrade = true
+        break
+      }
+      await delay(150)
+    }
+    if (!degrade) {
+      // A whitespace-only remainder clears, matching the legacy splice.
+      const settled = input.state.getSnapshot()
+      const length = detectLengthOf(settled)
+      if (settled.draft.trim() === '' && length > 0) {
+        bailConsumeToken(actx, { guard: { kind: 'span', span: { start: 0, end: length, draftRev: settled.draftRev } } })
+      }
+      return { removed, degraded: false }
+    }
+  } else {
+    const snapshot = input.state.getSnapshot()
+    const next = removeRefRanges(snapshot.draft, snapshot.occurrences, ref)
+    if (next !== snapshot.draft) {
+      input.setDraft(next)
+      removed = snapshot.occurrences
+        .filter(occurrence => occurrence.source === VSCODE_SOURCE && occurrence.ref === ref)
+        .length
+      return { removed, degraded: false }
+    }
+    return { removed: 0, degraded: false }
+  }
+
+  // Lexical machine refused every transaction: the whole-draft splice.
+  const snapshot = input.state.getSnapshot()
+  input.setDraft(removeRefRanges(snapshot.draft, snapshot.occurrences, ref))
+  return {
+    removed: snapshot.occurrences
+      .filter(occurrence => occurrence.source === VSCODE_SOURCE && occurrence.ref === ref)
+      .length,
+    degraded: true,
+  }
 }

@@ -5,17 +5,20 @@
  * The rail projects the input machine's occurrence table (`input.occurrences`,
  * refreshed on every machine change) into one closable tag per distinct
  * vscode-selection reference. Closing a tag removes every chip citing that
- * reference from the draft through `inputActions.setDraft` — the machine's
- * diff-scan reconciles the occurrence table, and once no canonical mention
- * remains in the draft there is nothing for the host boundary to inject.
+ * reference from the draft — on Lexical hosts through the injected
+ * chip-preserving removal (span-addressed consume-token transactions; see
+ * `removeVscodeReferences`), falling back to the whole-draft `setDraft`
+ * splice only where the inject face is absent.
  *
  * Two paste fallbacks cover what the bridge cannot: a clipboard envelope
  * (cross-origin or standalone editor windows) pasted into the composer
- * textarea decodes back into the same reference chips the bridge path
- * produces — landing at the paste caret, like any paste — and a copied
- * reference item — the `@ [ label ]( dsh-vscode: … )` text a rendered chip
- * yields on copy, mangled or canonical — is recovered into chips at the
- * caret with its surrounding prose kept verbatim.
+ * decodes back into the same reference chips the bridge path produces —
+ * landing at the paste caret, like any paste — and a copied reference item
+ * — the `@ [ label ]( dsh-vscode: … )` text a rendered chip yields on
+ * copy, mangled or canonical — is recovered into chips at the caret with
+ * its surrounding prose kept verbatim. Both address the modern
+ * contenteditable composer (`div[data-composer-input]`, detect-coordinate
+ * selection via the composer DOM mapping) and the textarea-era one alike.
  *
  * @module dsh-sidebar-vscode/client/composer
  */
@@ -24,7 +27,6 @@ import { useEffect } from 'react'
 import {
   groupRailTags,
   parseRecoveredPaste,
-  pasteRecoveredMentions,
   removeRefRanges,
   type InsertOutcome,
   type OccurrenceLike,
@@ -33,6 +35,10 @@ import {
   type ReferenceInsertLike,
 } from './references.ts'
 import { parseClipboardEnvelope, type ClipboardPayload } from './selection.ts'
+import {
+  readComposerSelectionDetect,
+  restoreComposerCaretDetect,
+} from './composerDom.ts'
 import { t } from './i18n.ts'
 import { FileRefIcon, FolderRefIcon, XIcon } from './icons.tsx'
 
@@ -48,10 +54,12 @@ export interface FallbackOptions {
  * Land one decoded payload's reference chips on the addressed session.
  * Implemented by the plugin body (which owns the service context) and handed
  * in through the slot's inject face. The payload can be an editor selection
- * or an explorer file/folder list. `at` is the draft range the chips replace
- * (usually the composer caret); when omitted the implementation resolves the
+ * or an explorer file/folder list. `at` is the range the chips replace
+ * (usually the composer caret), in the plane the addressed composer's
+ * selection speaks — detect coordinates on Lexical hosts, draft coordinates
+ * on textarea-era ones; when omitted the implementation resolves the
  * insertion point itself — the displayed composer's caret for the addressed
- * session, else the draft tail — and owns the post-landing caret restore.
+ * session, else the draft tail.
  */
 export type ReferenceLander = (
   sessionId: string | undefined,
@@ -70,9 +78,21 @@ export type MentionPaster = (
   selection: { start: number, end: number },
 ) => Promise<PasteLandingOutcome>
 
+/**
+ * Remove every chip citing one reference from the addressed session's
+ * draft (the rail's close affordance). Implemented by the plugin body.
+ */
+export type ReferenceRemover = (
+  sessionId: string | undefined,
+  ref: string,
+) => void
+
 /** Props of the dock component (framework session kit + inject face). */
 interface ComposerDockProps {
-  sessionId: string
+  /** The addressed session (the modern session-scoped dock owner prop). */
+  session?: { readonly sessionId?: string }
+  /** Legacy dock props carried the bare id; kept for old hosts. */
+  sessionId?: string
   input: {
     readonly draft: string
     readonly occurrences: readonly OccurrenceLike[]
@@ -80,6 +100,7 @@ interface ComposerDockProps {
   inputActions: { setDraft(text: string): void }
   lander: ReferenceLander
   pasteMentions: MentionPaster
+  removeRef?: ReferenceRemover
 }
 
 // ---- rail stylesheet ----
@@ -199,14 +220,23 @@ export function adoptRailStyles(): () => void {
  * and runs the paste fallbacks.
  */
 export function ComposerDock(props: ComposerDockProps): React.ReactNode {
-  const { sessionId, input, inputActions, lander, pasteMentions } = props
+  const { session, sessionId: legacySessionId, input, inputActions, lander, pasteMentions, removeRef } = props
+  const sessionId = session?.sessionId ?? legacySessionId
   const tags = groupRailTags(input.occurrences)
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent): void => {
       if (event.defaultPrevented) return
       const target = event.target
-      if (!(target instanceof HTMLTextAreaElement)) return
+      // The composer surface: a textarea on old hosts, the Lexical
+      // contenteditable (`[data-composer-input]`) on current ones. The
+      // contenteditable check goes through the element chain — the paste
+      // target may be a text node or a chip's decorator span inside it.
+      const textarea = target instanceof HTMLTextAreaElement ? target : null
+      const editableHit = textarea === null && target instanceof Element
+        && target.closest('[data-composer-input]') !== null
+        && target.closest('[contenteditable="true"]') !== null
+      if (!editableHit && textarea === null) return
       const clipboard = event.clipboardData
       if (clipboard === null) return
       // File-carrying pastes belong to the composer's image intake.
@@ -217,33 +247,38 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
 
       /**
        * A handled paste is swallowed whole: preventDefault alone does NOT
-       * stop the composer's React onPaste (it machine-pastes the raw text,
-       * duplicating whatever this handler lands), so the capture-phase
-       * stopPropagation keeps that handler from firing at all — verified
-       * against React 18's root delegation.
+       * stop the composer's own paste handling (the Lexical root element
+       * listens in the bubble phase; the old textarea world delegated
+       * through React), so the capture-phase stopPropagation keeps every
+       * downstream listener from firing at all.
        */
       const swallow = (): void => {
         event.preventDefault()
         event.stopPropagation()
       }
 
+      /** The paste landing point in the plane the surface speaks. */
+      const selection = textarea !== null
+        ? {
+            start: textarea.selectionStart ?? 0,
+            end: textarea.selectionEnd ?? textarea.selectionStart ?? 0,
+          }
+        : readComposerSelectionDetect() ?? { start: 0, end: 0 }
+
       // Fallback 1: the clipboard envelope (standalone editor windows).
       // The envelope lands at the paste selection like any paste — not the
-      // draft tail — because the target still holds its pre-edit caret.
+      // draft tail — because the surface still holds its pre-edit caret.
       const payload = parseClipboardEnvelope(text)
       if (payload !== null) {
         swallow()
-        const el = target
-        const selection = {
-          start: target.selectionStart ?? 0,
-          end: target.selectionEnd ?? target.selectionStart ?? 0,
-        }
+        const el = textarea
         void (async () => {
           const outcome = await lander(sessionId, payload, fallbackOptions, selection)
           if (outcome.caret !== undefined) {
             const caret = outcome.caret
-            // One frame out: the controlled textarea's value propagates first.
-            requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
+            // One frame out: the editor's own value settles first.
+            if (el !== null) requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
+            else restoreComposerCaretDetect(caret)
           }
         })()
         return
@@ -255,17 +290,14 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
       const recovered = parseRecoveredPaste(text)
       if (recovered === null) return
       swallow()
-      const selection = {
-        start: target.selectionStart ?? 0,
-        end: target.selectionEnd ?? target.selectionStart ?? 0,
-      }
-      const el = target
+      const el = textarea
       void (async () => {
         const outcome: PasteLandingOutcome = await pasteMentions(sessionId, recovered.parts, selection)
         if (outcome.caret !== undefined) {
           const caret = outcome.caret
-          // One frame out: the controlled textarea's value propagates first.
-          requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
+          // One frame out: the editor's own value settles first.
+          if (el !== null) requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
+          else restoreComposerCaretDetect(caret)
         }
       })()
     }
@@ -302,6 +334,13 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
             className="dsh_vscodeRef_remove"
             aria-label={`${t('removeReference')}: ${tag.label}`}
             onClick={() => {
+              // Chip-preserving removal first (Lexical hosts): a whole-draft
+              // setDraft write would flatten every remaining chip to raw
+              // mention text. The legacy splice stays as the fallback.
+              if (removeRef !== undefined) {
+                removeRef(sessionId, tag.ref)
+                return
+              }
               inputActions.setDraft(removeRefRanges(input.draft, input.occurrences, tag.ref))
             }}
           >
@@ -336,38 +375,25 @@ export function getReferenceLander(): ReferenceLander | undefined {
 
 // ---- the displayed composer's caret (the bridge path's insertion point) ----
 
-/** Locate the displayed conversation's composer textarea, when addressable. */
-function activeComposerTextarea(): HTMLTextAreaElement | null {
-  const el = document.querySelector('[data-composer-card] textarea')
-  return el instanceof HTMLTextAreaElement && !el.disabled ? el : null
-}
-
 /**
  * Read the displayed composer's selection — the user's last caret or range,
- * which a textarea keeps through focus loss into the VS Code iframe.
- * Undefined whenever the composer is absent or not addressable; the caller
- * then falls back to the draft tail.
+ * which the surface keeps through focus loss into the VS Code iframe — in
+ * the coordinates the modern composer speaks (the detect projection; see
+ * composerDom). Undefined whenever the composer is absent, inert, or holds
+ * no addressable selection; the caller then falls back to the draft tail.
  */
 export function readActiveComposerSelection(): { start: number, end: number } | undefined {
-  const el = activeComposerTextarea()
-  if (el === null) return undefined
-  const start = el.selectionStart
-  if (start === null) return undefined
-  return { start, end: el.selectionEnd ?? start }
+  return readComposerSelectionDetect()
 }
 
 /**
  * Restore the displayed composer's caret after an external landing. One
- * frame out — the controlled textarea's value propagates first. Selection
- * only, never focus: the user's focus stays wherever they were working
- * (typically inside the VS Code iframe).
+ * frame out — the editor's own commit settles first. Selection only, never
+ * focus: the user's focus stays wherever they were working (typically
+ * inside the VS Code iframe).
  */
 export function restoreActiveComposerCaret(caret: number): void {
-  if (activeComposerTextarea() === null) return
-  requestAnimationFrame(() => {
-    const el = activeComposerTextarea()
-    if (el !== null) el.setSelectionRange(caret, caret)
-  })
+  restoreComposerCaretDetect(caret)
 }
 
 /** Re-export for the plugin body's slot inject face typing. */
