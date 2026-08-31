@@ -210,8 +210,12 @@ describe('normalizeBaseUrl', () => {
     expect(normalizeBaseUrl('https://example.com/vscode')).toBe('https://example.com/vscode')
   })
 
-  it('keeps a bare root as root', () => {
-    expect(normalizeBaseUrl('/')).toBe('/')
+  it('normalizes a bare root to the empty base (a literal "/" would render protocol-relative "//?…")', () => {
+    expect(normalizeBaseUrl('/')).toBe('')
+    expect(normalizeBaseUrl('///')).toBe('')
+    // The empty base still renders a valid same-origin root URL.
+    expect(buildVscodeUrl('', '/data/workspace')).toBe('/?folder=%2Fdata%2Fworkspace')
+    expect(buildVscodeUrl('', null)).toBe('/')
   })
 })
 

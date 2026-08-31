@@ -148,6 +148,10 @@ function splitTruncated(payload: VscodeRefPayload): { head: string, tail: string
   const headLen = payload.headLen !== undefined && payload.headLen <= payload.text.length
     ? payload.headLen
     : payload.text.length
+  // headLen === 0 means the head half is empty (truncateSnapshot filters it
+  // out of the join), so the whole text IS the tail — slice(1) would eat the
+  // tail's first character.
+  if (headLen === 0) return { head: '', tail: payload.text }
   const tail = headLen < payload.text.length ? payload.text.slice(headLen + 1) : ''
   return { head: payload.text.slice(0, headLen), tail }
 }
@@ -191,19 +195,23 @@ export function renderSelectionTag(payload: VscodeRefPayload, stale: boolean): s
     ? [head, omissionMarker(payload), tail].filter(part => part !== '').join('\n')
     : payload.text
 
-  let open = `<${TAG_NAME}`
-  let close = `</${TAG_NAME}>`
+  const open = `<${TAG_NAME}`
+  const close = `</${TAG_NAME}>`
   if (body.includes(close)) {
     const salt = payload.hash.slice(0, 8)
-    if (/^[0-9a-f]{8}$/.test(salt)) {
-      open = `<${TAG_NAME}-${salt}`
-      close = `</${TAG_NAME}-${salt}>`
-    } else {
-      // No hash available to salt with: escape the body instead of risking a
-      // forged terminator.
-      const escaped = body.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
-      return `${guidance}\n${open} ${attrs.join(' ')}>\n${escaped}\n${close}`
+    const saltedOpen = `<${TAG_NAME}-${salt}`
+    const saltedClose = `</${TAG_NAME}-${salt}>`
+    // The salt is a hash OF this very body, so a fixed point is computable
+    // offline (content containing its own salted terminator, brute-forced
+    // until the sha-256 prefix matches): re-check BOTH salted tags against
+    // the body and only salt when neither appears.
+    if (/^[0-9a-f]{8}$/.test(salt) && !body.includes(saltedClose) && !body.includes(saltedOpen)) {
+      return `${guidance}\n${saltedOpen} ${attrs.join(' ')}>\n${body}\n${saltedClose}`
     }
+    // No hash available to salt with — or the body forges the salted tags
+    // too: escape the body instead of risking a forged terminator.
+    const escaped = body.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    return `${guidance}\n${open} ${attrs.join(' ')}>\n${escaped}\n${close}`
   }
   return `${guidance}\n${open} ${attrs.join(' ')}>\n${body}\n${close}`
 }
@@ -404,10 +412,12 @@ export async function vscodeMentionPreStep(
 const FRESHNESS_MAX_FILE_BYTES = 8 * 1024 * 1024
 
 /**
- * Production {@link RangeReader}: resolves the path under the session cwd
- * (rejecting absolute tokens and `..` escapes so the freshness check can
- * never read outside the workspace), bounds the read size, and returns the
- * exact LF-joined range.
+ * Production {@link RangeReader}: resolves the path under the session cwd —
+ * confining every resolution (absolute or relative: an absolute path is a
+ * legitimate wire form, honored exactly when it lands inside the workspace)
+ * and rejecting `..` escapes, so the freshness check can never read outside
+ * the workspace — then bounds the read size and returns the exact
+ * LF-joined range.
  * @returns the range text, or null when it cannot be verified.
  */
 export function createFileRangeReader(maxFileBytes = FRESHNESS_MAX_FILE_BYTES): RangeReader {

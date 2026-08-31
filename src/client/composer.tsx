@@ -232,9 +232,11 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
       if (event.defaultPrevented) return
       const target = event.target
       // The composer surface: a textarea on old hosts, the Lexical
-      // contenteditable (`[data-composer-input]`) on current ones. The
-      // contenteditable check goes through the element chain — the paste
-      // target may be a text node or a chip's decorator span inside it.
+      // contenteditable (`[data-composer-input]`) on current ones. Paste
+      // events target the FOCUSED element (an Element), and the check goes
+      // through its ancestor chain — a chip's decorator span inside the
+      // editable still qualifies. (A text-node target would not pass the
+      // instanceof gate, but browsers do not report one here.)
       const textarea = target instanceof HTMLTextAreaElement ? target : null
       const editableHit = textarea === null && target instanceof Element
         && target.closest('[data-composer-input]') !== null
@@ -283,7 +285,11 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
             if (el !== null) requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
             else restoreComposerCaretDetect(caret)
           }
-        })()
+        })().catch(() => {
+          // A throwing service face (scope resolution, the lander wrapper):
+          // the paste was already swallowed; do not leave an unhandled
+          // rejection on top of the lost landing.
+        })
         return
       }
 
@@ -302,7 +308,9 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
           if (el !== null) requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
           else restoreComposerCaretDetect(caret)
         }
-      })()
+      })().catch(() => {
+        // Same fail-soft as the envelope arm above.
+      })
     }
     document.addEventListener('paste', onPaste, true)
     return () => {

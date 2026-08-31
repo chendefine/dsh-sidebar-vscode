@@ -95,6 +95,11 @@ function isSelectionPayload(value: unknown): value is SelectionPayload {
       && typeof s.text === 'string'
       && Number.isFinite(s.startLine)
       && Number.isFinite(s.endLine)
+      // Integer lattice only: the canonical mention codec rejects fractional
+      // lines, and a chip built from one would throw at agent/pre-step
+      // instead of degrading.
+      && Number.isInteger(s.startLine)
+      && Number.isInteger(s.endLine)
       && s.startLine >= 1
       && s.endLine >= s.startLine
   })

@@ -124,10 +124,12 @@ export declare function expandVscodeMentions(messages: readonly UserMessage[], c
  */
 export declare function vscodeMentionPreStep(cwd: string | undefined, readFileRange: RangeReader, messages: readonly UserMessage[], signal: AbortSignal, next: () => Promise<PreStepDecision>): Promise<PreStepDecision>;
 /**
- * Production {@link RangeReader}: resolves the path under the session cwd
- * (rejecting absolute tokens and `..` escapes so the freshness check can
- * never read outside the workspace), bounds the read size, and returns the
- * exact LF-joined range.
+ * Production {@link RangeReader}: resolves the path under the session cwd —
+ * confining every resolution (absolute or relative: an absolute path is a
+ * legitimate wire form, honored exactly when it lands inside the workspace)
+ * and rejecting `..` escapes, so the freshness check can never read outside
+ * the workspace — then bounds the read size and returns the exact
+ * LF-joined range.
  * @returns the range text, or null when it cannot be verified.
  */
 export declare function createFileRangeReader(maxFileBytes?: number): RangeReader;

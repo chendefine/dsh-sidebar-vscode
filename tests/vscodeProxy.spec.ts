@@ -64,6 +64,8 @@ interface FakeUpstream {
   setCommit(commit: string): void
   /** How many index pages this upstream has served. */
   pageHits(): number
+  /** Every request path this upstream has served, in order. */
+  paths(): readonly string[]
   destroyUpgraded(): void
   close(): Promise<void>
 }
@@ -76,6 +78,7 @@ async function fakeUpstream(options: UpstreamOptions = {}): Promise<FakeUpstream
   const token = options.token
   let currentHtml = indexHtml(COMMIT_A, basePath)
   let pageHits = 0
+  const servedPaths: string[] = []
   const upgraded = new Set<Duplex>()
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     if (options.redirectTo !== undefined) {
@@ -84,6 +87,7 @@ async function fakeUpstream(options: UpstreamOptions = {}): Promise<FakeUpstream
       return
     }
     const url = new URL(req.url ?? '/', 'http://x')
+    servedPaths.push(url.pathname)
     if (token !== undefined && url.searchParams.get('tkn') !== token) {
       res.writeHead(403, { 'content-type': 'text/plain' })
       res.end('token required')
@@ -140,6 +144,7 @@ async function fakeUpstream(options: UpstreamOptions = {}): Promise<FakeUpstream
         port: (server.address() as AddressInfo).port,
         setCommit(commit: string) { currentHtml = indexHtml(commit, basePath) },
         pageHits: () => pageHits,
+        paths: () => servedPaths,
         destroyUpgraded() { for (const socket of upgraded) socket.destroy() },
         close: () => new Promise<void>((done) => {
           server.close()
@@ -231,7 +236,7 @@ async function startFront(face: ReturnType<typeof makeWebServerFace>): Promise<{
 }
 
 /** Drive one raw WebSocket handshake; resolves the handshake transcript. */
-function rawUpgrade(port: number, path: string): { done: Promise<string>, send(data: string): void, socket: import('node:net').Socket } {
+function rawUpgrade(port: number, path: string, extraHeaders: Record<string, string> = {}): { done: Promise<string>, send(data: string): void, socket: import('node:net').Socket } {
   const socket = tcpConnect(port, '127.0.0.1')
   const chunks: Buffer[] = []
   const done = new Promise<string>((resolve, reject) => {
@@ -243,7 +248,8 @@ function rawUpgrade(port: number, path: string): { done: Promise<string>, send(d
     })
     setTimeout(() => { reject(new Error('handshake timeout')) }, 3000)
   })
-  socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`)
+  const extra = Object.entries(extraHeaders).map(([name, value]) => `${name}: ${value}\r\n`).join('')
+  socket.write(`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n${extra}\r\n`)
   return { done, send: data => { socket.write(data) }, socket }
 }
 
@@ -507,6 +513,47 @@ describe('env-mode proxy end-to-end (canonical /vscode upstream)', () => {
   })
 })
 
+describe('browser-trust fence (both proxy legs)', () => {
+  it('refuses a cross-site HTTP request through the mount', async () => {
+    const handle = createVscodeProxy(ctx)
+    await handle.ready
+    const response = await fetch(`http://127.0.0.1:${front.port}/sidebar/vscode/`, {
+      headers: { origin: 'http://evil.example', 'sec-fetch-site': 'cross-site' },
+    })
+    expect(response.status).toBe(403)
+    expect(await response.text()).toContain('cross-site request refused')
+    expect(upstream.pageHits()).toBe(1) // only the proxy's own discovery probe
+  })
+
+  it('refuses a cross-origin WebSocket upgrade before the tunnel', async () => {
+    const handle = createVscodeProxy(ctx)
+    await handle.ready
+    const client = rawUpgrade(front.port, `/vscode/stable-${COMMIT_A}?reconnectionToken=tok1`, {
+      origin: 'http://evil.example',
+    })
+    // The socket is destroyed without any handshake bytes (no 101, no 403
+    // from the upstream either — the fence drops it first).
+    const received = await new Promise<string>((resolve) => {
+      const parts: Buffer[] = []
+      client.socket.on('data', (chunk: Buffer) => { parts.push(chunk) })
+      client.socket.on('close', () => { resolve(Buffer.concat(parts).toString('latin1')) })
+      setTimeout(() => { resolve('TIMEOUT-STILL-OPEN') }, 2000)
+    })
+    expect(received).toBe('')
+  })
+
+  it('passes the same-origin upgrade (Origin matching the Host)', async () => {
+    const handle = createVscodeProxy(ctx)
+    await handle.ready
+    const client = rawUpgrade(front.port, `/vscode/stable-${COMMIT_A}?reconnectionToken=tok1`, {
+      origin: `http://127.0.0.1:${front.port}`,
+      'sec-fetch-site': 'same-origin',
+    })
+    await expect(client.done).resolves.toContain('HTTP/1.1 101')
+    client.socket.destroy()
+  })
+})
+
 describe('settings-mode proxy end-to-end (configure via serverUrl)', () => {
   it('mounts a token-guarded upstream under a custom base path', async () => {
     const tokened = await fakeUpstream({ basePath: '/code', token: 'sekrit' })
@@ -563,6 +610,23 @@ describe('settings-mode proxy end-to-end (configure via serverUrl)', () => {
     const client = rawUpgrade(front.port, `/stable-${COMMIT_A}?reconnectionToken=tok`)
     await expect(client.done).resolves.toContain('HTTP/1.1 101')
     client.socket.destroy()
+  })
+
+  it('the awaited first page load is forwarded with the RECONCILED routing, not the entered one', async () => {
+    // A settings URL naming the root while the page itself bakes /vscode
+    // (a real base-pathed serve-web serves the same page at '/'): the
+    // awaited discovery re-points the mount, and the page GET that waited
+    // on it must forward to the reconciled base — not 404 at '/'.
+    const slowBasePathed = await fakeUpstream({ basePath: '/vscode', serveRootPage: true, delayMs: 300 })
+    const handle = createVscodeProxy(ctx)
+    handle.configure(parseUpstreamUrl(`http://127.0.0.1:${slowBasePathed.port}/`)!)
+    const page = await fetch(`http://127.0.0.1:${front.port}/sidebar/vscode/`)
+    expect(page.status).toBe(200)
+    expect(await page.text()).toContain(`stable-${COMMIT_A}`)
+    // The page GET forwarded to the RECONCILED base path — after the
+    // probe's own '/' hit, never a second '/' from the stale routing.
+    expect(slowBasePathed.paths().filter(path => path === '/' || path === '/vscode/'))
+      .toEqual(['/', '/vscode/'])
   })
 
   it('unreachable settings upstream: honest 502 from the claimed route; reachability probe false', async () => {

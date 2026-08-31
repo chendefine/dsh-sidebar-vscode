@@ -177,24 +177,22 @@ export function buildComposerLayoutMap(root: NodeLike): ComposerLayoutMap {
   let base = 0
   const kids = root.childNodes
   // Root boundaries follow the host's "gap = end of the block before it"
-  // convention: a child-index boundary maps to the end of the preceding
-  // block, before the gap that follows it (the two detect offsets around a
-  // gap fold to the same DOM point).
+  // convention: the boundary at child index k is the end of block k-1 —
+  // the detect offset BEFORE the gap that follows it (gap chars count in
+  // every subsequent child's base, so the recorded live `base` — not a
+  // per-child content sum — is the only arithmetic that adds them in).
   const rootBoundaries: number[] = [0]
-  let cumulative = 0
   kids.forEach((child, index) => {
     if (index > 0) {
+      rootBoundaries.push(base)
       segments.push({ kind: 'gap', node: null, parent: root, base, length: 1 })
       base += 1
     }
-    const childStart = base
     base += walk(child, base, segments, elements, texts, chips)
-    cumulative += base - childStart
-    rootBoundaries.push(cumulative)
   })
   // The document-end boundary (index childCount) is past EVERYTHING,
   // trailing gaps included.
-  rootBoundaries[rootBoundaries.length - 1] = base
+  rootBoundaries.push(base)
   elements.set(root, { base: 0, length: base, boundaries: rootBoundaries })
 
   /** Projected length of one child node (element content, leaf, or 0). */

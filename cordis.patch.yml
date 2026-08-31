@@ -17,13 +17,13 @@
 #
 # Double-mount guard (same pattern as dsh-better-sidebar's own bundle patch):
 # an aggregate bundle may already mount this package under its own entry id.
-# The `!!js` expression backs THIS row off when another enabled entry already
-# mounts 'dsh-sidebar-vscode'; the loader evaluates it while processing this
-# row (entry-list order), so the aggregate must precede this bundle in
-# dsh.profile.bundles — the standard `dsh plugin add` append order.
+# The `!!js` back-off row below is intentionally left COMMENTED OUT (this
+# repo ships without it enabled), so in the aggregate scenario the duplicate
+# id fails loudly as a duplicate instead of silently backing off — keep
+# exactly one channel active (see README Installation / 安装方法);
+# uncomment the row only on a loader setup known to evaluate `!!js` rows.
 # A manual mount row in the profile's own cordis.patch.yml uses the SAME id
-# ('dsh-sidebar-vscode'), which fails loudly as a duplicate — keep exactly one
-# channel active (see README Installation / 安装方法).
+# ('dsh-sidebar-vscode'), which also fails loudly as a duplicate.
 - insert:
     - id: dsh-sidebar-vscode
       name: 'dsh-sidebar-vscode'

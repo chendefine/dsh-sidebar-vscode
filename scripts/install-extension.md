@@ -10,7 +10,7 @@
 ```sh
 scripts/install-extension.sh                # 打包 VSIX → 安装 → 注册清单 → 重启 serve-web → 健康检查
 scripts/install-extension.sh --skip-build   # 复用已构建的 VSIX（extension/vsix/dsh-selection-reference-<版本>.vsix）
-scripts/install-extension.sh --vsix 路径.vsix
+scripts/install-extension.sh --vsix 路径.vsix  # 从该 VSIX 文件安装（隐含 --skip-build，绝不重新打包覆盖它）
 ```
 
 环境变量可覆盖默认值：`SERVER_DATA_DIR`、`CODE_BIN`、`HOST` / `PORT` /

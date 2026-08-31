@@ -107,7 +107,7 @@ export declare function formatVscodeResourceMention(payload: VscodeResourcePaylo
 export interface ParsedVscodeMentions {
     /** Text with every canonical mention replaced by its `@`-prefixed readable label. */
     text: string;
-    /** Decoded payloads (either kind) in first-appearance order (duplicates preserved). */
+    /** Decoded payloads (either kind) — strict matches in match order first, then recovered copies in theirs (duplicates preserved; the two passes are not merged by text position). */
     references: VscodeMentionPayload[];
 }
 /**
@@ -136,7 +136,7 @@ export interface ParsedVscodeMentions {
  * markdown, so the rewrite never leaks into stored history.
  *
  * @param text - text to normalize.
- * @returns readable text plus payloads in appearance order.
+ * @returns readable text plus payloads (strict matches first, then recovered copies).
  * @throws VscodeMentionError on malformed explicit mentions.
  */
 export declare function parseVscodeMentions(text: string): ParsedVscodeMentions;

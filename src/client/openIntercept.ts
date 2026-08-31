@@ -3,17 +3,23 @@
  * openRequest meta vehicle, and the `workspaces.openPath` wrapper — the
  * pieces both takeover seams (research options II + III) share.
  *
- * The two seams every chat-originated open flows through:
+ * The three seams every chat-originated open can flow through:
  * - the turn-tail slot (option II, turnTail.tsx): the produced-files row
  *   (the "changed files" chips) is claimed at priority -2, before
  *   dsh-better-sidebar's own -1 entry, so its chips open here;
- * - `workspaces.openPath` (option III, below): the client runtime's SINGLE
- *   funnel for the remaining chat-side opens (tool-row path links, prose
- *   file mentions — ui-conversation's apply.ts is the only production
- *   caller). This also repairs the headless-container hole: better-sidebar
- *   declines its own takeover whenever its built-in editor tab is disabled,
- *   letting opens fall through to the Host OS opener (`spawn xdg-open
- *   ENOENT`); this wrapper keeps them landing in the VSCode tab regardless.
+ * - `workspaces.openPath` (option III, below): the pre-gateway client
+ *   runtime's funnel for the remaining chat-side opens (tool-row path
+ *   links, prose file mentions — ui-conversation's apply.ts was its only
+ *   production caller). This also repairs the headless-container hole:
+ *   better-sidebar declines its own takeover whenever its built-in editor
+ *   tab is disabled, letting opens fall through to the Host OS opener
+ *   (`spawn xdg-open ENOENT`); this wrapper keeps them landing in the
+ *   VSCode tab regardless.
+ * - `remote.session.openWorkspacePath` (option III, the gateway era —
+ *   wrapRemoteOpenWorkspacePath below): the current runtime's replacement
+ *   funnel (ui-chat's injected openFile is its only production caller),
+ *   wrapped through the same gate; exactly one of the two era-specific
+ *   openPath wrappers ever installs.
  *
  * The reroute lands as: `openTab({ type: TAB_ID, path })` — a CONTENT seed,
  * so better-sidebar's own "land in sight" logic expands the hosting panel,
@@ -176,9 +182,10 @@ export function isAbsoluteLike(path: string): boolean {
 }
 
 /**
- * Resolve a (possibly relative) path against the session cwd. The two seams
- * differ here: `workspaces.openPath` callers already resolve to absolute
- * (ui-conversation's apply.ts does), while turn-tail produced paths come
+ * Resolve a (possibly relative) path against the session cwd. The seams
+ * differ here: the openPath-funnel callers (ui-conversation's apply.ts on
+ * the pre-gateway runtime, ui-chat's openFile now) already resolve to
+ * absolute, while turn-tail produced paths come
  * straight from tool callView `locations` and may be workspace-relative —
  * better-sidebar's own `openSidebarFile` resolves them against the session
  * cwd the same way. Mirrors its `resolveSidebarPath` semantics.

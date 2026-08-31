@@ -173,15 +173,19 @@ export function reverseMapPath(path: string, rules: readonly PathMapRule[]): str
 
 /**
  * Normalize the `serverUrl` setting into a usable base: empty → the
- * full-URL default ({@link DEFAULT_SERVER_URL}); trailing slashes dropped;
- * a value with neither a URL scheme nor a leading '/' is treated as a
- * subpath and anchored to the page root.
+ * full-URL default ({@link DEFAULT_SERVER_URL}); trailing slashes dropped
+ * (a slash-only value anchors to the page root as `''`, so
+ * {@link buildVscodeUrl} renders `/?…` — a literal `'/'` base would render
+ * the protocol-relative `//?…`, which no URL parser accepts); a value with
+ * neither a URL scheme nor a leading '/' is treated as a subpath and
+ * anchored to the page root.
  */
 export function normalizeBaseUrl(raw: string | undefined): string {
   const value = (raw ?? '').trim()
   if (value === '') return DEFAULT_SERVER_URL
   const anchored = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value) || value.startsWith('/') ? value : `/${value}`
-  return anchored.replace(/\/+$/, '') === '' ? '/' : anchored.replace(/\/+$/, '')
+  const stripped = anchored.replace(/\/+$/, '')
+  return stripped === '' ? '' : stripped
 }
 
 /**

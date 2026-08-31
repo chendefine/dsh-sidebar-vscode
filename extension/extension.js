@@ -35,7 +35,9 @@
  * chips, tool-row path links) are rerouted into this workbench. The plugin's
  * host half writes `<tmpdir>/dsh-sidebar-vscode/<slug(workspace)>/cmd.json`;
  * this extension polls that spool (500ms) and opens the addressed file with
- * `vscode.window.showTextDocument` — no workbench reload. A `cap.json`
+ * `vscode.window.showTextDocument` — no workbench reload. The consumed
+ * nonce watermark persists in `last.json` beside the spool, so an
+ * extension-host restart never replays the last command. A `cap.json`
  * marker refreshed on every tick advertises liveness back (the client probes
  * it through the plugin's fenced route before relying on the channel, and
  * falls back to a URL-payload reload when it is missing). The spool only
@@ -62,6 +64,32 @@ const CHANNEL_POLL_MS = 500
 
 /** How old the capability marker may get before it is refreshed (ms). */
 const CHANNEL_CAP_REFRESH_MS = 60000
+
+/**
+ * The persisted last-consumed nonce (`last.json` in the channel dir):
+ * seeding the in-memory watermark from it on first sight makes a consumed
+ * command STAY consumed across extension-host restarts (Reload Window, a
+ * serve-web restart) — the spool's cmd.json is never deleted, so without
+ * the marker every restart would replay the last-addressed file once.
+ */
+function readLastNonce (dir) {
+  try {
+    const parsed = JSON.parse(nodeFs.readFileSync(nodePath.join(dir, 'last.json'), 'utf8'))
+    return typeof parsed.nonce === 'number' && Number.isFinite(parsed.nonce)
+      ? parsed.nonce
+      : Number.NEGATIVE_INFINITY
+  } catch {
+    return Number.NEGATIVE_INFINITY
+  }
+}
+
+/** Best-effort persisted advance (atomic tmp+rename; failures are silent). */
+function persistLastNonce (dir, nonce) {
+  try {
+    nodeFs.mkdirSync(dir, { recursive: true })
+    writeMarker(nodePath.join(dir, 'last.json'), JSON.stringify({ nonce }))
+  } catch { /* best effort */ }
+}
 
 /**
  * Filesystem-safe slug of one workspace folder — MUST stay in lockstep with
@@ -129,10 +157,14 @@ async function channelTick (lastNonceByDir) {
       ? command.path
       : null
     if (nonce === null || target === null) continue
+    if (!lastNonceByDir.has(dir)) lastNonceByDir.set(dir, readLastNonce(dir))
     const last = lastNonceByDir.get(dir) || Number.NEGATIVE_INFINITY
     if (nonce <= last) continue
     // Advance BEFORE acting: a failing open must not retry every tick.
+    // The advance is also persisted (last.json), so a host restart reads
+    // the watermark back instead of replaying this command.
     lastNonceByDir.set(dir, nonce)
+    persistLastNonce(dir, nonce)
     try {
       await vscode.workspace.fs.stat(vscode.Uri.file(target))
     } catch {

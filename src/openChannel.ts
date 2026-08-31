@@ -12,8 +12,9 @@
  * and the client falls back to the URL-payload channel.
  *
  * - `cap.json` — the extension's liveness marker, refreshed on its poll
- *   tick; the route only reports it fresh within a window, so a dead
- *   extension stops being "capable" within seconds.
+ *   tick (whenever older than a minute); the route only reports it fresh
+ *   within {@link CAPABILITY_MAX_AGE_MS}, so a dead extension stops being
+ *   "capable" within that window after its last write.
  * - `cmd.json` — the last open command (atomic tmp+rename write; the
  *   extension consumes it by monotonic nonce, so a lost read never replays
  *   and a stale file never re-opens).
@@ -83,6 +84,9 @@ export function parseOpenCommand(payload: unknown): OpenCommandBody | null {
   return out
 }
 
+/** Process-lifetime sequence for tmp names (same-millisecond writes collide otherwise). */
+let tmpSequence = 0
+
 /**
  * Write one open command into the folder's spool (atomic tmp+rename, so the
  * extension never observes a partial JSON document).
@@ -95,7 +99,7 @@ export async function writeOpenCommand(
   const dir = join(base, slugOf(command.folder))
   await mkdir(dir, { recursive: true })
   const file = join(dir, 'cmd.json')
-  const tmp = `${file}.tmp-${process.pid}-${now()}`
+  const tmp = `${file}.tmp-${process.pid}-${tmpSequence++}-${now()}`
   const document = JSON.stringify({ ...command, ts: now() })
   await writeFile(tmp, document, 'utf8')
   await rename(tmp, file)

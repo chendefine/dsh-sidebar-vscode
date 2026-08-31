@@ -92,9 +92,12 @@ export declare function mapPathForOpen(path: string, rules: readonly PathMapRule
 export declare function reverseMapPath(path: string, rules: readonly PathMapRule[]): string | null;
 /**
  * Normalize the `serverUrl` setting into a usable base: empty → the
- * full-URL default ({@link DEFAULT_SERVER_URL}); trailing slashes dropped;
- * a value with neither a URL scheme nor a leading '/' is treated as a
- * subpath and anchored to the page root.
+ * full-URL default ({@link DEFAULT_SERVER_URL}); trailing slashes dropped
+ * (a slash-only value anchors to the page root as `''`, so
+ * {@link buildVscodeUrl} renders `/?…` — a literal `'/'` base would render
+ * the protocol-relative `//?…`, which no URL parser accepts); a value with
+ * neither a URL scheme nor a leading '/' is treated as a subpath and
+ * anchored to the page root.
  */
 export declare function normalizeBaseUrl(raw: string | undefined): string;
 /**

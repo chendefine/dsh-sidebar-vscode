@@ -3,9 +3,10 @@
  * clipboard writes into a structured channel back into DSH.
  *
  * Why this works: the VSCode tab's iframe loads the VS Code server from the
- * same gateway origin (the `/vscode` subpath), so this plugin — running in the
- * top window — has full same-origin access to the iframe's window. And the
- * extension-host clipboard chain is
+ * same origin as the DSH page (the plugin's built-in reverse proxy mount
+ * `/sidebar/vscode` by default, or a gateway subpath), so this plugin —
+ * running in the top window — has full same-origin access to the iframe's
+ * window. And the extension-host clipboard chain is
  *
  *   vscode.env.clipboard.writeText(text)        [node ext host, container]
  *     → MainThreadClipboard.$writeText          [renderer, workbench window]

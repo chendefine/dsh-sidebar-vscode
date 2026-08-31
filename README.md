@@ -25,10 +25,10 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.2.2
+- Version: 0.2.3
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 354 passing (15 spec files)
+- Tests: 380 passing (15 spec files)
 
 ## Features
 
@@ -184,7 +184,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 | Symptom | Fix |
 |---|---|
 | The tab stays blank / the loading hint never clears | Check `serverUrl` reachability; diagnose via "open in new window"; with a cross-origin URL the bridge is off by design (paste fallback still works). On the built-in proxy, confirm serve-web answers at the configured upstream (default `http://127.0.0.1:8000`; any base path works) |
-| "Matched no mapping rule…" notice | The notice is now non-blocking: the cwd still opens at its raw path; add a rule only when the workbench cannot see that directory (split container/mount) |
+| "Workspace path is not absolute…" notice | Fires only when the session cwd is not an absolute path (the workbench then opened its default view); healthy deployments never trigger it — no mapping needed |
 | No DSH command in the context menu / palette | Extension not installed, serve-web not restarted (the manifest is scanned at startup only), or the workspace is untrusted (restricted mode) — see the FAQ in `scripts/install-extension.md` |
 | No chip after sending; a code snippet appears on the clipboard | Landing failed and the readable fallback reached the clipboard (no composer / cross-origin); paste it into the composer to recover chips |
 | "Injected as a text reference…" notice | The composer was mid-submit so the chip degraded to a plain-text mention — submitting works the same |
@@ -271,20 +271,25 @@ The DSH session and the embedded workbench see **the same filesystem under the s
 ### Repository layout
 
 ```
-src/index.ts                  # host-half entry: agent/created → pre-step boundary (inject: agents)
-src/vscodeProxy.ts            # host half: same-origin /vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel) (37 tests)
-src/mention.ts                # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (36 tests)
+src/index.ts                  # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes (inject: agents, webServer, webRuntime)
+src/vscodeProxy.ts            # host half: same-origin /sidebar/vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel + trust fence) (41 tests)
+src/mention.ts                # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (38 tests)
 src/mentionCodec.ts           # shared pure logic: canonical URI codecs (2 schemes)/truncation/hashing (42 tests)
+src/openChannel.ts            # host half: /tmp command-channel spool the workbench extension polls (slug spec, capability freshness, atomic writes) (11 tests)
+src/trust-fence.ts            # host half: browser-trust fence for this plugin's routes (loopback/trustedHosts + same-origin markers)
 src/client/index.tsx          # browser-half entry: tab + dock + @ source + dicts (ctx.effect, HMR-safe)
 src/client/VscodeView.tsx     # tab component: cwd → path mapping → iframe + toolbar/notices + bridge
 src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText signal patch (10 tests; no-ops on the cross-origin SecurityError throw)
 src/client/composer.tsx       # dock component: reference rail (self-adopted styles) + paste fallbacks
-src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (46 tests)
-src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (15 tests)
+src/client/composerDom.ts     # detect-projection walk over the Lexical composer DOM (DOM selection ⇄ detect offsets) (11 tests)
+src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (69 tests)
+src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (16 tests)
 src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (34 tests)
 src/client/settings.ts        # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
 src/client/settingsRows.tsx   # settings panel: switch row + stacked text rows + cap rows (self-adopted styles)
-src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (10 tests)
+src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (17 tests)
+src/client/openIntercept.ts   # chat-open takeover plumbing: reroute driver + openRequest vehicle + the openPath/openWorkspacePath wrappers (28 tests)
+src/client/openChannelApi.ts  # client half of the open channel: fenced /sidebar-vscode/api probes and commands (11 tests)
 src/client/defaultTab.ts      # "open VSCode by default": pristine-seed detection + swap rails + watcher (22 tests)
 src/client/i18n.ts            # locale service wiring + t()
 src/client/locales.ts         # zh/en dictionaries
@@ -295,7 +300,7 @@ scripts/install-extension.sh  # one-command extension install (vsce package → 
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
 screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 354 tests / 15 files (per-file counts noted above)
+tests/*.spec.ts               # vitest specs — 380 tests / 15 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
 vitest.config.ts              # test-time dsh-llm alias (harness checkout preferred, installed package fallback)
@@ -313,7 +318,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (354 tests)
+pnpm test         # vitest run (380 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.

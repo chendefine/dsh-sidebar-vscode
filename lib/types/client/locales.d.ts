@@ -18,7 +18,7 @@ export declare const zh: {
     readonly reload: "刷新";
     readonly openNewWindow: "在新窗口打开";
     readonly workspace: "工作区";
-    readonly unmapped: "当前工作区路径未命中任何映射规则，已按原路径打开；若工作台看不到该目录，可在设置文档里配置 pathMap 路径映射";
+    readonly unmapped: "当前工作区路径不是绝对路径，已打开 VS Code 默认界面";
     readonly cwdFailed: "无法获取会话工作目录，已打开 VSCode 默认界面";
     readonly settingMaxLines: "引用最大行数";
     readonly settingMaxLinesDesc: "单条引用注入的代码行数上限，超出时保留首尾、省略中间；默认 200，范围 1–2000";

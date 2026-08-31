@@ -87,7 +87,9 @@ interface ClientContextFace {
     registerTab(descriptor: TabDescriptor): () => void
     /** Patch an open tab's display fields (the openRequest meta vehicle). */
     updateTab(tabId: string, patch: { title?: string, path?: string, meta?: unknown }): void
-    /** Monotonic capability list ('tabMeta' / 'updateTab' gate the takeover). */
+    /** Monotonic capability list ('tabMeta' / 'updateTab' gate the takeover
+     * whenever the peer publishes the list — every better-sidebar in the
+     * declared ≥0.12 range does). */
     readonly features?: readonly string[]
   }
   slots: {
@@ -215,9 +217,10 @@ export function vscodeTab(): TabDescriptor {
     settings: {
       // Every settings row renders through the custom panel below — no
       // declarative `pluginToggles`: their fixed left-right split (control
-      // beside the description) cramps the two long free-form text values
-      // (serverUrl / pathMap), which the panel stacks instead (description
-      // on top, full-width input on its own line below); the numeric
+      // beside the description) cramps the long free-form `serverUrl`
+      // value, which the panel stacks instead (description on top,
+      // full-width input on its own line below; `pathMap` renders no row
+      // anywhere — settings-document only); the numeric
       // capture caps (maxLines / maxBytes) need the custom panel anyway,
       // because the declarative number row cannot pre-fill the code
       // default on an unset key (its empty draft commits '' → 0 → the

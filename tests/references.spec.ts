@@ -1059,6 +1059,25 @@ describe('insertVscodeReferences (Lexical machine)', () => {
     expect(outcome.textFallback).toBe(1)
     expect(input.drafts).toEqual([`ctx ${refs[0]!.ref} `])
   })
+
+  it('reports the caret in the flattened draft\'s own coordinates after the whole-draft write', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: 'ctx' }]
+    input.draftRev = 1
+    input.failInsert = true
+    const refs = await buildRefsFromPayload(payload({ spans: [{ startLine: 5, endLine: 6, text: 'b\nc' }] }), {})
+    const sessions: SessionsServiceFace = { scope: () => ({}) } // a scope without bail
+    const conversation: ConversationServiceFace = { input: { for: () => input } }
+    const outcome = await insertVscodeReferences(sessions, conversation, 's1', refs, { start: 4, end: 4 })
+    expect(outcome.textFallback).toBe(1)
+    expect(input.drafts).toHaveLength(1)
+    // The flattening write collapsed the leading chip to its full mention
+    // text, so the point past the inserted mention is a CLIPBOARD-plane
+    // offset — the detect-plane span start would land inside that text.
+    expect(outcome.caret).toBe(`${a.clipboardText}ctx${refs[0]!.ref} `.length)
+    expect(outcome.caret).toBe(input.drafts[0]!.length)
+  })
 })
 
 describe('pasteRecoveredMentions (Lexical machine)', () => {
@@ -1101,6 +1120,25 @@ describe('pasteRecoveredMentions (Lexical machine)', () => {
     expect(outcome.textFallback).toBe(1)
     expect(input.drafts).toEqual([])
     expect(input.detectText).toBe(`ctxsee ${parsed.refs[0]!.ref} `)
+  })
+
+  it('reports the frozen-phase whole-draft caret in the flattened draft\'s own coordinates', async () => {
+    const input = new ModernInput()
+    const a = (await buildRefsFromPayload(payload(), {}))[0]!
+    input.parts = [{ kind: 'chip', ref: a }, { kind: 'text', text: 'ctx' }]
+    input.draftRev = 1
+    input.phase = 'submitting'
+    const parsed = parseRecoveredPaste(mangledCopy(ref()))!
+    const sessions: SessionsServiceFace = { scope: () => ({}) } // a scope without bail
+    const conversation: ConversationServiceFace = { input: { for: () => input } }
+    const outcome = await pasteRecoveredMentions(sessions, conversation, 's1', parsed.parts, { start: 4, end: 4 })
+    expect(outcome.inserted).toBe(0)
+    expect(outcome.textFallback).toBe(1)
+    expect(input.drafts).toHaveLength(1)
+    // Clipboard-plane caret: the flattening write expanded the leading chip
+    // to its full mention text before the pasted canonical mention.
+    expect(outcome.caret).toBe(`${a.clipboardText}ctx${parsed.refs[0]!.ref} `.length)
+    expect(outcome.caret).toBe(input.drafts[0]!.length)
   })
 
   it('degrades one refused chip to mention text, keeping prose and other chips', async () => {

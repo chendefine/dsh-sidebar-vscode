@@ -182,4 +182,35 @@ describe('buildComposerLayoutMap (degenerate boundaries)', () => {
     const layout = buildComposerLayoutMap(root)
     expect(layout.detectLength).toBe('aa\nbb'.length)
   })
+
+  it('root child-index boundaries land at each preceding block\'s end (gap chars included)', () => {
+    // Four blocks → detect 'aa\n\n\nzz': every interior boundary must sit at
+    // the END of the block before it — not collapse onto the first block's
+    // end by dropping the interior gap newlines.
+    const root = link(el('DIV', { contenteditable: 'true' }, [
+      el('P', {}, [textRun('aa')]),
+      el('P', {}, [managedBr()]),
+      el('P', {}, [managedBr()]),
+      el('P', {}, [textRun('zz')]),
+    ]))
+    const layout = buildComposerLayoutMap(root)
+    expect(layout.detectLength).toBe('aa\n\n\nzz'.length)
+    expect(layout.detectOffsetOf({ container: root, offset: 0 })).toBe(0)
+    expect(layout.detectOffsetOf({ container: root, offset: 1 })).toBe('aa'.length)
+    expect(layout.detectOffsetOf({ container: root, offset: 2 })).toBe('aa\n'.length)
+    expect(layout.detectOffsetOf({ container: root, offset: 3 })).toBe('aa\n\n'.length)
+    expect(layout.detectOffsetOf({ container: root, offset: 4 })).toBe('aa\n\n\nzz'.length)
+    // The boundary projection inverts exactly: every root boundary offset
+    // maps to SOME DOM point that projects back to the same offset (zero
+    // drift — the point may be the finer text-node edge instead of the
+    // root boundary itself, which is the same document position).
+    for (let index = 0; index <= 4; index++) {
+      const offset = layout.detectOffsetOf({ container: root, offset: index })
+      expect(offset, `boundary ${index}`).not.toBeNull()
+      const back = layout.domPointOf(offset ?? -1)
+      expect(back, `domPointOf(${offset})`).not.toBeNull()
+      const round = back === null ? null : layout.detectOffsetOf(back)
+      expect(round, `round trip of boundary ${index} (${offset} → ${back} → ${round})`).toBe(offset)
+    }
+  })
 })

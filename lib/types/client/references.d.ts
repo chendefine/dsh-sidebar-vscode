@@ -237,8 +237,9 @@ export interface InsertOutcome {
  * Whenever the input machine refuses the chip transaction (mid-submit
  * phases, CAS loss after retry) the canonical mention lands as plain text
  * over the same point — on Lexical hosts through the span-addressed
- * `'slash/input-insert-text'` event so every OTHER chip survives intact,
- * and only on textarea-era hosts through the whole-draft `setDraft` write.
+ * `'slash/input-insert-text'` event so every OTHER chip survives intact
+ * (the whole-draft `setDraft` write runs only when that host exposes no
+ * event seam), and on textarea-era hosts directly through `setDraft`.
  * The host boundary parses plain-text mentions identically, so the text
  * path degrades only the chip affordance — never the context.
  *

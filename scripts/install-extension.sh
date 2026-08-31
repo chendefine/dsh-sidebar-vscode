@@ -14,6 +14,8 @@
 #   5. health-check the workbench URL
 #
 # Usage: scripts/install-extension.sh [--skip-build] [--vsix PATH] [-h]
+#   --vsix PATH installs from that exact file (implies --skip-build — the
+#   build step would otherwise repackage extension/ over it)
 #
 # Env overrides:
 #   SERVER_DATA_DIR  serve-web --server-data-dir (default /data/workspace/.vscode)
@@ -27,7 +29,10 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 EXT_SRC="$HERE/extension"
 
 SERVER_DATA_DIR="${SERVER_DATA_DIR:-/data/workspace/.vscode}"
-CODE_BIN="${CODE_BIN:-$(command -v code)}"
+# command -v under `set -e` would exit SILENTLY when code is absent (the
+# friendly FATAL below is then unreachable) — degrade to empty and let the
+# executability check report it.
+CODE_BIN="${CODE_BIN:-$(command -v code || true)}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 BASE_PATH="${BASE_PATH:-/vscode}"
@@ -53,14 +58,17 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# An explicit --vsix addresses an existing file: never rebuild over it.
+if [ -n "$VSIX_ARG" ]; then SKIP_BUILD=1; fi
+
 for dep in node unzip curl setsid; do
   command -v "$dep" >/dev/null 2>&1 || { echo "FATAL: missing dependency: $dep" >&2; exit 1; }
 done
 [ -x "$CODE_BIN" ] || { echo "FATAL: code CLI not found/executable: $CODE_BIN" >&2; exit 1; }
 [ -f "$EXT_SRC/package.json" ] || { echo "FATAL: $EXT_SRC/package.json not found" >&2; exit 1; }
 
-EXT_ID="$(node -p "require('$EXT_SRC/package.json').publisher + '.' + require('$EXT_SRC/package.json').name")"
-EXT_VERSION="$(node -p "require('$EXT_SRC/package.json').version")"
+EXT_ID="$(DSH_PKG="$EXT_SRC/package.json" node -p "require(process.env.DSH_PKG).publisher + '.' + require(process.env.DSH_PKG).name")"
+EXT_VERSION="$(DSH_PKG="$EXT_SRC/package.json" node -p "require(process.env.DSH_PKG).version")"
 EXT_ROOT="$SERVER_DATA_DIR/extensions"
 DEST_FOLDER="${EXT_ID}-${EXT_VERSION}"
 DEST_DIR="$EXT_ROOT/$DEST_FOLDER"
@@ -155,7 +163,8 @@ term_wait() { # term_wait <pid> <label>: TERM, up to 10s, then KILL
   kill -KILL "$pid" 2>/dev/null || true
 }
 
-# capture the running serve-web argv (router process = the `code serve-web` CLI)
+# capture the running serve-web argv (router process = the `code serve-web` CLI).
+# Both flag spellings match (--server-data-dir PATH and --server-data-dir=PATH).
 mapfile -t ROUTERS < <(
   for pid in $(pgrep -f 'serve-web' || true); do
     [ "$pid" = "$$" ] && continue
@@ -164,7 +173,9 @@ mapfile -t ROUTERS < <(
       *"$CODE_BIN"*|*code*serve-web*) ;;
       *) continue ;;
     esac
-    case "$cmd" in *serve-web*"--server-data-dir $SERVER_DATA_DIR"*) echo "$pid" ;; esac
+    case "$cmd" in
+      *serve-web*"--server-data-dir $SERVER_DATA_DIR"*|*serve-web*"--server-data-dir=$SERVER_DATA_DIR"*) echo "$pid" ;;
+    esac
   done
 )
 
@@ -174,8 +185,10 @@ if [ "${#ROUTERS[@]}" -gt 0 ] && [ -n "${ROUTERS[0]}" ]; then
   log "stopping serve-web process tree (router + inner server): ${ROUTERS[*]}"
   for pid in "${ROUTERS[@]}"; do term_wait "$pid"; done
   # the inner server (node server-main.js, plus its sh wrapper) can outlive
-  # the router — TERM anything still holding our --server-data-dir
-  for pid in $(pgrep -f "server-data-dir $SERVER_DATA_DIR" || true); do
+  # the router — TERM anything still holding our --server-data-dir (both
+  # flag spellings; dots ERE-escaped for pgrep)
+  DATA_DIR_ERE="$(printf '%s' "$SERVER_DATA_DIR" | sed 's/[\\.]/\\&/g')"
+  for pid in $(pgrep -f "server-data-dir[ =]$DATA_DIR_ERE" || true); do
     [ "$pid" = "$$" ] && continue
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     case "$cmd" in

@@ -5,6 +5,14 @@
  * external gateway — keeping the clipboard signal bridge intact on
  * gateway-less deployments (Windows, LAN).
  *
+ * Both legs (the HTTP mount and the WebSocket upgrade route) sit behind
+ * the same browser-trust fence as every other plugin route
+ * (`isTrustedApiRequest`, see trust-fence.ts): the DSH page, its iframe,
+ * and direct bookmark navigations pass; cross-site pages are refused —
+ * WebSocket handshakes are not CORS-checked by browsers, and serve-web's
+ * `handleUpgrade` ignores the connection token, so an unfenced upgrade
+ * leg would be a cross-site-hijack tunnel into the workbench.
+ *
  * Upstream selection, in priority order:
  *
  * 1. **The `serverUrl` setting carrying a full URL** (pushed by the

@@ -442,8 +442,9 @@ function trailingGapAt(snapshot: InputStateLike, clipboardPoint: number): string
  * Whenever the input machine refuses the chip transaction (mid-submit
  * phases, CAS loss after retry) the canonical mention lands as plain text
  * over the same point — on Lexical hosts through the span-addressed
- * `'slash/input-insert-text'` event so every OTHER chip survives intact,
- * and only on textarea-era hosts through the whole-draft `setDraft` write.
+ * `'slash/input-insert-text'` event so every OTHER chip survives intact
+ * (the whole-draft `setDraft` write runs only when that host exposes no
+ * event seam), and on textarea-era hosts directly through `setDraft`.
  * The host boundary parses plain-text mentions identically, so the text
  * path degrades only the chip affordance — never the context.
  *
@@ -544,18 +545,23 @@ export async function insertVscodeReferences(
             `${snapshot.draft.slice(0, clipboardStart)}${text}${snapshot.draft.slice(clipboardEnd)}`,
             { start: clipboardStart, end: clipboardEnd, insertedLength: text.length },
           )
-          caret = span.start + text.length
+          // The flattening setDraft rewrote the WHOLE document as plain
+          // text, so the caret the new draft speaks is the clipboard-
+          // projection offset — span.start (detect plane) would land inside
+          // the flattened mention text of every chip before the point.
+          caret = clipboardStart + text.length
         }
       } else {
         // Paste geometry (the mention plus the trailing-gap rule, no leading
-        // separator) over the addressed draft point.
+        // separator) over the addressed draft range: the selection it
+        // addresses is REPLACED, like any paste — not inserted before it.
         const point = span.start
-        const tail = snapshot.draft.slice(point)
+        const tail = snapshot.draft.slice(span.end)
         const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
         const replacement = `${ref.ref}${gap}`
         input.setDraft(
-          `${snapshot.draft.slice(0, point)}${replacement}${snapshot.draft.slice(point)}`,
-          { start: point, end: point, insertedLength: replacement.length },
+          `${snapshot.draft.slice(0, point)}${replacement}${tail}`,
+          { start: point, end: span.end, insertedLength: replacement.length },
         )
         caret = point + replacement.length
       }
@@ -729,7 +735,9 @@ async function pasteLexical(
       `${before.draft.slice(0, clipboardStart)}${textual}${before.draft.slice(clipboardEnd)}`,
       { start: clipboardStart, end: clipboardEnd, insertedLength: textual.length },
     )
-    return { inserted: 0, textFallback: refs.length, failed: false, caret: span.start + textual.length }
+    // Clipboard-plane caret: the flattening setDraft rewrote the whole
+    // document as plain text (see insertVscodeReferences' twin branch).
+    return { inserted: 0, textFallback: refs.length, failed: false, caret: clipboardStart + textual.length }
   }
 
   // Cursor walk: every step re-reads the machine (fresh revision) and
@@ -747,7 +755,13 @@ async function pasteLexical(
         let applied = false
         for (let attempt = 0; attempt < 2 && !applied; attempt++) {
           const snapshot = input.state.getSnapshot()
-          applied = bailInsertText(actx, { text: part.text, span: { ...cursor, draftRev: snapshot.draftRev } })
+          // Clamp per attempt like the chip step below: a concurrent shrink
+          // (a submit clearing the draft) must not strand the prose span
+          // past the fresh end, where the hub would refuse the write.
+          applied = bailInsertText(actx, {
+            text: part.text,
+            span: { ...clampSpan(cursor, detectLengthOf(snapshot)), draftRev: snapshot.draftRev },
+          })
         }
         if (applied) cursor = { start: cursor.start + part.text.length, end: cursor.start + part.text.length }
       }

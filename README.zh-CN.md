@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.2
+- 版本：0.2.3
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：354 例全部通过（15 个规格文件）
+- 测试：380 例全部通过（15 个规格文件）
 
 ## 功能简介
 
@@ -183,7 +183,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 | 症状 | 处理 |
 |---|---|
 | 标签页长时间空白 / 加载提示不消失 | 检查「功能设置」里的 `serverUrl` 是否可达；用「在新窗口打开」直连排查；跨域地址下同源桥不可用属预期（粘贴兜底仍可用）。用内置反代时确认 serve-web 已在配置的上游应答（默认 `http://127.0.0.1:8000`，任意基路径均可） |
-| 工具栏提示「未命中任何映射规则…」 | 提示已变为非阻断性说明：cwd 仍按原路径打开；仅当 workbench 看不到该目录（分离容器/挂载）时才需要在设置里补映射规则 |
+| 工具栏提示「当前工作区路径不是绝对路径…」 | 仅在会话 cwd 不是绝对路径时出现（workbench 已按默认界面打开）；正常部署不会触发，无需配置映射 |
 | 右键没有 DSH 命令 / 命令面板搜不到 | 扩展未装或 serve-web 未重启（清单仅启动时扫描），或工作区处于受限模式未信任——见 `scripts/install-extension.md` 常见问题表 |
 | 发送后 chip 未出现，剪贴板出现代码片段 | 注入降级为可读回退文本（无可用输入框 / 跨域）；直接粘贴进输入框即可恢复为 chip |
 | 提示「已注入为文本引用…」 | 输入框处于提交中等瞬态，chip 化被拒，已退化为纯文本 mention——提交效果相同 |
@@ -264,20 +264,25 @@ DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因�
 ### 目录结构
 
 ```
-src/index.ts                  # host 半入口：agent/created → pre-step 边界挂载（inject: agents）
-src/vscodeProxy.ts            # host 半：/vscode 同源反代（HTTP 透传 + WS upgrade 管道 + 路径/令牌改写 + configure 通道）（37 测试）
-src/mention.ts                # host 半核心：解析改写/去重/新鲜度/<text-selection> 等注入（36 测试）
+src/index.ts                  # host 半入口：agent/created → pre-step 边界挂载 + /sidebar-vscode/api 围栏路由（inject: agents, webServer, webRuntime）
+src/vscodeProxy.ts            # host 半：/sidebar/vscode 同源反代（HTTP 透传 + WS upgrade 管道 + 路径/令牌改写 + configure 通道）（41 测试）
+src/mention.ts                # host 半核心：解析改写/去重/新鲜度/<text-selection> 等注入（38 测试）
 src/mentionCodec.ts           # 共享纯逻辑：两种 scheme 规范 URI 编解码/截断/哈希归一（42 测试）
+src/openChannel.ts            # host 半：/tmp 命令通道 spool（workbench 扩展轮询；slug 规范、能力新鲜度、原子写）（11 测试）
+src/trust-fence.ts            # host 半：本插件路由的浏览器信任围栏（回环/trustedHosts + 同源标记）
 src/client/index.tsx          # browser 半入口：注册 tab + dock + @ 触发源 + 词典（ctx.effect，HMR 安全）
 src/client/VscodeView.tsx     # 标签组件：cwd → 路径映射 → iframe + 工具栏/提示 + 桥装载
 src/client/clipboardBridge.ts # 同源 iframe navigator.clipboard.writeText 信号补丁（10 测试；跨域读取抛 SecurityError 时 no-op）
 src/client/composer.tsx       # dock 组件：引用 tag 栏（自注入样式）+ 粘贴兜底
-src/client/references.ts      # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（46 测试）
-src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种 payload）（15 测试）
+src/client/composerDom.ts     # Lexical composer DOM 的 detect 投影遍历（DOM 选区 ⇄ detect 偏移映射）（11 测试）
+src/client/references.ts      # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（69 测试）
+src/client/selection.ts       # 剪贴板信封编解码（选区 + 资源两种 payload）（16 测试）
 src/client/paths.ts           # pathMap 解析/映射/反向映射、URL 构建（34 测试）
 src/client/settings.ts        # pluginSettings 读取 + 截断上限契约（默认/边界/提交助手）（14 测试）
 src/client/settingsRows.tsx   # 功能设置面板：开关行 + 文本行（上下布局）+ 数值行（自注入样式）
-src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（10 测试）
+src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（17 测试）
+src/client/openIntercept.ts   # 对话打开接管管线：reroute 驱动 + openRequest 载体 + openPath/openWorkspacePath 包装（28 测试）
+src/client/openChannelApi.ts  # 打开通道 client 半：围栏 /sidebar-vscode/api 探测与命令（11 测试）
 src/client/defaultTab.ts      # 「默认打开 VSCode」：pristine 种子检测 + 换种护栏 + 监听（22 测试）
 src/client/i18n.ts            # locale 服务挂接 + t()
 src/client/locales.ts         # zh/en 词典
@@ -288,7 +293,7 @@ scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 �
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
 screenshot.png                # 产品使用截图（见上方「界面截图」）
-tests/*.spec.ts               # vitest 单测，共 354 例 / 15 文件（如上括注分文件计数）
+tests/*.spec.ts               # vitest 单测，共 380 例 / 15 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
 vitest.config.ts              # 测试期 dsh-llm alias（优先 harness 检出，回退已安装包）
@@ -306,7 +311,7 @@ lib/                          # 构建产物（随仓库提交：link: 部署直
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc 声明 + tsdown 双 bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run（354 例）
+pnpm test         # vitest run（380 例）
 ```
 
 重建后硬刷新浏览器即可（link: 依赖 + 内容 rev 查询参数自动破缓存）；host 半改动需重启 `dsh web`。

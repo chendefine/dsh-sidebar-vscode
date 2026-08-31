@@ -50,6 +50,21 @@ interface CwdResult {
   parent: string | null
 }
 
+/**
+ * Page-load timestamp: openRequest nonces are wall-clock minted
+ * (`nextNonce`), so a request with a nonce below this floor was persisted by
+ * a PREVIOUS page and must not replay when the tab component mounts.
+ */
+const PAGE_LOAD_AT = Date.now()
+
+/**
+ * The highest openRequest nonce any tab instance of this page has executed.
+ * Module level on purpose: it survives tab close/reopen remounts (whose
+ * mount-baseline uses it, so an already-executed request never re-opens) and
+ * resets only on reload.
+ */
+let lastExecutedNonceAtPage = Number.NEGATIVE_INFINITY
+
 // ---- tab stylesheet ----
 
 /** Idempotency id of the injected tab <style> element. */
@@ -390,16 +405,20 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
 
   // Path translation + iframe target. With no rules (the unset default)
   // mapPath passes the raw cwd through; `unmapped` degenerates to its
-  // null-only case (non-absolute garbage) and the notice row goes quiet.
+  // null-only case, so the notice only fires for a non-absolute cwd (the
+  // workbench then opens its default view — folder === null below).
   const mapped = cwd === undefined ? undefined : mapPath(cwd, pathMap)
   const unmapped = cwd !== undefined && mapped === null
 
   // ---- Chat-open requests (the intercepted produced-file chips / path
   // links): the tab's meta carries `{ openRequest: { nonce, path } }` and is
-  // consumed here. The nonce guard is mount-initialized: a request that
-  // already sat in the persisted meta when this component mounted is marked
-  // seen WITHOUT opening — a page reload must not replay the last open —
-  // while later bumps (new clicks) execute.
+  // consumed here. The nonce baseline at mount treats a request already in
+  // the meta as seen WITHOUT opening — a page reload (persisted meta) or a
+  // same-page tab remount must not replay the last open — EXCEPT a request
+  // minted by THIS page after load: the click that opened the tab lands as
+  // one synchronous store mutation (`openTab` + `updateTab` batch into the
+  // very render that mounts this component), and that click must execute.
+  // See PAGE_LOAD_AT / lastExecutedNonceAtPage below for the two floors.
   const openRequest = extractOpenRequest((props.tab as { meta?: unknown } | undefined)?.meta)
   const lastNonce = useRef(Number.NEGATIVE_INFINITY)
   const nonceInitialized = useRef(false)
@@ -463,11 +482,19 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   useEffect(() => {
     if (!nonceInitialized.current) {
       nonceInitialized.current = true
-      lastNonce.current = openRequest?.nonce ?? Number.NEGATIVE_INFINITY
-      return
+      // A request that predates this page load was persisted (or already
+      // executed before a remount): mark it seen and skip. A request minted
+      // by THIS page (nonce ≥ PAGE_LOAD_AT) that no instance has executed
+      // yet is the mount-batch click — fall through so it runs.
+      if (openRequest === null || openRequest.nonce < PAGE_LOAD_AT) {
+        lastNonce.current = openRequest?.nonce ?? Number.NEGATIVE_INFINITY
+        return
+      }
+      lastNonce.current = lastExecutedNonceAtPage
     }
     if (openRequest === null || openRequest.nonce <= lastNonce.current) return
     lastNonce.current = openRequest.nonce
+    lastExecutedNonceAtPage = openRequest.nonce
     void executeOpen(openRequest)
   }, [openRequest?.nonce, executeOpen])
 
@@ -574,6 +601,12 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
           type="button"
           className="dsh_vscodeTab_reload"
           onClick={() => {
+            // A manual reload drops any pending degraded-channel payload:
+            // VS Code consumes `payload` only at workbench startup, so a
+            // reload at the stale payload URL would bounce the workbench
+            // back to that old file. Clearing flips `target` to the plain
+            // folder URL in the same click that remounts the iframe anyway.
+            setPendingOpen(null)
             setLoaded(false)
             setNonce(nonce + 1)
           }}

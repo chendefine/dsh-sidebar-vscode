@@ -224,8 +224,13 @@ export interface DocumentDispatchFace {
  * Escape listener whose lifetime is exactly the panel's (see
  * SettingsRoot.tsx's SettingsPanel). A synthetic Escape keydown is therefore
  * the one externally reachable close path, and it rides the dialog's own
- * semantics: the listener exists only while the dialog is open, so this can
- * never close anything else, and an already-closed dialog makes it a no-op.
+ * semantics: the listener exists only while the dialog is open, so this
+ * cannot close anything through the settings shell itself, and an
+ * already-closed dialog makes it a no-op. (A synthetic document-level
+ * Escape is not scoped, though: any OTHER concurrently-mounted
+ * document/window-level Escape listener receives it too — a stacked
+ * overlay inside the settings dialog would close along with it; the
+ * settings modal excludes other overlays in practice.)
  *
  * Fail-soft like everything here: environments without a constructible
  * KeyboardEvent (or any dispatch failure) simply leave the dialog open.

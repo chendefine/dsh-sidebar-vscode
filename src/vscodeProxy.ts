@@ -5,6 +5,14 @@
  * external gateway — keeping the clipboard signal bridge intact on
  * gateway-less deployments (Windows, LAN).
  *
+ * Both legs (the HTTP mount and the WebSocket upgrade route) sit behind
+ * the same browser-trust fence as every other plugin route
+ * (`isTrustedApiRequest`, see trust-fence.ts): the DSH page, its iframe,
+ * and direct bookmark navigations pass; cross-site pages are refused —
+ * WebSocket handshakes are not CORS-checked by browsers, and serve-web's
+ * `handleUpgrade` ignores the connection token, so an unfenced upgrade
+ * leg would be a cross-site-hijack tunnel into the workbench.
+ *
  * Upstream selection, in priority order:
  *
  * 1. **The `serverUrl` setting carrying a full URL** (pushed by the
@@ -58,6 +66,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
+import { isTrustedApiRequest } from './trust-fence.ts'
 
 /** Environment key overriding the proxy upstream (full URL, path/query ok). */
 export const UPSTREAM_ENV = 'DSH_SIDEBAR_VSCODE_UPSTREAM'
@@ -535,6 +544,28 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
 
   const face = (): ProxyWebServerFace | undefined => (ctx as unknown as { webServer?: ProxyWebServerFace }).webServer
 
+  /**
+   * The live webRuntime face the browser-trust fence reads (structural;
+   * an absent service leaves an empty trustedHosts list, which fences to
+   * loopback only — the same fail-closed default the /api routes use).
+   */
+  const runtime = (): { trustedHosts: readonly string[] } | undefined =>
+    (ctx as unknown as { webRuntime?: { trustedHosts: readonly string[] } }).webRuntime
+
+  /**
+   * The browser-trust gate for BOTH proxy legs: cross-site pages must not
+   * reach the workbench through this mount — firing an HTTP request needs
+   * no CORS (and serve-web's side-effectful callbacks ride the token the
+   * mount itself appends), and WebSocket handshakes are not CORS-checked
+   * at all, so an unfenced upgrade leg is a cross-site-hijack tunnel into
+   * the victim's VS Code server (serve-web's `handleUpgrade` ignores the
+   * connection token). Same fence as every other plugin route (index.ts);
+   * the same-origin page, the embedded iframe, and direct bookmark
+   * navigations (`sec-fetch-site: none`, no Origin) all pass.
+   */
+  const fenceOk = (req: IncomingMessage): boolean =>
+    isTrustedApiRequest(req, runtime()?.trustedHosts ?? [])
+
   /** Registered mount prefixes → their current rewrite targets. */
   const mountTargets = new Map<string, string>()
 
@@ -543,6 +574,11 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
     [...mounts.keys()].map(prefix => ({ prefix, upstreamBase: mountTargets.get(prefix) ?? prefix }))
 
   const handleHttp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (!fenceOk(req)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('dsh-sidebar-vscode: cross-site request refused')
+      return
+    }
     // Reconciled config: a redirect-adopted origin must carry into
     // forwarding too, not just into route planning.
     const config = routing()
@@ -558,7 +594,13 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
       return
     }
     await maybeRefresh(req, target)
-    proxyHttp(config, target, req, res)
+    // The awaited refresh may have RECONCILED the routing (first-boot
+    // discovery, a base-path/origin adoption) while this request waited:
+    // forward with the fresh config and mounts, or the very page load the
+    // discovery was awaited for would be served from the stale routing.
+    const finalConfig = routing() ?? config
+    const finalTarget = mapRequestUrl(req.url ?? '/', currentMounts(), finalConfig.extraQuery) ?? target
+    proxyHttp(finalConfig, finalTarget, req, res)
   }
 
   /** On page GETs: await a pending discovery (first boot race), else a
@@ -641,8 +683,16 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
       const stop = webServer.registerUpgrade({
         path,
         handler: (req, socket, head) => {
-          // Resolve routing live per upgrade: it may have reconciled (an
-          // origin adopted from a redirect) since this route registered.
+          // The fence first (WebSocket handshakes are not CORS-checked by
+          // browsers, and serve-web's handleUpgrade ignores the connection
+          // token — see fenceOk): a cross-site socket never reaches the
+          // tunnel. Then resolve routing live per upgrade: it may have
+          // reconciled (an origin adopted from a redirect) since this
+          // route registered.
+          if (!fenceOk(req)) {
+            socket.destroy()
+            return
+          }
           proxyUpgrade(routing() ?? configAtRegistration, req, socket, head)
         },
       })
@@ -803,6 +853,12 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
       settingsConfig = config
       pendingSeed = config === null || seed === undefined ? null : seed
       activate()
+      // A probe for the PREVIOUS upstream may still be mid-fetch: it already
+      // discards its own discovery through the generation bump activate()
+      // made, so drop the latch — the probe below then speaks for the NEW
+      // upstream immediately instead of waiting for the interval tick (the
+      // .finally guard keeps an already-settling old promise harmless).
+      inflightProbe = null
       if (active !== null) void probe()
     },
     status() {

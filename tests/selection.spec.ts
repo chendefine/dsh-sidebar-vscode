@@ -72,6 +72,11 @@ describe('envelope codec', () => {
     expect(parseClipboardEnvelope(`${SELECTION_MARKER}${badDirty}::`)).toBeNull()
   })
 
+  it('rejects fractional line numbers (the mention codec requires the integer lattice)', () => {
+    const bad = Buffer.from(JSON.stringify({ path: '/x', spans: [{ startLine: 1.5, endLine: 2.5, text: 'y' }] }), 'utf8').toString('base64url')
+    expect(parseClipboardEnvelope(`${SELECTION_MARKER}${bad}::`)).toBeNull()
+  })
+
   it('rejects structurally invalid resource payloads', () => {
     const badType = Buffer.from(JSON.stringify({ kind: 'resource', resources: [{ path: '/x', type: 'symlink' }] }), 'utf8').toString('base64url')
     expect(parseClipboardEnvelope(`${SELECTION_MARKER}${badType}::`)).toBeNull()

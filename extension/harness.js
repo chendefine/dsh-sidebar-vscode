@@ -63,7 +63,8 @@ const dump = (label) => {
 }
 
 const ext = require(path)
-ext.activate({ subscriptions: [] })
+const context = { subscriptions: [] }
+ext.activate(context)
 state.commands['dsh.selectionReference.send']().then(() => {
   dump('selection')
   return state.commands['dsh.selectionReference.sendFile'](undefined, [
@@ -78,6 +79,12 @@ state.commands['dsh.selectionReference.send']().then(() => {
   ])
 }).then(() => {
   dump('resource (sendFolder)')
+  // Dispose what activate() registered (the channel poll timer above all)
+  // so a plain `node harness.js …` run exits instead of hanging on the
+  // self-re-arming poll.
+  for (const disposable of context.subscriptions) {
+    try { disposable.dispose() } catch { /* already gone */ }
+  }
 }, (error) => {
   console.error('command failed:', error)
   process.exitCode = 1

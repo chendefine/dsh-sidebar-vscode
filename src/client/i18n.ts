@@ -12,7 +12,8 @@ import { en, zh, NS, type CopyKey } from './locales.ts'
 
 /** The locale service face (structural subset of @deepseek-ai/dsh-client-locale). */
 interface LocaleServiceFace {
-  register(ns: string, dicts: { zh: Record<string, string>; en: Record<string, string> }): unknown
+  /** Registers the dictionaries; the real service returns an unregister disposer (void-tolerant for foreign shapes). */
+  register(ns: string, dicts: { zh: Record<string, string>; en: Record<string, string> }): void | (() => void)
   getSnapshot(): { active: string }
 }
 
@@ -34,12 +35,15 @@ export function t(key: CopyKey): string {
 
 /**
  * Wire the dictionaries to the service (called once from the plugin body).
- * @returns the disposer cordis holds via `ctx.effect`.
+ * @returns the disposer cordis holds via `ctx.effect`: unregisters the
+ * dictionaries (the service's own disposer, when it returned one) and
+ * drops the module-level service handle.
  */
 export function attachLocale(service: LocaleServiceFace): () => void {
   localeService = service
-  service.register(NS, { zh: { ...zh }, en: { ...en } })
+  const stop = service.register(NS, { zh: { ...zh }, en: { ...en } })
   return () => {
+    if (typeof stop === 'function') stop()
     localeService = undefined
   }
 }
