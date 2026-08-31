@@ -22,7 +22,7 @@
  *
  * @module dsh-sidebar-vscode/client/composer
  */
-import { type InsertOutcome, type OccurrenceLike, type PasteLandingOutcome, type RecoveredPastePart, type ReferenceInsertLike } from './references.ts';
+import { type InsertOutcome, type OccurrenceLike, type PasteLandingOutcome, type RefRemovalOutcome, type RecoveredPastePart, type ReferenceInsertLike } from './references.ts';
 import { type ClipboardPayload } from './selection.ts';
 /** Options kept fresh by the VSCode tab render (paste fallback path). */
 export interface FallbackOptions {
@@ -59,9 +59,11 @@ export type MentionPaster = (sessionId: string | undefined, parts: readonly Reco
 }) => Promise<PasteLandingOutcome>;
 /**
  * Remove every chip citing one reference from the addressed session's
- * draft (the rail's close affordance). Implemented by the plugin body.
+ * draft (the rail's close affordance). Implemented by the plugin body;
+ * the outcome tells the dock whether the chip-preserving path worked or
+ * the legacy whole-draft splice must run instead.
  */
-export type ReferenceRemover = (sessionId: string | undefined, ref: string) => void;
+export type ReferenceRemover = (sessionId: string | undefined, ref: string) => Promise<RefRemovalOutcome>;
 /** Props of the dock component (framework session kit + inject face). */
 interface ComposerDockProps {
     /** The addressed session (the modern session-scoped dock owner prop). */
@@ -101,9 +103,11 @@ export declare function getReferenceLander(): ReferenceLander | undefined;
 /**
  * Read the displayed composer's selection — the user's last caret or range,
  * which the surface keeps through focus loss into the VS Code iframe — in
- * the coordinates the modern composer speaks (the detect projection; see
- * composerDom). Undefined whenever the composer is absent, inert, or holds
- * no addressable selection; the caller then falls back to the draft tail.
+ * the coordinates the displayed surface speaks: detect-projection offsets
+ * for the modern contenteditable (see composerDom), draft offsets for the
+ * textarea-era composer. Undefined whenever the composer is absent, inert,
+ * or holds no addressable selection; the caller then falls back to the
+ * draft tail.
  */
 export declare function readActiveComposerSelection(): {
     start: number;
@@ -113,7 +117,8 @@ export declare function readActiveComposerSelection(): {
  * Restore the displayed composer's caret after an external landing. One
  * frame out — the editor's own commit settles first. Selection only, never
  * focus: the user's focus stays wherever they were working (typically
- * inside the VS Code iframe).
+ * inside the VS Code iframe). Covers both surfaces: the contenteditable
+ * mapping (a no-op without one) and the textarea's setSelectionRange.
  */
 export declare function restoreActiveComposerCaret(caret: number): void;
 /** Re-export for the plugin body's slot inject face typing. */

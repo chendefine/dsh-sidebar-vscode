@@ -153,6 +153,15 @@ function composerDisplayedFor(
   return sessions?.list?.getSnapshot().current === sessionId
 }
 
+/** One resolved composer point plus where it came from. */
+interface ComposerPoint {
+  readonly point: { readonly start: number, readonly end: number }
+  /** True when the point was read off the displayed DOM surface (its caret
+   * restore must therefore write that surface back; a machine-resolved
+   * point leaves the editor's own post-insert selection alone). */
+  readonly fromDom: boolean
+}
+
 /**
  * The addressed session's live composer caret, in the plane the machine
  * addresses edits in — the bridge path's insertion point.
@@ -168,19 +177,19 @@ function composerDisplayedFor(
 function readComposerPoint(
   client: ClientContextFace,
   sessionId: string | undefined,
-): { readonly start: number, readonly end: number } | undefined {
+): ComposerPoint | undefined {
   if (sessionId === undefined) return undefined
   const keyboard = client.conversation?.input.keyboard
   if (keyboard !== undefined) {
     try {
-      return keyboard(sessionId).caretSpan()
+      return { point: keyboard(sessionId).caretSpan(), fromDom: false }
     } catch {
       // No shell for the id (never-focused session): fall through to the DOM.
     }
   }
-  return composerDisplayedFor(client.sessions, sessionId)
-    ? readActiveComposerSelection()
-    : undefined
+  if (!composerDisplayedFor(client.sessions, sessionId)) return undefined
+  const fromSurface = readActiveComposerSelection()
+  return fromSurface === undefined ? undefined : { point: fromSurface, fromDom: true }
 }
 
 /** The tab descriptor this plugin registers. */
@@ -250,7 +259,8 @@ export function apply(ctx: unknown): void {
       // through React and collapse the surface's selection to the tail.
       // The bridge path passes no `at`: resolve the insertion point here.
       const ownPoint = at === undefined
-      const point = at !== undefined ? at : ownPoint ? readComposerPoint(client, sessionId) : undefined
+      const resolved = at === undefined ? readComposerPoint(client, sessionId) : undefined
+      const point = at !== undefined ? at : resolved?.point
       const refs = isResourceList(payload)
         ? buildResourceRefsFromPayload(payload, {
           reverseRules: options.reverseRules,
@@ -264,11 +274,11 @@ export function apply(ctx: unknown): void {
         })
       const outcome = await insertVscodeReferences(client.sessions, client.conversation, sessionId, refs, point)
       // Caret restore is the point owner's duty: a caller that passed `at`
-      // restores through its own surface (the paste fallbacks); only the
-      // point this wrapper resolved itself is restored here — and only when
-      // it came from the DOM (a machine-resolved point leaves the editor's
-      // own post-insert selection, already right after the chip, alone).
-      if (ownPoint && point !== undefined && outcome.caret !== undefined && client.conversation?.input.keyboard === undefined) {
+      // restores through its own surface (the paste fallbacks); only a point
+      // this wrapper resolved from the DOM is restored here — a
+      // machine-resolved point leaves the editor's own post-insert
+      // selection, already right after the chip, alone.
+      if (ownPoint && resolved?.fromDom === true && outcome.caret !== undefined) {
         restoreActiveComposerCaret(outcome.caret)
       }
       return outcome
@@ -278,7 +288,7 @@ export function apply(ctx: unknown): void {
     return pasteRecoveredMentions(client.sessions, client.conversation, sessionId, parts, selection)
   }
   const removeRef: ReferenceRemover = (sessionId, ref) => {
-    void removeVscodeReferences(client.sessions, client.conversation, sessionId, ref)
+    return removeVscodeReferences(client.sessions, client.conversation, sessionId, ref)
   }
   client.effect(() => {
     setReferenceLander(lander)

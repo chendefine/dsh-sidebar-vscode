@@ -98,6 +98,21 @@ function isChipElement(node: NodeLike): boolean {
 }
 
 /**
+ * Whether a `<br>` is the presentational break Lexical mounts inside an
+ * EMPTY block (cursor geometry): the editor state has no LineBreakNode for
+ * it, so the detect projection counts nothing. A plain `<br>` is a real
+ * line break and counts its one newline.
+ */
+function isManagedLineBreak(node: NodeLike): boolean {
+  return node.getAttribute?.('data-lexical-managed-linebreak') != null
+}
+
+/** The detect length of one `<br>` (managed 0, real line break 1). */
+function brDetectLength(node: NodeLike): number {
+  return isManagedLineBreak(node) ? 0 : 1
+}
+
+/**
  * Walk one composer subtree, appending segments and recording elements.
  * @returns the subtree's detect length.
  */
@@ -110,12 +125,13 @@ function walk(
   chips: Map<NodeLike, Segment>,
 ): number {
   if (node.nodeType === TEXT_NODE) {
+    // Zero-length runs are registered too: an empty text node can hold the
+    // DOM selection (a collapsed caret), and dropping it would make the
+    // whole selection read fail-soft to the draft tail.
     const length = (node.data ?? '').length
-    if (length > 0) {
-      const segment: Segment = { kind: 'text', node, parent: node.parentNode, base, length }
-      segments.push(segment)
-      texts.set(node, segment)
-    }
+    const segment: Segment = { kind: 'text', node, parent: node.parentNode, base, length }
+    segments.push(segment)
+    texts.set(node, segment)
     return length
   }
   if (node.nodeType !== ELEMENT_NODE) return 0 // comments and friends: no projection
@@ -127,13 +143,10 @@ function walk(
     return 1
   }
   if (node.nodeName === 'BR') {
-    // A managed line break is the presentational <br> Lexical mounts inside
-    // an EMPTY block (cursor geometry); the editor state has no LineBreakNode
-    // for it, so the detect projection counts nothing. A plain <br> is a real
-    // line break and counts its one newline.
-    const managed = node.getAttribute?.('data-lexical-managed-linebreak') != null
-    if (!managed) segments.push({ kind: 'linebreak', node, parent: node.parentNode, base, length: 1 })
-    return managed ? 0 : 1
+    if (!isManagedLineBreak(node)) {
+      segments.push({ kind: 'linebreak', node, parent: node.parentNode, base, length: 1 })
+    }
+    return brDetectLength(node)
   }
   const start = base
   const boundaries: number[] = [base]
@@ -193,7 +206,7 @@ export function buildComposerLayoutMap(root: NodeLike): ComposerLayoutMap {
     if (text !== undefined) return text.length
     const chip = chips.get(node)
     if (chip !== undefined) return chip.length
-    if (node.nodeType === ELEMENT_NODE && node.nodeName === 'BR') return 1
+    if (node.nodeType === ELEMENT_NODE && node.nodeName === 'BR') return brDetectLength(node)
     return 0
   }
 
@@ -316,7 +329,7 @@ export function setComposerDocument(next: DocumentLike | undefined): void {
  * attributes inert (a workspace trigger, not an input).
  */
 export function findComposerEditable(): NodeLike | null {
-  const el = doc?.querySelector('[data-composer-card] [data-composer-input][contenteditable="true"], [data-composer-card] [contenteditable="true"][data-composer-input]')
+  const el = doc?.querySelector('[data-composer-card] [data-composer-input][contenteditable="true"]')
   return el != null && (el as NodeLike).childNodes !== undefined ? el as NodeLike : null
 }
 

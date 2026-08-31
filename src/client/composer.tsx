@@ -31,6 +31,7 @@ import {
   type InsertOutcome,
   type OccurrenceLike,
   type PasteLandingOutcome,
+  type RefRemovalOutcome,
   type RecoveredPastePart,
   type ReferenceInsertLike,
 } from './references.ts'
@@ -80,12 +81,14 @@ export type MentionPaster = (
 
 /**
  * Remove every chip citing one reference from the addressed session's
- * draft (the rail's close affordance). Implemented by the plugin body.
+ * draft (the rail's close affordance). Implemented by the plugin body;
+ * the outcome tells the dock whether the chip-preserving path worked or
+ * the legacy whole-draft splice must run instead.
  */
 export type ReferenceRemover = (
   sessionId: string | undefined,
   ref: string,
-) => void
+) => Promise<RefRemovalOutcome>
 
 /** Props of the dock component (framework session kit + inject face). */
 interface ComposerDockProps {
@@ -336,12 +339,19 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
             onClick={() => {
               // Chip-preserving removal first (Lexical hosts): a whole-draft
               // setDraft write would flatten every remaining chip to raw
-              // mention text. The legacy splice stays as the fallback.
-              if (removeRef !== undefined) {
-                removeRef(sessionId, tag.ref)
+              // mention text. The legacy splice stays as the fallback — for
+              // hosts without the injected remover AND for a remover that
+              // could not resolve the session at all.
+              const legacySplice = (): void => {
+                inputActions.setDraft(removeRefRanges(input.draft, input.occurrences, tag.ref))
+              }
+              if (removeRef === undefined) {
+                legacySplice()
                 return
               }
-              inputActions.setDraft(removeRefRanges(input.draft, input.occurrences, tag.ref))
+              void removeRef(sessionId, tag.ref).then(outcome => {
+                if (outcome.removed === 0 && outcome.degraded) legacySplice()
+              }, () => { legacySplice() })
             }}
           >
             <XIcon />
@@ -375,25 +385,42 @@ export function getReferenceLander(): ReferenceLander | undefined {
 
 // ---- the displayed composer's caret (the bridge path's insertion point) ----
 
+/** Locate the textarea-era composer's textarea, when one is displayed. */
+function activeComposerTextarea(): HTMLTextAreaElement | null {
+  const el = document.querySelector('[data-composer-card] textarea')
+  return el instanceof HTMLTextAreaElement && !el.disabled ? el : null
+}
+
 /**
  * Read the displayed composer's selection — the user's last caret or range,
  * which the surface keeps through focus loss into the VS Code iframe — in
- * the coordinates the modern composer speaks (the detect projection; see
- * composerDom). Undefined whenever the composer is absent, inert, or holds
- * no addressable selection; the caller then falls back to the draft tail.
+ * the coordinates the displayed surface speaks: detect-projection offsets
+ * for the modern contenteditable (see composerDom), draft offsets for the
+ * textarea-era composer. Undefined whenever the composer is absent, inert,
+ * or holds no addressable selection; the caller then falls back to the
+ * draft tail.
  */
 export function readActiveComposerSelection(): { start: number, end: number } | undefined {
-  return readComposerSelectionDetect()
+  const fromEditable = readComposerSelectionDetect()
+  if (fromEditable !== undefined) return fromEditable
+  const el = activeComposerTextarea()
+  if (el === null) return undefined
+  const start = el.selectionStart
+  if (start === null) return undefined
+  return { start, end: el.selectionEnd ?? start }
 }
 
 /**
  * Restore the displayed composer's caret after an external landing. One
  * frame out — the editor's own commit settles first. Selection only, never
  * focus: the user's focus stays wherever they were working (typically
- * inside the VS Code iframe).
+ * inside the VS Code iframe). Covers both surfaces: the contenteditable
+ * mapping (a no-op without one) and the textarea's setSelectionRange.
  */
 export function restoreActiveComposerCaret(caret: number): void {
-  restoreComposerCaretDetect(caret)
+  restoreComposerCaretDetect(caret) // no-ops without a contenteditable
+  const el = activeComposerTextarea()
+  if (el !== null) requestAnimationFrame(() => { el.setSelectionRange(caret, caret) })
 }
 
 /** Re-export for the plugin body's slot inject face typing. */

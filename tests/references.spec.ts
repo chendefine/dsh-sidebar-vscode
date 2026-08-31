@@ -1179,3 +1179,33 @@ describe('removeVscodeReferences', () => {
     expect(input.draft).toBe('tail')
   })
 })
+
+describe('pasteRecoveredMentions (Lexical machine, degraded prose)', () => {
+  it('does not advance the cursor past prose that failed to apply', async () => {
+    const input = new ModernInput()
+    input.failInsertText = true // the prose write is refused; the chip path is not
+    input.parts = [{ kind: 'text', text: 'ctx' }]
+    const parsed = parseRecoveredPaste(`see ${mangledCopy(ref())}`)!
+    const { sessions, conversation } = servicesFor(input)
+    const outcome = await pasteRecoveredMentions(sessions, conversation, 's1', parsed.parts, { start: 0, end: 0 })
+    // The prose never landed, so the chip must sit at the ORIGINAL cursor
+    // (with its machine gap), ahead of the untouched existing text.
+    expect(outcome.inserted).toBe(1)
+    expect(input.detectText).toBe('￼ ctx')
+    expect(input.drafts).toEqual([])
+  })
+})
+
+describe('removeVscodeReferences (failure modes)', () => {
+  it('reports degraded with nothing removed when no session scope resolves', async () => {
+    const input = new ModernInput()
+    const outcome = await removeVscodeReferences(
+      servicesFor(input, { scope: false }).sessions,
+      servicesFor(input).conversation,
+      's1',
+      'x',
+    )
+    expect(outcome).toEqual({ removed: 0, degraded: true })
+    expect(input.drafts).toEqual([])
+  })
+})

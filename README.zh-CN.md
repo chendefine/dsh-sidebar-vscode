@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.0
+- 版本：0.2.1
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：284 例全部通过（13 个规格文件）
+- 测试：354 例全部通过（15 个规格文件）
 
 ## 功能简介
 
@@ -288,9 +288,8 @@ scripts/install-extension.sh  # 扩展一键安装（vsce 打包 → 落文件 �
 scripts/install-extension.md  # 安装分步文档 + 排障表
 README.md / README.zh-CN.md   # 英文文档 / 本文档（中文）
 screenshot.png                # 产品使用截图（见上方「界面截图」）
-tests/*.spec.ts               # vitest 单测，共 323 例 / 14 文件（如上括注分文件计数）
+tests/*.spec.ts               # vitest 单测，共 354 例 / 15 文件（如上括注分文件计数）
 cordis.patch.yml              # bundle 通道的 host 半 insert 行（挂载声明）
-dsh.plugin.json               # 插件清单（元数据）
 tsdown.config.ts              # 双 bundle 构建（host ESM + client ModuleLoader 注册格式 + 纯度门）
 vitest.config.ts              # 测试期 dsh-llm alias（优先 harness 检出，回退已安装包）
 lib/                          # 构建产物（随仓库提交：link: 部署直接服务 lib/client.js）
@@ -307,7 +306,7 @@ lib/                          # 构建产物（随仓库提交：link: 部署直
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc 声明 + tsdown 双 bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run（323 例）
+pnpm test         # vitest run（354 例）
 ```
 
 重建后硬刷新浏览器即可（link: 依赖 + 内容 rev 查询参数自动破缓存）；host 半改动需重启 `dsh web`。

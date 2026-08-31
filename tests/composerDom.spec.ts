@@ -164,3 +164,22 @@ describe('buildComposerLayoutMap', () => {
     expect(point?.offset).toBe(0)
   })
 })
+
+describe('buildComposerLayoutMap (degenerate boundaries)', () => {
+  it('addresses an empty text node (a collapsed caret can sit in one)', () => {
+    const empty = text('')
+    const root = link(el('DIV', { contenteditable: 'true' }, [
+      el('P', {}, [textRun('aa'), empty, chip('x.ts')]),
+    ]))
+    const layout = buildComposerLayoutMap(root)
+    expect(layout.detectOffsetOf({ container: empty, offset: 0 })).toBe(2)
+  })
+
+  it('counts a plain (unmanaged) br as one newline', () => {
+    const root = link(el('DIV', { contenteditable: 'true' }, [
+      el('P', {}, [textRun('aa'), el('BR'), textRun('bb')]),
+    ]))
+    const layout = buildComposerLayoutMap(root)
+    expect(layout.detectLength).toBe('aa\nbb'.length)
+  })
+})

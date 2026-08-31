@@ -740,11 +740,16 @@ async function pasteLexical(
   for (const part of parts) {
     if (part.kind === 'text') {
       if (part.text !== '') {
-        for (let attempt = 0; attempt < 2; attempt++) {
+        // Advance the cursor only when the prose actually applied: a failed
+        // write (persistent CAS loss) leaves the document unchanged, so the
+        // following parts must land at the SAME point, not shift past text
+        // that never arrived.
+        let applied = false
+        for (let attempt = 0; attempt < 2 && !applied; attempt++) {
           const snapshot = input.state.getSnapshot()
-          if (bailInsertText(actx, { text: part.text, span: { ...cursor, draftRev: snapshot.draftRev } })) break
+          applied = bailInsertText(actx, { text: part.text, span: { ...cursor, draftRev: snapshot.draftRev } })
         }
-        cursor = { start: cursor.start + part.text.length, end: cursor.start + part.text.length }
+        if (applied) cursor = { start: cursor.start + part.text.length, end: cursor.start + part.text.length }
       }
       continue
     }
@@ -975,6 +980,11 @@ function removalWindow(draft: string, range: { readonly start: number, readonly 
   return { start: cutStart, end: cutEnd }
 }
 
+/** Upper bound on chips currently in the draft (the removal loop budget). */
+function snapshotBudget(input: SessionInputFace): number {
+  return input.state.getSnapshot().occurrences.length
+}
+
 /** Outcome of removing one reference's chips from a session's composer. */
 export interface RefRemovalOutcome {
   /** Chips removed as atomic occurrences. */
@@ -1025,7 +1035,15 @@ export async function removeVscodeReferences(
   if (isLexicalInput(input)) {
     let refusals = 0
     let degrade = false
+    // Defensive cap: every applied transaction removes one chip, so the
+    // table can only shrink — a misbehaving listener that answers true
+    // without applying must not spin the loop forever.
+    let budget = snapshotBudget(input) * 2 + 4
     for (;;) {
+      if (budget-- <= 0) {
+        degrade = true
+        break
+      }
       const snapshot = input.state.getSnapshot()
       const targets = snapshot.occurrences
         .filter(occurrence => occurrence.source === VSCODE_SOURCE && occurrence.ref === ref)

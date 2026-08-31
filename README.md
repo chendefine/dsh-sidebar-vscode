@@ -25,10 +25,10 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.2.0
+- Version: 0.2.1
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 284 passing (13 spec files)
+- Tests: 354 passing (15 spec files)
 
 ## Features
 
@@ -295,9 +295,8 @@ scripts/install-extension.sh  # one-command extension install (vsce package → 
 scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
 screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 323 tests / 14 files (per-file counts noted above)
+tests/*.spec.ts               # vitest specs — 354 tests / 15 files (per-file counts noted above)
 cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
-dsh.plugin.json               # plugin manifest (metadata)
 tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
 vitest.config.ts              # test-time dsh-llm alias (harness checkout preferred, installed package fallback)
 lib/                          # build outputs (committed: the link: deployment serves lib/client.js directly)
@@ -314,7 +313,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (323 tests)
+pnpm test         # vitest run (354 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.
