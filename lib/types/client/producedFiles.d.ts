@@ -49,9 +49,29 @@ export declare function producedForClosing(nodes: readonly unknown[], seq: numbe
  */
 export declare function selectProducedFiles(owner: unknown): readonly string[] | null;
 /**
+ * The turn-tail slot's matched value: the produced paths PLUS the stock
+ * opener the render site hands down. Chips route each path individually
+ * (openInVscode, or — for an open-blocklist hit — the stock `openFile`,
+ * which flows into the same wrapped chat funnel the prose path links use,
+ * where the blocklist declines it to the Host opener); carrying the
+ * opener on the match is the one way it reaches the component, because
+ * the slot's `inject` callback receives only the sessionId.
+ */
+export interface TurnTailMatch {
+    /** Produced paths, first-seen order, deduped. */
+    readonly paths: readonly string[];
+    /** The render site's stock opener, when the composition provides one
+     * (ui-conversation's TurnTailNodeView hands `{ turn, seq, openFile }`);
+     * absent in compositions that do not, where a blocked chip degrades to
+     * the VSCode open rather than to a dead click. */
+    readonly openFile?: (path: string) => void;
+}
+/**
  * The slot gate as a pure function (unit-tested): claims the turn-tail chain
  * only while the takeover is enabled AND the closing turn produced files.
- * Declining returns null so the chain falls through (dsh-better-sidebar's
- * -1 entry, then the default deliverables row).
+ * The claim is never filtered by the open blocklist — the row is
+ * informative (every produced chip renders); each chip click decides its
+ * own route. Declining returns null so the chain falls through
+ * (dsh-better-sidebar's -1 entry, then the default deliverables row).
  */
-export declare function makeTurnTailSelect(takeoverEnabled: () => boolean): (owner: unknown) => readonly string[] | null;
+export declare function makeTurnTailSelect(takeoverEnabled: () => boolean): (owner: unknown) => TurnTailMatch | null;

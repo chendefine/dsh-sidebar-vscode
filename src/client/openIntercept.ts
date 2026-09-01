@@ -28,6 +28,11 @@
  * consumes (meta is the documented cross-tab vehicle; a single-instance
  * focus never applies seed fields, hence the explicit update).
  *
+ * Every gate may also decline one path specifically through the optional
+ * `blocked` dep — the open blocklist (openBlocklist.ts): a file type the
+ * code editor renders poorly falls through to the stock Host opener, the
+ * same untouched path a declined switch takes.
+ *
  * Dependency-free by design (mirrors better-sidebar's openpath-intercept.ts)
  * so the takeover logic is unit-testable in isolation.
  *
@@ -62,6 +67,15 @@ export interface OpenInterceptDeps {
    * VSCode tab type enabled. A declining call falls through untouched.
    */
   takeoverEnabled(): boolean
+  /**
+   * Decline THIS PATH specifically — the open blocklist (a file type the
+   * code editor renders poorly: Office documents, images, PDFs; see
+   * openBlocklist.ts). A blocked path falls through to the stock Host
+   * opener exactly like a declined gate. Optional: absent wiring blocks
+   * nothing (and the settings-open takeover never wires it — its
+   * settings.yaml is a text document the blocklist must not break).
+   */
+  blocked?(path: string): boolean
   /** Route the open into the VSCode tab (open + meta update). */
   reroute(path: string): void
 }
@@ -253,7 +267,7 @@ export function wrapWorkspacesOpenPath(workspaces: WorkspacesLike, deps: OpenInt
     return () => {}
   }
   workspaces.openPath = (path: string): Promise<void> => {
-    if (deps.takeoverEnabled() && typeof path === 'string' && path !== '') {
+    if (deps.takeoverEnabled() && typeof path === 'string' && path !== '' && deps.blocked?.(path) !== true) {
       deps.reroute(path)
       // Callers ignore the result; resolving as success mirrors
       // better-sidebar's own wrapper (a swallowed open must not surface
@@ -380,7 +394,7 @@ export function wrapRemoteOpenWorkspacePath(session: RemoteSessionLike, deps: Op
       const path = request !== null && typeof request === 'object'
         ? (request as { path?: unknown }).path
         : undefined
-      if (deps.takeoverEnabled() && typeof path === 'string' && path !== '') {
+      if (deps.takeoverEnabled() && typeof path === 'string' && path !== '' && deps.blocked?.(path) !== true) {
         deps.reroute(path)
         // Callers check `result.ok`; an intercepted open reports the same
         // success the native receipt would (a rerouted open must not surface

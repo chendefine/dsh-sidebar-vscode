@@ -17,7 +17,9 @@
  *   gateway-era `remote.session.openWorkspacePath` Host Remote, or the
  *   legacy `workspaces.openPath` client service) are rerouted so chat file
  *   clicks open inside the VSCode tab, gated by the same `openAsDefault`
- *   switch as the default-tab swap;
+ *   switch as the default-tab swap — except paths whose extension is on
+ *   the open blocklist (openBlocklist.ts: Office/image/PDF types), which
+ *   keep the stock Host-opener behavior;
  * - the settings-open takeover (settingsTakeover.ts): the settings page's
  *   「打开配置文件」button resolves the configuration file through this
  *   plugin's fenced node-half route and opens it inside the VSCode tab

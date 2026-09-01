@@ -10,6 +10,12 @@
  *   own full-width line below. (`pathMap` deliberately has NO row: the
  *   rare split-container rewrite lives in the settings document only —
  *   the read side still honors it when present;)
+ * - the openBlocklist TAG row (openBlocklist.ts's contract): extensions
+ *   the chat-open takeover must not claim, rendered as removable tag
+ *   chips plus one inline free-form input with a suggestion dropdown —
+ *   each add/remove persists the whole next array (commit-per-action);
+ *   unset displays the code default, an emptied list stores [] = block
+ *   nothing;
  * - the maxLines / maxBytes NUMBER rows, which the declarative row
  *   cannot express anyway:
  *   - pre-filled defaults: an unset field shows the effective code
@@ -37,6 +43,12 @@ import { useState } from 'react'
 import { t } from './i18n.ts'
 import { CAP_SPECS, commitCap, displayCap, type CapSpec } from './settings.ts'
 import { applyDefaultTab, OPEN_AS_DEFAULT_KEY, type DefaultTabServiceFace } from './defaultTab.ts'
+import {
+  blocklistSuggestions,
+  normalizeExtension,
+  parseOpenBlocklist,
+  OPEN_BLOCKLIST_KEY,
+} from './openBlocklist.ts'
 import type { CopyKey } from './locales.ts'
 
 /** Copy of one cap row, resolved through t() at render time. */
@@ -176,6 +188,55 @@ const SETTINGS_CSS = `
 }
 .dsh_vscodeSet_input[data-invalid='true']:focus-visible {
   outline-color: var(--dsw-alias-state-error-primary);
+}
+/* The blocklist row: existing extensions as removable tags, one inline
+ * input (with a <datalist> of common suggestions) growing in their wrap.
+ * Tag chrome mirrors the turn-tail chips over the same host tokens. */
+.dsh_vscodeSet_tagWrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.dsh_vscodeSet_tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+.dsh_vscodeSet_tagX {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.dsh_vscodeSet_tagX:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.dsh_vscodeSet_tagX:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+.dsh_vscodeSet_input--inline {
+  flex: 1 1 88px;
+  width: auto;
+  min-width: 72px;
 }
 /* The switch row's control — the same visual switch better-sidebar's
  * settings popup uses (label + visually-hidden checkbox input + track /
@@ -334,6 +395,112 @@ function TextRow(props: { spec: TextSpec, raw: unknown, onWrite: (value: string)
 }
 
 /**
+ * The blocklist row: the effective extension list as removable tags plus
+ * one inline input adding new entries (free-form, normalized on commit —
+ * the <datalist> dropdown only SUGGESTS common binary types). Commits per
+ * action (each add/remove persists the whole next array — the same
+ * commit-per-action discipline better-sidebar's OpenWithSettings uses),
+ * so no draft-vs-store reconciliation exists beyond the input's own text:
+ * an unset key displays the code default, and the first edit writes an
+ * explicit array (removing every tag stores [] — "block nothing", a
+ * stored decision, not a reset to the default).
+ */
+function BlocklistRow(props: { raw: unknown, onWrite: (value: readonly string[]) => void }) {
+  const { raw, onWrite } = props
+  const effective = parseOpenBlocklist(raw)
+  const [draft, setDraft] = useState('')
+  const [invalid, setInvalid] = useState(false)
+
+  /** Adopt one entered extension: empty reverts silently, junk flags the
+   * hint (the draft stays fixable), a duplicate is a silent no-op, a real
+   * new entry appends and persists. Returns whether the input cleared.
+   * Takes the text explicitly because the comma path commits a value the
+   * draft state has not flushed yet. */
+  const adopt = (text: string = draft.trim()): boolean => {
+    if (text === '') {
+      setInvalid(false)
+      return true
+    }
+    const normalized = normalizeExtension(text)
+    if (normalized === null) {
+      setDraft(text)
+      setInvalid(true)
+      return false
+    }
+    if (!effective.includes(normalized)) onWrite([...effective, normalized])
+    setDraft('')
+    setInvalid(false)
+    return true
+  }
+
+  const remove = (extension: string): void => {
+    onWrite(effective.filter(entry => entry !== extension))
+  }
+
+  const label = t('settingOpenBlocklist')
+  return (
+    <div className="dsh_vscodeSet_row dsh_vscodeSet_row--stack" data-vscode-blocklist-row={OPEN_BLOCKLIST_KEY}>
+      <span className="dsh_vscodeSet_text">
+        <span className="dsh_vscodeSet_title">{label}</span>
+        <span className="dsh_vscodeSet_desc">{t('settingOpenBlocklistDesc')}</span>
+        {invalid && <span className="dsh_vscodeSet_hint">{t('settingOpenBlocklistInvalid')}</span>}
+      </span>
+      <div className="dsh_vscodeSet_tagWrap">
+        {effective.map(extension => (
+          <span key={extension} className="dsh_vscodeSet_tag">
+            {`.${extension}`}
+            <button
+              type="button"
+              className="dsh_vscodeSet_tagX"
+              aria-label={t('settingOpenBlocklistRemove')}
+              title={t('settingOpenBlocklistRemove')}
+              onClick={() => { remove(extension) }}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </button>
+          </span>
+        ))}
+        <input
+          type="text"
+          className="dsh_vscodeSet_input dsh_vscodeSet_input--inline"
+          list="dsh-vscode-blocklist-suggest"
+          value={draft}
+          placeholder={t('settingOpenBlocklistPlaceholder')}
+          spellCheck={false}
+          aria-label={label}
+          aria-invalid={invalid}
+          data-invalid={invalid ? 'true' : undefined}
+          onChange={event => {
+            setDraft(event.currentTarget.value)
+            setInvalid(false)
+            // A trailing comma commits the typed segment (the classic
+            // tag-input affordance; '.' stays a plain character so
+            // multi-part entries like tar.gz type naturally).
+            if (event.currentTarget.value.endsWith(',')) {
+              adopt(event.currentTarget.value.slice(0, -1))
+            }
+          }}
+          onBlur={() => { adopt() }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              adopt()
+            }
+          }}
+        />
+        <datalist id="dsh-vscode-blocklist-suggest">
+          {blocklistSuggestions(effective).map(suggestion => (
+            <option key={suggestion} value={suggestion} />
+          ))}
+        </datalist>
+      </div>
+    </div>
+  )
+}
+
+/**
  * One numeric cap row: title/desc left, a bounded number input right.
  * Displays the stored value, or the code default when unset; flags
  * out-of-range drafts live; commits clamped on blur/Enter.
@@ -393,9 +560,10 @@ function CapRow(props: { spec: CapSpec, raw: unknown, onWrite: (value: number) =
 }
 
 /**
- * The settings panel body: the default-tab switch, the serverUrl text
- * row, then one {@link CapRow} per declared cap spec, reading and writing
- * this descriptor's own pluginSettings blob.
+ * The settings panel body: the default-tab switch, the open-blocklist tag
+ * row (it qualifies the switch above it — which files that takeover must
+ * NOT claim), the serverUrl text row, then one {@link CapRow} per declared
+ * cap spec, reading and writing this descriptor's own pluginSettings blob.
  */
 export function CapSettingsPanel(props: CapSettingsPanelProps): React.ReactNode {
   const { pluginSettings, updatePluginSetting, service } = props
@@ -414,6 +582,10 @@ export function CapSettingsPanel(props: CapSettingsPanelProps): React.ReactNode 
           // a used session keeps its layout either way.
           if (next && service !== undefined) applyDefaultTab(service)
         }}
+      />
+      <BlocklistRow
+        raw={pluginSettings[OPEN_BLOCKLIST_KEY]}
+        onWrite={(value) => { updatePluginSetting(OPEN_BLOCKLIST_KEY, [...value]) }}
       />
       {TEXT_SPECS.map(spec => (
         <TextRow

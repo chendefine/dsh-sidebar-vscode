@@ -12,6 +12,12 @@
  * the chain falls through untouched — better-sidebar's -1 entry, then the
  * default deliverables row — so switch-off keeps the stock behavior.
  *
+ * Per-chip routing honors the open blocklist (openBlocklist.ts): a chip
+ * whose path is blocked calls the render site's own stock `openFile`
+ * (carried on the matched value) instead of the VSCode reroute — the same
+ * funnel the prose path links drive, where the blocklist declines the
+ * open to the Host OS opener.
+ *
  * The slot is a CHILD slot the host's ui-conversation declares in its
  * `conversation.chat.node` children table (kind: chain, scope: session).
  * Registering it directly races the declaration — the ui-slots core's
@@ -24,7 +30,7 @@
  */
 
 import type { ReactNode } from 'react'
-import { makeTurnTailSelect } from './producedFiles.ts'
+import { makeTurnTailSelect, type TurnTailMatch } from './producedFiles.ts'
 import { t } from './i18n.ts'
 
 /** Idempotency id of the injected turn-tail <style> element. */
@@ -113,29 +119,55 @@ function baseNameOf(path: string): string {
   return at === -1 ? path : path.slice(at + 1)
 }
 
+/** The chip's ×-style small glyph for a stock-opened (blocked) file. */
+function DocGlyph(): ReactNode {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3.5 2h6L12.5 5v9h-9V2Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <path d="M9 2v3.5h3.5" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 /** The intercepted produced-files row (visual twin of the deliverables chips). */
 export function TurnTailProducedFiles(props: {
-  matched: readonly string[]
+  matched: TurnTailMatch
   openInVscode: (path: string) => void
+  /** The open blocklist verdict (per click): a blocked path routes to the
+   * stock `matched.openFile` when the composition provides one, else
+   * degrades to the VSCode open (never a dead chip). */
+  isBlocked: (path: string) => boolean
 }): ReactNode {
-  const { matched, openInVscode } = props
-  const shown = matched.slice(0, 6)
-  const hidden = matched.length - shown.length
+  const { matched, openInVscode, isBlocked } = props
+  const shown = matched.paths.slice(0, 6)
+  const hidden = matched.paths.length - shown.length
   return (
     <div className="dsh_vscodeTurnTail_row">
       <span className="dsh_vscodeTurnTail_label">{t('produced')}</span>
-      {shown.map(path => (
-        <button
-          key={path}
-          type="button"
-          className="dsh_vscodeTurnTail_chip"
-          title={t('producedOpen')}
-          onClick={() => { openInVscode(path) }}
-        >
-          <CodeGlyph />
-          <span>{baseNameOf(path)}</span>
-        </button>
-      ))}
+      {shown.map(path => {
+        const blocked = isBlocked(path)
+        const stock = blocked && matched.openFile !== undefined
+        return (
+          <button
+            key={path}
+            type="button"
+            className="dsh_vscodeTurnTail_chip"
+            title={stock ? t('producedOpenSystem') : t('producedOpen')}
+            onClick={() => {
+              if (stock) matched.openFile?.(path)
+              else openInVscode(path)
+            }}
+          >
+            {stock ? <DocGlyph /> : <CodeGlyph />}
+            <span>{baseNameOf(path)}</span>
+          </button>
+        )
+      })}
       {hidden > 0 && <span className="dsh_vscodeTurnTail_more">+{hidden}</span>}
     </div>
   )
@@ -161,11 +193,14 @@ export interface TurnTailSlotsFace {
  * tab type enabled — evaluated per render/claim, so flipping the switch
  * applies to the next row render).
  * @param openInVscode - the chip click handler (reroutes into the VSCode tab).
+ * @param isBlocked - the open blocklist verdict per path (a blocked chip
+ * routes to the stock `matched.openFile` instead).
  */
 export function registerTurnTailVscode(
   slots: TurnTailSlotsFace,
   takeoverEnabled: () => boolean,
   openInVscode: (sessionId: string, path: string) => void,
+  isBlocked: (path: string) => boolean = () => false,
 ): () => void {
   return slots.inject('conversation.chat.turnTail', () => slots.register({
     name: 'conversation.chat.turnTail',
@@ -176,6 +211,7 @@ export function registerTurnTailVscode(
     select: makeTurnTailSelect(takeoverEnabled),
     inject: (sessionId: string) => ({
       openInVscode: (path: string) => { openInVscode(sessionId, path) },
+      isBlocked,
     }),
   }, TurnTailProducedFiles))
 }

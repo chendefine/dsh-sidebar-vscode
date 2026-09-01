@@ -94,6 +94,27 @@ describe('wrapWorkspacesOpenPath (option III — the legacy runtime funnel)', ()
     stop()
   })
 
+  it('declines a blocked path to the stock opener (the open blocklist)', async () => {
+    const rerouted: string[] = []
+    const opened: string[] = []
+    const workspaces: WorkspacesLike = {
+      openPath: (path: string) => {
+        opened.push(path)
+        return Promise.resolve()
+      },
+    }
+    const stop = wrapWorkspacesOpenPath(workspaces, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: path => { rerouted.push(path) },
+    })
+    await workspaces.openPath('/w/report.pdf')
+    await workspaces.openPath('/w/main.ts')
+    expect(opened).toEqual(['/w/report.pdf']) // the blocked open fell through
+    expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute
+    stop()
+  })
+
   it('restore puts back the exact original (chains with better-sidebar\'s wrapper)', () => {
     const workspaces: WorkspacesLike = { openPath: () => Promise.resolve() }
     const original = workspaces.openPath
@@ -207,6 +228,24 @@ describe('wrapRemoteOpenWorkspacePath (option III — the gateway-era runtime fu
     await session.openWorkspacePath!({} as { path: string })
     await session.openWorkspacePath!(null as unknown as { readonly path: string }, undefined)
     expect(session.calls).toHaveLength(3)
+    stop()
+  })
+
+  it('declines a blocked path to the stock opener (the open blocklist)', async () => {
+    const session = makeRemoteSession()
+    const rerouted: string[] = []
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: path => { rerouted.push(path) },
+    })
+    const receipt = await session.openWorkspacePath!({ path: '/w/report.pdf' })
+    // The blocked open fell through to the stock closure (recorded), and
+    // the caller still sees that closure's receipt — not a synthesized one.
+    expect(session.calls).toEqual([{ request: { path: '/w/report.pdf' }, signal: undefined }])
+    expect(receipt).toEqual({ ok: true, value: { opened: true } })
+    await session.openWorkspacePath!({ path: '/w/main.ts' })
+    expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute
     stop()
   })
 

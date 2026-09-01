@@ -180,17 +180,43 @@ describe('selectProducedFiles / makeTurnTailSelect (the claim)', () => {
     expect(selectProducedFiles({ turn: { data: { get: () => 'garbage' } }, seq: 5 })).toBeNull()
   })
 
-  it('the gated select declines while the takeover is disabled and passes through otherwise', () => {
-    const enabledOwner = turnOwner([{ seq: 3, path: '/w/a.ts' }])
+  it('the gated select declines while the takeover is disabled and claims otherwise', () => {
+    // No openFile member here: this test pins the gate alone (the opener
+    // carry has its own tests below).
+    const enabledOwner = {
+      turn: { data: { get: () => ({ produced: [{ seq: 3, path: '/w/a.ts' }] }) } },
+      seq: 5,
+    }
     const select = makeTurnTailSelect(() => false)
     expect(select(enabledOwner)).toBeNull()
     const enabled = makeTurnTailSelect(() => true)
-    expect(enabled(enabledOwner)).toEqual(['/w/a.ts'])
+    expect(enabled(enabledOwner)).toEqual({ paths: ['/w/a.ts'] })
     // The gate is read per claim, so flipping it flips the outcome.
     let on = false
     const live = makeTurnTailSelect(() => on)
     expect(live(enabledOwner)).toBeNull()
     on = true
-    expect(live(enabledOwner)).toEqual(['/w/a.ts'])
+    expect(live(enabledOwner)).toEqual({ paths: ['/w/a.ts'] })
+  })
+
+  it('the gated select carries the render site\'s stock opener on the match', () => {
+    const opened: string[] = []
+    const owner = {
+      turn: { data: { get: () => ({ produced: [{ seq: 3, path: '/w/report.pdf' }] }) } },
+      seq: 5,
+      openFile: (path: string) => { opened.push(path) },
+    }
+    const select = makeTurnTailSelect(() => true)
+    const match = select(owner)
+    expect(match).toEqual({ paths: ['/w/report.pdf'], openFile: owner.openFile })
+    match?.openFile?.('/w/report.pdf')
+    expect(opened).toEqual(['/w/report.pdf'])
+  })
+
+  it('the match degrades gracefully without a stock opener (blocked chips fall back to VSCode)', () => {
+    const owner = { turn: { data: { get: () => ({ produced: [{ seq: 3, path: '/w/a.ts' }] }) } }, seq: 5 }
+    expect(makeTurnTailSelect(() => true)(owner)).toEqual({ paths: ['/w/a.ts'] })
+    // A non-function openFile member is dropped, not carried.
+    expect(makeTurnTailSelect(() => true)({ ...owner, openFile: 'nope' })).toEqual({ paths: ['/w/a.ts'] })
   })
 })

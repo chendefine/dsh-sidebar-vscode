@@ -10,6 +10,12 @@
  *   own full-width line below. (`pathMap` deliberately has NO row: the
  *   rare split-container rewrite lives in the settings document only —
  *   the read side still honors it when present;)
+ * - the openBlocklist TAG row (openBlocklist.ts's contract): extensions
+ *   the chat-open takeover must not claim, rendered as removable tag
+ *   chips plus one inline free-form input with a suggestion dropdown —
+ *   each add/remove persists the whole next array (commit-per-action);
+ *   unset displays the code default, an emptied list stores [] = block
+ *   nothing;
  * - the maxLines / maxBytes NUMBER rows, which the declarative row
  *   cannot express anyway:
  *   - pre-filled defaults: an unset field shows the effective code
@@ -50,8 +56,9 @@ export interface CapSettingsPanelProps {
  */
 export declare function adoptSettingsStyles(): () => void;
 /**
- * The settings panel body: the default-tab switch, the serverUrl text
- * row, then one {@link CapRow} per declared cap spec, reading and writing
- * this descriptor's own pluginSettings blob.
+ * The settings panel body: the default-tab switch, the open-blocklist tag
+ * row (it qualifies the switch above it — which files that takeover must
+ * NOT claim), the serverUrl text row, then one {@link CapRow} per declared
+ * cap spec, reading and writing this descriptor's own pluginSettings blob.
  */
 export declare function CapSettingsPanel(props: CapSettingsPanelProps): React.ReactNode;

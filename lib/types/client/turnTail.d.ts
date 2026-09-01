@@ -12,6 +12,12 @@
  * the chain falls through untouched — better-sidebar's -1 entry, then the
  * default deliverables row — so switch-off keeps the stock behavior.
  *
+ * Per-chip routing honors the open blocklist (openBlocklist.ts): a chip
+ * whose path is blocked calls the render site's own stock `openFile`
+ * (carried on the matched value) instead of the VSCode reroute — the same
+ * funnel the prose path links drive, where the blocklist declines the
+ * open to the Host OS opener.
+ *
  * The slot is a CHILD slot the host's ui-conversation declares in its
  * `conversation.chat.node` children table (kind: chain, scope: session).
  * Registering it directly races the declaration — the ui-slots core's
@@ -23,12 +29,17 @@
  * @module dsh-sidebar-vscode/client/turnTail
  */
 import type { ReactNode } from 'react';
+import { type TurnTailMatch } from './producedFiles.ts';
 /** Idempotently install the row stylesheet into `document.head`. */
 export declare function adoptTurnTailStyles(): () => void;
 /** The intercepted produced-files row (visual twin of the deliverables chips). */
 export declare function TurnTailProducedFiles(props: {
-    matched: readonly string[];
+    matched: TurnTailMatch;
     openInVscode: (path: string) => void;
+    /** The open blocklist verdict (per click): a blocked path routes to the
+     * stock `matched.openFile` when the composition provides one, else
+     * degrades to the VSCode open (never a dead chip). */
+    isBlocked: (path: string) => boolean;
 }): ReactNode;
 /** The slots service slice the registration touches (structural). */
 export interface TurnTailSlotsFace {
@@ -49,5 +60,7 @@ export interface TurnTailSlotsFace {
  * tab type enabled — evaluated per render/claim, so flipping the switch
  * applies to the next row render).
  * @param openInVscode - the chip click handler (reroutes into the VSCode tab).
+ * @param isBlocked - the open blocklist verdict per path (a blocked chip
+ * routes to the stock `matched.openFile` instead).
  */
-export declare function registerTurnTailVscode(slots: TurnTailSlotsFace, takeoverEnabled: () => boolean, openInVscode: (sessionId: string, path: string) => void): () => void;
+export declare function registerTurnTailVscode(slots: TurnTailSlotsFace, takeoverEnabled: () => boolean, openInVscode: (sessionId: string, path: string) => void, isBlocked?: (path: string) => boolean): () => void;

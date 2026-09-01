@@ -17,7 +17,9 @@
  *   gateway-era `remote.session.openWorkspacePath` Host Remote, or the
  *   legacy `workspaces.openPath` client service) are rerouted so chat file
  *   clicks open inside the VSCode tab, gated by the same `openAsDefault`
- *   switch as the default-tab swap;
+ *   switch as the default-tab swap — except paths whose extension is on
+ *   the open blocklist (openBlocklist.ts: Office/image/PDF types), which
+ *   keep the stock Host-opener behavior;
  * - the settings-open takeover (settingsTakeover.ts): the settings page's
  *   「打开配置文件」button resolves the configuration file through this
  *   plugin's fenced node-half route and opens it inside the VSCode tab
@@ -42,6 +44,7 @@ import {
   wrapWorkspacesOpenPath,
 } from './openIntercept.ts'
 import { adoptTurnTailStyles, registerTurnTailVscode } from './turnTail.tsx'
+import { isBlockedPath, readOpenBlocklist } from './openBlocklist.ts'
 import { closeSettingsDialog, wrapRemoteOpenSettingsDocument, wrapSettingsOpenDocument } from './settingsTakeover.ts'
 import { fetchSettingsDocumentPath } from './openChannelApi.ts'
 import {
@@ -391,6 +394,11 @@ export function apply(ctx: unknown): void {
     }
     const takeoverEnabled = (): boolean => readSettingValue(betterSidebar, OPEN_AS_DEFAULT_KEY) === true
       && betterSidebar.isTabEnabled(TAB_ID)
+    // The open blocklist (openBlocklist.ts), read per call like the gate:
+    // a file type the code editor renders poorly (Office/image/PDF …)
+    // declines THIS path's takeover — the open falls through to the stock
+    // Host opener. Settings edits therefore apply to the very next click.
+    const blockedPath = (path: string): boolean => isBlockedPath(path, readOpenBlocklist(betterSidebar))
     const currentCwd = (): string | undefined => {
       const snapshot = client.sessions?.list?.getSnapshot()
       const id = snapshot?.current
@@ -411,11 +419,15 @@ export function apply(ctx: unknown): void {
     // claimed at priority -2, before better-sidebar's own -1 entry, so the
     // chips open the files in the VSCode tab. A decline (switch off / tab
     // disabled / nothing produced) falls through to its row unchanged.
+    // Per-chip routing honors the blocklist: a blocked chip calls the
+    // render site's own stock openFile (carried on the matched value)
+    // instead — same funnel, same decline-to-Host-opener semantics.
     const disposeStyles = adoptTurnTailStyles()
     const stopTurnTail = registerTurnTailVscode(
       client.slots,
       takeoverEnabled,
       openInVscode,
+      blockedPath,
     )
 
     // Option III — the runtime's single remaining chat file-open funnel
@@ -444,6 +456,7 @@ export function apply(ctx: unknown): void {
         if (session === null || typeof session !== 'object') return undefined
         return wrapRemoteOpenWorkspacePath(session, {
           takeoverEnabled,
+          blocked: blockedPath,
           reroute: path => { openInVscode('', path) },
         })
       })
@@ -454,6 +467,7 @@ export function apply(ctx: unknown): void {
       ? undefined
       : wrapWorkspacesOpenPath(workspaces, {
         takeoverEnabled,
+        blocked: blockedPath,
         reroute: path => { openInVscode('', path) },
       })
 
