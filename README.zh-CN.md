@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.3
+- 版本：0.2.4
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：380 例全部通过（15 个规格文件）
+- 测试：411 例全部通过（17 个规格文件）
 
 ## 功能简介
 
@@ -189,6 +189,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 | 右键没有 DSH 命令 / 命令面板搜不到 | 扩展未装或 serve-web 未重启（清单仅启动时扫描），或工作区处于受限模式未信任——见 `scripts/install-extension.md` 常见问题表 |
 | 发送后 chip 未出现，剪贴板出现代码片段 | 注入降级为可读回退文本（无可用输入框 / 跨域）；直接粘贴进输入框即可恢复为 chip |
 | 提示「已注入为文本引用…」 | 输入框处于提交中等瞬态，chip 化被拒，已退化为纯文本 mention——提交效果相同 |
+| 新建会话后光标闪两下就消失（旧版本症状） | VS Code 启动页会在渲染时抢走焦点：若 workbench 在**收起的**侧边栏里启动，光标就被无形夺走。现版本双重防护——iframe 首次加载延迟到标签真正可见，且隐藏帧抢到的焦点会被立即归还原处（见下文「焦点防护」）；展开侧边栏时的首次加载会稍晚出现工作台，属预期 |
 
 ## 技术架构
 
@@ -238,6 +239,13 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 
 better-sidebar 对新会话的种子标签是硬编码的（上游 `makeDefaultState('editor-home')`——一个无路径的「文件」editor 标签），没有「默认开哪个 tab」的偏好项。本插件按上游服务建议的伴生方式实现（`src/client/defaultTab.ts`，不改上游）：监听 sidebar store，开关开启且当前会话仍是**未被触碰的种子状态**（单 pane、至多一个无路径「文件」标签、无终端计数、无展开目录、无底部标签、无浮窗）时 `openTab({ type })` 落入 VSCode 标签、`closeTab` 移除种子——替换而非叠加；类型型 open 不强制展开面板。每会话只执行一次（`localStorage` 标记——否则用户关掉标签后会被下一次 store 通知重新打开，永远关不掉）；tab 类型被禁用或 open 未真正落地时绝不移除种子。
 
+#### 焦点防护（隐藏 iframe 不抢焦点）
+
+VS Code workbench 启动时会渲染 Getting Started 欢迎页，而该页面**渲染即 `focus()` 自身**：若 workbench 在收起的侧边栏（或非当前会话）里启动，新会话输入框里的光标会在闪烁两下后被无形夺走。`src/client/VscodeView.tsx` 用两道防护消除这一问题：
+
+- **首次加载延迟**：iframe 一直挂起，直到本标签**真正可见过至少一次**（活动标签且面板展开）。新会话的默认标签交换通常发生在面板收起时——隐藏启动 workbench 用户什么都看不到，还白抢焦点；延迟到首次展开后再加载，启动期的任何焦点抓取都发生在用户正看着 workbench 的时候。加载过一次后永不卸载（跨标签切换 / 面板收起保持存活的原有契约不变）。`visible === undefined`（过旧的 better-sidebar 对端不传该标志）时**fail-open**：照旧立即加载。
+- **隐藏帧焦点围栏**：已加载的 workbench（keep-alive 存活于面板收起后）若再次编程性抢焦点——恢复的编辑器、扩展命令、迟到的启动步骤——立即把焦点还给帧外最近持有它的元素。识别走 `focusout` 而非 `focusin`（焦点穿入 iframe 时父文档只发 `focusout`，`focusin` 落在帧内文档）；归还次数按滑动窗口限额（`src/client/focusGuard.ts`，默认 10 秒 5 次），病态循环抢焦点时围栏让位以免焦点乒乓。仅在**显式** `visible === false` 时武装——可见的 workbench 启动抢焦点属常规行为，且旧对端绝不误伤用户点击。
+
 ### 部署拓扑（默认值的依据）
 
 VS Code server（`code serve-web`）**直接跑在 dsh-runtime 容器里**：
@@ -273,7 +281,8 @@ src/mentionCodec.ts           # 共享纯逻辑：两种 scheme 规范 URI 编�
 src/openChannel.ts            # host 半：/tmp 命令通道 spool（workbench 扩展轮询；slug 规范、能力新鲜度、原子写）（11 测试）
 src/trust-fence.ts            # host 半：本插件路由的浏览器信任围栏（回环/trustedHosts + 同源标记）
 src/client/index.tsx          # browser 半入口：注册 tab + dock + @ 触发源 + 词典（ctx.effect，HMR 安全）
-src/client/VscodeView.tsx     # 标签组件：cwd → 路径映射 → iframe + 工具栏/提示 + 桥装载
+src/client/VscodeView.tsx     # 标签组件：cwd → 路径映射 → iframe + 工具栏/提示 + 桥装载 + 焦点防护
+src/client/focusGuard.ts     # 隐藏帧焦点围栏：滑动窗口归还限额
 src/client/clipboardBridge.ts # 同源 iframe navigator.clipboard.writeText 信号补丁（10 测试；跨域读取抛 SecurityError 时 no-op）
 src/client/composer.tsx       # dock 组件：引用 tag 栏（自注入样式）+ 粘贴兜底
 src/client/composerDom.ts     # Lexical composer DOM 的 detect 投影遍历（DOM 选区 ⇄ detect 偏移映射）（11 测试）

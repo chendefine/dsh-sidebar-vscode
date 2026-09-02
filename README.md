@@ -25,10 +25,10 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.2.3
+- Version: 0.2.4
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 380 passing (15 spec files)
+- Tests: 411 passing (17 spec files)
 
 ## Features
 
@@ -190,6 +190,7 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 | No DSH command in the context menu / palette | Extension not installed, serve-web not restarted (the manifest is scanned at startup only), or the workspace is untrusted (restricted mode) — see the FAQ in `scripts/install-extension.md` |
 | No chip after sending; a code snippet appears on the clipboard | Landing failed and the readable fallback reached the clipboard (no composer / cross-origin); paste it into the composer to recover chips |
 | "Injected as a text reference…" notice | The composer was mid-submit so the chip degraded to a plain-text mention — submitting works the same |
+| Caret vanishes from the composer ~1s after creating a session (older-version symptom) | VS Code's Getting Started page focuses itself when it renders: a workbench booting inside a **collapsed** sidebar stole the caret invisibly. Current versions guard both ways — the iframe's first load is deferred until the tab has actually been seen, and any focus a hidden frame does grab is handed straight back (see "Focus guards" below); the first workbench load on expansion arrives slightly later by design |
 
 ## Architecture
 
@@ -240,6 +241,13 @@ Both reference kinds share one chain:
 
 better-sidebar hardcodes the fresh-session seed (upstream `makeDefaultState('editor-home')` — a path-less Files editor tab) — there is no "default tab" preference. This plugin implements the companion approach the upstream service suggests (`src/client/defaultTab.ts`, no upstream changes): it watches the sidebar store, and while the switch is on and the active session still carries its **pristine seed** (single pane, at most the one path-less Files tab, no minted counters, no expansions, no bottom tabs, no floats), it `openTab({ type })`s the VSCode tab and `closeTab`s the seed — a replacement, not an addition; a type-only open never expands a collapsed panel. The swap runs once per session (a `localStorage` marker — without it, closing the tab would let the next store notification re-open it forever); a disabled tab type or a refused open never costs the sidebar its seed.
 
+#### Focus guards (a hidden iframe must not steal focus)
+
+The VS Code workbench renders its Getting Started page at startup, and that page calls `focus()` on itself the moment it renders: a workbench booting inside a collapsed sidebar (or a non-current session) ripped the caret out of the freshly-focused composer about a second — two caret blinks — after a new conversation mounted. `src/client/VscodeView.tsx` eliminates this with two guards:
+
+- **Deferred first load**: the iframe is held back until this tab has been **visible at least once** (active tab AND open panel). The default-tab swap usually lands with the panel collapsed — a hidden boot buys nothing the user can see and only invites the grab; deferring it moves any boot-time focus event to the first real expansion, where the user is looking AT the workbench. Once loaded, the frame is never keyed away again (the keep-alive contract stands). `visible === undefined` (a better-sidebar peer too old to pass the flag) fails OPEN — load as before, never defer on a guess.
+- **Hidden-frame focus fence**: a workbench that HAS loaded (keep-alive surviving a panel collapse) and grabs focus again programmatically — a restored editor, an extension command, a late boot step — has the focus handed straight back to the element that last held it outside the frame. Detection rides `focusout`, not `focusin` (a crossing INTO the iframe fires focusout in the parent but never focusin — the focusin lands inside the frame's own document); restores are budgeted per sliding window (`src/client/focusGuard.ts`, default 5 per 10s) so a re-grabbing workbench cannot livelock the focus chain. Armed only on an EXPLICIT `visible === false` — a visible workbench focusing itself at boot is conventional, and an old peer never has its user clicks fought.
+
 ### Deployment topology (why the defaults)
 
 The VS Code server (`code serve-web`) runs **inside the dsh-runtime container**:
@@ -280,7 +288,8 @@ src/mentionCodec.ts           # shared pure logic: canonical URI codecs (2 schem
 src/openChannel.ts            # host half: /tmp command-channel spool the workbench extension polls (slug spec, capability freshness, atomic writes) (11 tests)
 src/trust-fence.ts            # host half: browser-trust fence for this plugin's routes (loopback/trustedHosts + same-origin markers)
 src/client/index.tsx          # browser-half entry: tab + dock + @ source + dicts (ctx.effect, HMR-safe)
-src/client/VscodeView.tsx     # tab component: cwd → path mapping → iframe + toolbar/notices + bridge
+src/client/VscodeView.tsx     # tab component: cwd → path mapping → iframe + toolbar/notices + bridge + focus guards
+src/client/focusGuard.ts     # hidden-frame focus fence: sliding-window restore budget
 src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText signal patch (10 tests; no-ops on the cross-origin SecurityError throw)
 src/client/composer.tsx       # dock component: reference rail (self-adopted styles) + paste fallbacks
 src/client/composerDom.ts     # detect-projection walk over the Lexical composer DOM (DOM selection ⇄ detect offsets) (11 tests)

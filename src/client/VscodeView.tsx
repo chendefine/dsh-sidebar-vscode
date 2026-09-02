@@ -10,7 +10,12 @@
  *   the workbench is served same-origin (through the host half's built-in
  *   `/sidebar/vscode` proxy, or the deployment's gateway subpath — cookies
  *   flow, the WebSocket terminal works) and the VS Code session should
- *   survive tab switches inside the sidebar.
+ *   survive tab switches inside the sidebar. The FIRST load is deferred,
+ *   though, until the tab has been visible once (see the hidden-frame
+ *   focus guards below): a workbench booted inside a hidden iframe steals
+ *   the caret from the composer via its Getting Started page, so the boot
+ *   waits for an audience — and a focus fence keeps a hidden, already
+ *   loaded workbench from grabbing focus later.
  * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
  * (`session.cwd`); the scope's optional cwd is used as a fast path.
  * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
@@ -37,6 +42,7 @@ import {
   PROXY_MOUNT,
 } from './paths.ts'
 import { installClipboardBridge } from './clipboardBridge.ts'
+import { FocusRestoreBudget } from './focusGuard.ts'
 import type { ClipboardPayload } from './selection.ts'
 import { getReferenceLander, setFallbackOptions } from './composer.tsx'
 import { extractOpenRequest, type OpenRequest } from './openIntercept.ts'
@@ -224,7 +230,7 @@ export function adoptTabStyles(): () => void {
  * @param props - the tab component props (scope + the sidebar store).
  */
 export function VscodeView(props: TabComponentProps): React.ReactNode {
-  const { scope, store } = props
+  const { scope, store, visible } = props
 
   // Shared settings (read each render; the gear popup writes the prefs doc).
   //
@@ -506,12 +512,36 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     ? effectivePending.url
     : buildVscodeUrl(serverUrl, mapped ?? null)
 
+  // ---- Hidden-frame focus guards ─────────────────────────────────────────
+  //
+  // The embedded workbench must never steal focus the user cannot SEE it
+  // taking. VS Code's Getting Started page calls focus() on itself the
+  // moment it renders, so a workbench booted inside a hidden iframe rips
+  // the caret out of the freshly-focused composer about a second (two
+  // caret blinks) after a new conversation mounts — with the panel
+  // collapsed the user just loses the caret. Two guards, one per phase:
+  //
+  // 1. DEFERRED FIRST LOAD: hold the iframe back until this tab has been
+  //    visible at least once (active tab AND open panel). The openAsDefault
+  //    swap lands this tab as a brand-new session's default while the panel
+  //    is usually collapsed — a hidden boot buys nothing the user can see,
+  //    and deferring it moves any boot-time focus grab to the first real
+  //    expansion, where the user is looking AT the workbench. Once shown,
+  //    the frame is never keyed away again (the keep-alive contract in the
+  //    module header stands). `visible === undefined` (a better-sidebar
+  //    peer too old to pass the flag) fails OPEN — load as before, never
+  //    defer on a guess.
+  const [everVisible, setEverVisible] = useState(visible !== false)
+  useEffect(() => {
+    if (visible !== false) setEverVisible(true)
+  }, [visible])
+
   // Hold the iframe until the cwd resolves (avoids loading the default
-  // workspace first and flipping to ?folder= a moment later) and until the
+  // workspace first and flipping to ?folder= a moment later), until the
   // iframe base settles (proxy.config handshake, or the proxy.status ask
   // for an unset serverUrl) — a flip after the first load would reload the
-  // workbench once for nothing.
-  const ready = (cwd !== undefined || cwdFailed) && !resolvingBase
+  // workbench once for nothing — and until the tab has been shown once.
+  const ready = (cwd !== undefined || cwdFailed) && !resolvingBase && everVisible
 
   // Load state: the overlay hides on the iframe's load event; a src change
   // or a manual reload re-shows it. Cross-origin load failures can't be
@@ -587,6 +617,60 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   useEffect(() => {
     if (loaded) installBridge()
   }, [loaded, installBridge])
+
+  // 2. HIDDEN-FRAME FOCUS FENCE: after the workbench HAS loaded (the
+  //    keep-alive frame survives a panel collapse or an in-panel tab
+  //    switch), VS Code can still grab document focus on its own — a
+  //    restored editor, an extension command, a late boot step. While this
+  //    tab is not visible the frame cannot receive user clicks, so every
+  //    focus entry into it is a programmatic steal: hand focus back to the
+  //    element that held it last outside the frame, bounded by a
+  //    FocusRestoreBudget so a re-grabbing workbench cannot livelock the
+  //    focus chain.
+  //
+  //    Detection rides FOCUSOUT, not focusin: a focus crossing INTO the
+  //    iframe fires focusout in the parent document but never focusin —
+  //    the focusin lands inside the frame's own document (same-origin
+  //    privilege verified live; matches the observed steal sequence).
+  //    After each focusout the settled activeElement is checked against
+  //    the frame on the next macrotask; on a match the remembered outside
+  //    surface is re-focused. Only armed on an EXPLICIT `visible === false`
+  //    (an old better-sidebar peer passing no flag must never have its
+  //    user clicks fought — the same fail-open contract as the deferred
+  //    load above). Re-armed on each load completion: the frame element is
+  //    remounted by a reload (key change), and the fresh boot is exactly
+  //    when the workbench is most likely to reach for focus.
+  useEffect(() => {
+    if (visible !== false) return
+    const frame = iframeRef.current
+    if (frame === null) return
+    const budget = new FocusRestoreBudget()
+    let lastOutside: HTMLElement | null
+      = document.activeElement instanceof HTMLElement && document.activeElement !== frame
+        ? document.activeElement
+        : null
+    const track = (target: EventTarget | null): void => {
+      if (target instanceof HTMLElement && target !== frame) lastOutside = target
+    }
+    const checkSteal = (): void => {
+      if (document.activeElement !== frame) return
+      if (!budget.take(Date.now())) return
+      if (lastOutside !== null && lastOutside.isConnected) lastOutside.focus()
+    }
+    const onFocusOut = (event: FocusEvent): void => {
+      track(event.target)
+      window.setTimeout(checkSteal, 0)
+    }
+    const onFocusIn = (event: FocusEvent): void => {
+      track(event.target)
+    }
+    document.addEventListener('focusout', onFocusOut, true)
+    document.addEventListener('focusin', onFocusIn, true)
+    return () => {
+      document.removeEventListener('focusout', onFocusOut, true)
+      document.removeEventListener('focusin', onFocusIn, true)
+    }
+  }, [visible, loaded])
 
   return (
     <div className="dsh_vscodeTab_root">
