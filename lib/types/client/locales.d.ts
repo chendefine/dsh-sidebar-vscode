@@ -28,7 +28,7 @@ export declare const zh: {
     readonly settingOpenAsDefault: "侧边栏默认打开 VSCode";
     readonly settingOpenAsDefaultDesc: "新会话默认打开本 VSCode 标签（替换「文件」标签），对话中的文件点击与设置页「打开配置文件」也改在此打开；关闭后恢复默认，已有会话布局不变";
     readonly settingOpenBlocklist: "不由 VSCode 打开的文件类型";
-    readonly settingOpenBlocklistDesc: "命中后缀的文件在对话中点击时改由系统默认方式打开（不再接管进 VSCode 标签）；未设置时默认 pdf、docx、xlsx、pptx、png、jpeg、jpg；清空列表 = 全部由 VSCode 打开";
+    readonly settingOpenBlocklistDesc: "命中后缀的文件在对话中点击时改由侧边栏自带「文件」标签打开（其查看器负责图片/PDF/Office 等类型）；「文件」标签类型被禁用时才回落系统默认打开方式；未设置时默认 pdf、docx、xlsx、pptx、png、jpeg、jpg；清空列表 = 全部由 VSCode 打开";
     readonly settingOpenBlocklistPlaceholder: "输入后缀名，如 zip，回车添加";
     readonly settingOpenBlocklistInvalid: "无效后缀：仅限字母、数字与 . - ，长度 1–16";
     readonly settingOpenBlocklistRemove: "移除";
@@ -38,7 +38,7 @@ export declare const zh: {
     readonly proxyFallback: "内置代理暂不可达该地址（或宿主半为旧版本），已回退为直连：同源选区桥不可用，粘贴兜底仍可用";
     readonly produced: "本次产出";
     readonly producedOpen: "在 VS Code 中打开";
-    readonly producedOpenSystem: "使用系统默认方式打开";
+    readonly producedOpenFiles: "在侧边栏「文件」标签中打开";
     readonly railReferences: "VS Code 代码引用";
     readonly removeReference: "移除引用";
 };

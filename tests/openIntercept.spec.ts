@@ -11,12 +11,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractOpenRequest,
+  filesTabSeed,
   findTabMeta,
   isAbsoluteLike,
   mergeOpenRequest,
   nextNonce,
   rerouteChatOpen,
+  rerouteFilesOpen,
   resolveAgainst,
+  SIDEBAR_FILES_TAB_TYPE,
   wrapRemoteOpenWorkspacePath,
   wrapWorkspacesOpenPath,
   type InterceptServiceFace,
@@ -94,8 +97,9 @@ describe('wrapWorkspacesOpenPath (option III — the legacy runtime funnel)', ()
     stop()
   })
 
-  it('declines a blocked path to the stock opener (the open blocklist)', async () => {
+  it('reroutes a blocked path into the built-in Files tab when the dep claims it', async () => {
     const rerouted: string[] = []
+    const filesOpens: string[] = []
     const opened: string[] = []
     const workspaces: WorkspacesLike = {
       openPath: (path: string) => {
@@ -107,12 +111,42 @@ describe('wrapWorkspacesOpenPath (option III — the legacy runtime funnel)', ()
       takeoverEnabled: () => true,
       blocked: path => path.endsWith('.pdf'),
       reroute: path => { rerouted.push(path) },
+      rerouteBlocked: path => { filesOpens.push(path); return true },
     })
     await workspaces.openPath('/w/report.pdf')
     await workspaces.openPath('/w/main.ts')
-    expect(opened).toEqual(['/w/report.pdf']) // the blocked open fell through
-    expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute
+    expect(filesOpens).toEqual(['/w/report.pdf']) // the Files tab took the blocked open
+    expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute to VSCode
+    expect(opened).toEqual([]) // the host opener never ran — no xdg-open
     stop()
+  })
+
+  it('declines a blocked path to the stock opener when the Files reroute refuses or is absent', async () => {
+    const opened: string[] = []
+    const workspaces: WorkspacesLike = {
+      openPath: (path: string) => {
+        opened.push(path)
+        return Promise.resolve()
+      },
+    }
+    // A refusal (the Files tab type disabled in the side card settings)…
+    const stop = wrapWorkspacesOpenPath(workspaces, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: () => { throw new Error('must not reroute') },
+      rerouteBlocked: () => false,
+    })
+    await workspaces.openPath('/w/report.pdf')
+    stop()
+    // …and an absent dep (minimal wiring) both fall back to the original.
+    const stopBare = wrapWorkspacesOpenPath(workspaces, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    await workspaces.openPath('/w/report.pdf')
+    stopBare()
+    expect(opened).toEqual(['/w/report.pdf', '/w/report.pdf'])
   })
 
   it('restore puts back the exact original (chains with better-sidebar\'s wrapper)', () => {
@@ -231,22 +265,49 @@ describe('wrapRemoteOpenWorkspacePath (option III — the gateway-era runtime fu
     stop()
   })
 
-  it('declines a blocked path to the stock opener (the open blocklist)', async () => {
+  it('reroutes a blocked path into the built-in Files tab when the dep claims it', async () => {
     const session = makeRemoteSession()
     const rerouted: string[] = []
+    const filesOpens: string[] = []
     const stop = wrapRemoteOpenWorkspacePath(session, {
       takeoverEnabled: () => true,
       blocked: path => path.endsWith('.pdf'),
       reroute: path => { rerouted.push(path) },
+      rerouteBlocked: path => { filesOpens.push(path); return true },
     })
     const receipt = await session.openWorkspacePath!({ path: '/w/report.pdf' })
-    // The blocked open fell through to the stock closure (recorded), and
-    // the caller still sees that closure's receipt — not a synthesized one.
-    expect(session.calls).toEqual([{ request: { path: '/w/report.pdf' }, signal: undefined }])
+    // The blocked open never reached the Host remote (recorded) — the Files
+    // tab took it, and the caller still sees the native success receipt.
+    expect(filesOpens).toEqual(['/w/report.pdf'])
     expect(receipt).toEqual({ ok: true, value: { opened: true } })
     await session.openWorkspacePath!({ path: '/w/main.ts' })
     expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute
+    expect(session.calls).toEqual([]) // the Host opener never ran — no xdg-open
     stop()
+  })
+
+  it('declines a blocked path to the stock opener when the Files reroute refuses or is absent', async () => {
+    const session = makeRemoteSession()
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: () => { throw new Error('must not reroute') },
+      rerouteBlocked: () => false, // the Files tab type disabled in settings
+    })
+    await session.openWorkspacePath!({ path: '/w/report.pdf' })
+    stop()
+    const stopBare = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    await session.openWorkspacePath!({ path: '/w/report.pdf' })
+    stopBare()
+    // Both declines reached the stock closure (the recorded Host remote).
+    expect(session.calls).toEqual([
+      { request: { path: '/w/report.pdf' }, signal: undefined },
+      { request: { path: '/w/report.pdf' }, signal: undefined },
+    ])
   })
 
   it('re-reads the stock method per access, so a remount under the wrapper stays live', async () => {
@@ -471,6 +532,36 @@ describe('resolveAgainst', () => {
     expect(isAbsoluteLike('C:/a')).toBe(true)
     expect(isAbsoluteLike('C:\\a')).toBe(true)
     expect(isAbsoluteLike('rel:C')).toBe(false)
+  })
+})
+
+describe('rerouteFilesOpen (the blocklist-hit reroute into the built-in Files tab)', () => {
+  it('lands the Files tab seed: per-path id, basename title, no meta vehicle', () => {
+    const service = makeService()
+    rerouteFilesOpen(service, '/w/report.pdf')
+    rerouteFilesOpen(service, 'C:\\w\\img\\shot.png')
+    // A structural twin of better-sidebar's own openSidebarFile: the
+    // built-in 'editor' type, the file name as title, the path-derived id
+    // (multiple files coexist; the descriptor's path dedupeKey focuses an
+    // already-open one).
+    expect(service.openTabs).toEqual([
+      { type: SIDEBAR_FILES_TAB_TYPE, title: 'report.pdf', path: '/w/report.pdf', id: 'editor:/w/report.pdf' },
+      { type: SIDEBAR_FILES_TAB_TYPE, title: 'shot.png', path: 'C:\\w\\img\\shot.png', id: 'editor:C:\\w\\img\\shot.png' },
+    ])
+    // No openRequest meta on this route — the editor tab consumes its path
+    // seed natively, so no updateTab is ever sent.
+    expect(service.updates).toEqual([])
+  })
+
+  it('filesTabSeed mirrors the same contract for hand-built callers', () => {
+    expect(filesTabSeed('/w/a.tar.gz')).toEqual({
+      type: SIDEBAR_FILES_TAB_TYPE,
+      title: 'a.tar.gz',
+      path: '/w/a.tar.gz',
+      id: 'editor:/w/a.tar.gz',
+    })
+    // A path with no separator is its own title.
+    expect(filesTabSeed('readme.md').title).toBe('readme.md')
   })
 })
 

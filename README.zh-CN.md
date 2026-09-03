@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.5
+- 版本：0.2.6
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：411 例全部通过（17 个规格文件）
+- 测试：421 例全部通过（17 个规格文件）
 
 ## 功能简介
 
@@ -63,7 +63,7 @@
 
 - **默认标签**：可选开关让**全新会话**的侧边栏默认打开 VSCode 标签（替换 better-sidebar 硬编码的「文件」种子标签）；已打开过的会话保持各自布局，关闭后只影响之后的新会话。
 
-- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在功能设置增删）的文件不接管，回落系统默认打开方式——方案 III 的包装器对该路径放弃拦截（原生打开器接管），方案 II 的 chips 改调渲染站点原生 `openFile`（同一漏斗、同一语义）；未命中路径行为不变，每次点击现读设置。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行（优先读引擎 Turn data 的 `deliverables` 记录，nodes 推导作 fallback；匹配值额外携带 owner 的 `openFile` 供命中回退），chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装运行时的对话文件打开漏斗，按运行时版本二选一：gateway 时代的 `remote.session.openWorkspacePath` 宿主 Remote（ui-chat 注入的 `openFile` —— 工具行路径链接与正文引用的唯一生产调用方；命名空间方法是 getter-only 自有属性，包装器以自定义 getter 重定义它且每次访问都重读原方法，经一个嵌套的可选 inject 安装——该子 fiber 会一直等待直到 `remote.session` 服务出现），或旧版 `workspaces.openPath` 客户端服务（ui-conversation 的 apply.ts）——两者恰好只会装上一个。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.1）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
+- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在功能设置增删）的文件不进 VSCode，改道 better-sidebar 自带「文件」标签打开——其文件查看器正是侧边栏渲染图片/PDF/Office 文档的界面（仍走侧边栏接管，不落宿主打开器）。方案 III 的包装器对该路径改调「文件」标签改道并照常返回成功回执（仅当「文件」标签类型在侧边卡片设置里被禁用时才回落宿主 OS 打开器），方案 II 的 chips 走同一改道，改道被拒时降级调渲染站点原生 `openFile`；未命中路径行为不变，每次点击现读设置。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行（优先读引擎 Turn data 的 `deliverables` 记录，nodes 推导作 fallback；匹配值额外携带 owner 的 `openFile` 供命中回退），chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装运行时的对话文件打开漏斗，按运行时版本二选一：gateway 时代的 `remote.session.openWorkspacePath` 宿主 Remote（ui-chat 注入的 `openFile` —— 工具行路径链接与正文引用的唯一生产调用方；命名空间方法是 getter-only 自有属性，包装器以自定义 getter 重定义它且每次访问都重读原方法，经一个嵌套的可选 inject 安装——该子 fiber 会一直等待直到 `remote.session` 服务出现），或旧版 `workspaces.openPath` 客户端服务（ui-conversation 的 apply.ts）——两者恰好只会装上一个。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.1）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
 
 - **设置页「打开配置文件」接管**（方案 IV，同一开关）：按钮原本把 `$DSH_HOME/settings.yaml` 交给系统原生打开器——headless 容器上直接失败（`xdg-open` 缺失）；当前运行时上点击走 `remote.settings.openSettingsDocument` 宿主 Remote（SettingsDocumentStore.open 是唯一生产调用方；包装器重定义该命名空间方法的 getter-only 自有属性，经嵌套可选 inject 安装——子 fiber 等到 `remote.settings` 服务出现才运行），gateway 之前的运行时则走旧版 `/api/settings.openDocument` 成员——两者恰好只会拦截到一个。开关开启时，本插件改走自有的受信围栏路由（`POST /sidebar-vscode/api/settings.document` → `prepareDocument()`）取到文档绝对路径，再复用与对话点击完全相同的 `openRequest` 通道改道——配置文件在内嵌 VS Code 里打开（绝对路径无需命中 `pathMap` 规则，`mapPathForOpen` 对未匹配路径原样透传）。改道落地后「设置」弹框也会自动关闭：弹框开启状态是组件本地 state（没有服务暴露关闭方法），关闭走弹框自身挂在 document 上的 Escape 监听（生命周期恰好等于弹框开启期）——合成一次 Escape 键事件即可，视野留给工作台。全程 fail-soft：settings 服务缺失、host 半未重载、任何传输错误都回退到原生打开（弹框不关），按钮不会因本插件而坏。
 
@@ -171,7 +171,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `openAsDefault` | `false` | 全新会话的侧边栏默认打开 VSCode 标签（替换「文件」种子标签）；已打开过的会话保持各自布局。该开关同时控制对话文件点击接管与设置页「打开配置文件」接管 |
-| `openBlocklist` | （未设 = `pdf, docx, xlsx, pptx, png, jpeg, jpg`） | 「不由 VSCode 打开的文件类型」：后缀字符串数组，面板行为 tag 编辑器（tag 带 × 删除；输入框自由输入后缀，回车/逗号添加，下拉建议常用二进制类型）。命中后缀的文件在对话中点击时不被接管，回落系统默认打开方式（产出文件 chips 命中时改走渲染站点原生 `openFile`，语义同正文路径点击）。**未设置 = 默认七项；清空 = 存 `[]`，即全部由 VSCode 打开**（两者语义不同）。匹配大小写不敏感，按「基名以 `.后缀` 结尾」判定（`a.notpdf` 不命中 `pdf`；条目可含内部点，如 `tar.gz`；无后缀文件永不命中）；每次点击时现读设置，改动即时生效。设置页「打开配置文件」接管**不受**此表影响 |
+| `openBlocklist` | （未设 = `pdf, docx, xlsx, pptx, png, jpeg, jpg`） | 「不由 VSCode 打开的文件类型」：后缀字符串数组，面板行为 tag 编辑器（tag 带 × 删除；输入框自由输入后缀，回车/逗号添加，下拉建议常用二进制类型）。命中后缀的文件在对话中点击时改由侧边栏自带「文件」标签打开（其查看器负责渲染图片/PDF/Office 等类型）；仅当「文件」标签类型在侧边卡片设置里被禁用时才回落系统默认打开方式（产出文件 chips 在该拒绝下同样降级走渲染站点原生 `openFile`）。**未设置 = 默认七项；清空 = 存 `[]`，即全部由 VSCode 打开**（两者语义不同）。匹配大小写不敏感，按「基名以 `.后缀` 结尾」判定（`a.notpdf` 不命中 `pdf`；条目可含内部点，如 `tar.gz`；无后缀文件永不命中）；每次点击时现读设置，改动即时生效。设置页「打开配置文件」接管**不受**此表影响 |
 | `serverUrl` | （空 = `http://127.0.0.1:8000`） | `code serve-web` 输出的完整地址（可含基路径与 `?tkn=` 令牌）；留空 = 默认 `http://127.0.0.1:8000`（本机裸启动）。代理可达时一律挂载为同源 `/sidebar/vscode/` 打开；宿主不可达时完整地址回退直连（同源桥降级）；显式相对子路径（如 `/vscode`）在代理关闭时按网关语义使用 |
 | `pathMap` | （空 = 不映射） | 仅配置文件——无设置面板行（少见，分容器部署才需要）。DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。留空时**不做任何映射**，会话 cwd 与文件均按原始绝对路径直接打开（同容器部署即用此默认）。规则只做前缀改写、**不是白名单**：未命中任何规则的绝对路径原样透传（文件真不存在时由 VS Code 报错兜底） |
 | `maxLines` | `200`（范围 1–2000） | 单次引用注入的代码行数上限，超出保留首尾两半、省略中间并标注省略区间 |
@@ -184,7 +184,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 | 症状 | 处理 |
 |---|---|
 | 标签页长时间空白 / 加载提示不消失 | 检查「功能设置」里的 `serverUrl` 是否可达；用「在新窗口打开」直连排查；跨域地址下同源桥不可用属预期（粘贴兜底仍可用）。用内置反代时确认 serve-web 已在配置的上游应答（默认 `http://127.0.0.1:8000`，任意基路径均可） |
-| 命中 `openBlocklist` 的文件点击后无反应/报错 | 黑名单命中 = 插件放弃接管，回落系统默认打开方式；无头容器上系统打开器本就可能缺失（接管前的原有行为，非回归）。若希望该类型仍由 VSCode 打开，从列表移除对应后缀即可 |
+| 命中 `openBlocklist` 的文件改在自带「文件」标签打开（或点击报错） | 黑名单命中 = 改道侧边栏自带「文件」标签（其查看器负责渲染该类型）；仅当「文件」标签类型在侧边卡片设置里被禁用时才回落宿主 OS 打开器，无头容器上该打开器可能缺失。若希望该类型仍由 VSCode 打开，从列表移除对应后缀即可 |
 | 工具栏提示「当前工作区路径不是绝对路径…」 | 仅在会话 cwd 不是绝对路径时出现（workbench 已按默认界面打开）；正常部署不会触发，无需配置映射 |
 | 右键没有 DSH 命令 / 命令面板搜不到 | 扩展未装或 serve-web 未重启（清单仅启动时扫描），或工作区处于受限模式未信任——见 `scripts/install-extension.md` 常见问题表 |
 | 发送后 chip 未出现，剪贴板出现代码片段 | 注入降级为可读回退文本（无可用输入框 / 跨域）；直接粘贴进输入框即可恢复为 chip |

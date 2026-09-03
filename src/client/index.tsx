@@ -19,7 +19,9 @@
  *   clicks open inside the VSCode tab, gated by the same `openAsDefault`
  *   switch as the default-tab swap — except paths whose extension is on
  *   the open blocklist (openBlocklist.ts: Office/image/PDF types), which
- *   keep the stock Host-opener behavior;
+ *   open in better-sidebar's built-in Files tab instead (its file viewers
+ *   render those types; the stock Host opener only when that tab type is
+ *   disabled);
  * - the settings-open takeover (settingsTakeover.ts): the settings page's
  *   「打开配置文件」button resolves the configuration file through this
  *   plugin's fenced node-half route and opens it inside the VSCode tab
@@ -39,7 +41,9 @@ import { TAB_ID, readSettingValue } from './settings.ts'
 import { watchDefaultTab, OPEN_AS_DEFAULT_KEY, type DefaultTabServiceFace } from './defaultTab.ts'
 import {
   rerouteChatOpen,
+  rerouteFilesOpen,
   resolveAgainst,
+  SIDEBAR_FILES_TAB_TYPE,
   wrapRemoteOpenWorkspacePath,
   wrapWorkspacesOpenPath,
 } from './openIntercept.ts'
@@ -396,8 +400,10 @@ export function apply(ctx: unknown): void {
       && betterSidebar.isTabEnabled(TAB_ID)
     // The open blocklist (openBlocklist.ts), read per call like the gate:
     // a file type the code editor renders poorly (Office/image/PDF …)
-    // declines THIS path's takeover — the open falls through to the stock
-    // Host opener. Settings edits therefore apply to the very next click.
+    // declines THIS path's VSCode takeover — the open reroutes into the
+    // built-in Files tab instead (openInFilesTab below), the stock Host
+    // opener only when that tab type is disabled. Settings edits therefore
+    // apply to the very next click.
     const blockedPath = (path: string): boolean => isBlockedPath(path, readOpenBlocklist(betterSidebar))
     const currentCwd = (): string | undefined => {
       const snapshot = client.sessions?.list?.getSnapshot()
@@ -414,20 +420,39 @@ export function apply(ctx: unknown): void {
         : currentCwd()
       rerouteChatOpen(betterSidebar, TAB_ID, resolveAgainst(cwd, path))
     }
+    // A blocklist hit reroutes into better-sidebar's built-in Files tab —
+    // its file viewers are the sidebar's own surface for exactly the types
+    // the code editor renders poorly (images, PDFs, Office documents) —
+    // instead of the stock Host opener, which on a headless container dies
+    // with `spawn xdg-open ENOENT` (the very hole the openPath wrappers
+    // repair for every other path). Declines — the Files tab type disabled
+    // in the side card settings — return false so the callers fall back to
+    // the stock opener, the same refusal better-sidebar's own takeover
+    // makes for a disabled editor.
+    const openInFilesTab = (sessionId: string, path: string): boolean => {
+      if (!betterSidebar.isTabEnabled(SIDEBAR_FILES_TAB_TYPE)) return false
+      const cwd = sessionId !== ''
+        ? client.sessions?.list?.getSnapshot()?.byId?.[sessionId]?.cwd
+        : currentCwd()
+      rerouteFilesOpen(betterSidebar, resolveAgainst(cwd, path))
+      return true
+    }
 
     // Option II — the produced-files row (the "changed files" chips):
     // claimed at priority -2, before better-sidebar's own -1 entry, so the
     // chips open the files in the VSCode tab. A decline (switch off / tab
     // disabled / nothing produced) falls through to its row unchanged.
-    // Per-chip routing honors the blocklist: a blocked chip calls the
-    // render site's own stock openFile (carried on the matched value)
-    // instead — same funnel, same decline-to-Host-opener semantics.
+    // Per-chip routing honors the blocklist: a blocked chip reroutes into
+    // the built-in Files tab (openInFilesTab), degrading to the render
+    // site's own stock openFile (carried on the matched value) — and then
+    // to the VSCode open — when that reroute declines (never a dead chip).
     const disposeStyles = adoptTurnTailStyles()
     const stopTurnTail = registerTurnTailVscode(
       client.slots,
       takeoverEnabled,
       openInVscode,
       blockedPath,
+      openInFilesTab,
     )
 
     // Option III — the runtime's single remaining chat file-open funnel
@@ -458,6 +483,7 @@ export function apply(ctx: unknown): void {
           takeoverEnabled,
           blocked: blockedPath,
           reroute: path => { openInVscode('', path) },
+          rerouteBlocked: path => openInFilesTab('', path),
         })
       })
     }
@@ -469,6 +495,7 @@ export function apply(ctx: unknown): void {
         takeoverEnabled,
         blocked: blockedPath,
         reroute: path => { openInVscode('', path) },
+        rerouteBlocked: path => openInFilesTab('', path),
       })
 
     // Option IV — the settings page's「打开配置文件」button: the stock click

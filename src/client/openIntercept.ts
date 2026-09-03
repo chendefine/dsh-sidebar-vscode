@@ -28,10 +28,15 @@
  * consumes (meta is the documented cross-tab vehicle; a single-instance
  * focus never applies seed fields, hence the explicit update).
  *
- * Every gate may also decline one path specifically through the optional
+ * Every gate may also reroute one path specifically through the optional
  * `blocked` dep — the open blocklist (openBlocklist.ts): a file type the
- * code editor renders poorly falls through to the stock Host opener, the
- * same untouched path a declined switch takes.
+ * code editor renders poorly opens in better-sidebar's built-in Files tab
+ * instead (its registered file viewers are the sidebar's own surface for
+ * Office/image/PDF types), via the optional `rerouteBlocked` dep. When
+ * that dep is absent or declines — the Files tab type disabled in the
+ * side card settings, the same refusal better-sidebar's own takeover
+ * makes — the open falls through to the stock Host opener, the same
+ * untouched path a declined switch takes.
  *
  * Dependency-free by design (mirrors better-sidebar's openpath-intercept.ts)
  * so the takeover logic is unit-testable in isolation.
@@ -68,14 +73,27 @@ export interface OpenInterceptDeps {
    */
   takeoverEnabled(): boolean
   /**
-   * Decline THIS PATH specifically — the open blocklist (a file type the
-   * code editor renders poorly: Office documents, images, PDFs; see
-   * openBlocklist.ts). A blocked path falls through to the stock Host
-   * opener exactly like a declined gate. Optional: absent wiring blocks
-   * nothing (and the settings-open takeover never wires it — its
-   * settings.yaml is a text document the blocklist must not break).
+   * Decline the VSCode reroute for THIS PATH specifically — the open
+   * blocklist (a file type the code editor renders poorly: Office
+   * documents, images, PDFs; see openBlocklist.ts). A blocked path is
+   * then offered to {@link rerouteBlocked} (the built-in Files tab) and
+   * only falls through to the stock Host opener when that declines.
+   * Optional: absent wiring blocks nothing (and the settings-open
+   * takeover never wires it — its settings.yaml is a text document the
+   * blocklist must not break).
    */
   blocked?(path: string): boolean
+  /**
+   * Reroute a BLOCKED path into better-sidebar's built-in Files tab — the
+   * viewer surface for the types the code editor renders poorly. Return
+   * true to claim the open (the wrapper resolves the stock success the
+   * native opener would have); return false — or leave the dep absent —
+   * to decline it back to the stock Host opener (the Files tab type
+   * disabled in the side card settings; better-sidebar's own takeover
+   * makes the same call, and the headless `xdg-open ENOENT` it can hit is
+   * exactly why an accepting reroute must never surface an error).
+   */
+  rerouteBlocked?(path: string): boolean
   /** Route the open into the VSCode tab (open + meta update). */
   reroute(path: string): void
 }
@@ -225,6 +243,38 @@ export function rerouteChatOpen(service: InterceptServiceFace, tabId: string, pa
   service.updateTab(tabId, { meta: mergeOpenRequest(findTabMeta(state, tabId), { nonce: nextNonce(), path }) })
 }
 
+// ---- blocklist-hit reroute (the built-in Files tab) ----
+
+/** better-sidebar's built-in Files tab type (the editor/files window). */
+export const SIDEBAR_FILES_TAB_TYPE = 'editor'
+
+/**
+ * The open-tab seed that lands one file in better-sidebar's built-in
+ * Files tab: a structural twin of its own openSidebarFile (intercept.tsx)
+ * — the per-path id lets multiple files coexist while the editor
+ * descriptor's path dedupeKey focuses an already-open one, and the title
+ * shows the file name. No meta vehicle and no updateTab: the editor tab
+ * consumes its path seed natively (openTab alone is the whole reroute).
+ */
+export function filesTabSeed(absolutePath: string): OpenTabSeed {
+  const at = Math.max(absolutePath.lastIndexOf('/'), absolutePath.lastIndexOf('\\'))
+  const title = at === -1 ? absolutePath : absolutePath.slice(at + 1)
+  return { type: SIDEBAR_FILES_TAB_TYPE, title, path: absolutePath, id: `editor:${absolutePath}` }
+}
+
+/**
+ * The blocklist-hit reroute driver: land the file in the sidebar's
+ * built-in Files tab, whose registered file viewers render exactly the
+ * types the code editor shows poorly (images, PDFs, Office documents —
+ * plus any viewer a companion plugin like dsh-sidebar-onlyoffice
+ * registers). Callers gate on `isTabEnabled(SIDEBAR_FILES_TAB_TYPE)`
+ * first: this driver sends the seed unconditionally, and a disabled type
+ * is the service's own refusal contract (warn + no-op).
+ */
+export function rerouteFilesOpen(service: InterceptServiceFace, absolutePath: string): void {
+  service.openTab(filesTabSeed(absolutePath))
+}
+
 // ---- workspaces.openPath interception (option III — the legacy runtime funnel) ----
 
 /** The client workspaces service slice the wrapper replaces (runtime IWorkspaces mirror). */
@@ -267,12 +317,24 @@ export function wrapWorkspacesOpenPath(workspaces: WorkspacesLike, deps: OpenInt
     return () => {}
   }
   workspaces.openPath = (path: string): Promise<void> => {
-    if (deps.takeoverEnabled() && typeof path === 'string' && path !== '' && deps.blocked?.(path) !== true) {
-      deps.reroute(path)
-      // Callers ignore the result; resolving as success mirrors
-      // better-sidebar's own wrapper (a swallowed open must not surface
-      // the host's xdg-open rejection to the chat UI).
-      return Promise.resolve()
+    if (deps.takeoverEnabled() && typeof path === 'string' && path !== '') {
+      if (deps.blocked?.(path) === true) {
+        // A blocklist hit: the built-in Files tab takes it when the
+        // wiring accepts; a refusal (tab type disabled) falls through to
+        // the stock Host opener below.
+        if (deps.rerouteBlocked?.(path) === true) {
+          // Callers ignore the result; resolving as success mirrors
+          // better-sidebar's own wrapper (a swallowed open must not
+          // surface the host's xdg-open rejection to the chat UI).
+          return Promise.resolve()
+        }
+      } else {
+        deps.reroute(path)
+        // Callers ignore the result; resolving as success mirrors
+        // better-sidebar's own wrapper (a swallowed open must not surface
+        // the host's xdg-open rejection to the chat UI).
+        return Promise.resolve()
+      }
     }
     return original.call(workspaces, path)
   }
@@ -394,13 +456,26 @@ export function wrapRemoteOpenWorkspacePath(session: RemoteSessionLike, deps: Op
       const path = request !== null && typeof request === 'object'
         ? (request as { path?: unknown }).path
         : undefined
-      if (deps.takeoverEnabled() && typeof path === 'string' && path !== '' && deps.blocked?.(path) !== true) {
-        deps.reroute(path)
-        // Callers check `result.ok`; an intercepted open reports the same
-        // success the native receipt would (a rerouted open must not surface
-        // the Host opener's failure — or the headless `xdg-open ENOENT` — to
-        // the chat UI).
-        return Promise.resolve({ ok: true, value: { opened: true } })
+      if (deps.takeoverEnabled() && typeof path === 'string' && path !== '') {
+        if (deps.blocked?.(path) === true) {
+          // A blocklist hit: the built-in Files tab takes it when the
+          // wiring accepts; a refusal (tab type disabled) falls through
+          // to the stock closure below.
+          if (deps.rerouteBlocked?.(path) === true) {
+            // Callers check `result.ok`; an intercepted open reports the
+            // same success the native receipt would (a rerouted open must
+            // not surface the Host opener's failure — or the headless
+            // `xdg-open ENOENT` — to the chat UI).
+            return Promise.resolve({ ok: true, value: { opened: true } })
+          }
+        } else {
+          deps.reroute(path)
+          // Callers check `result.ok`; an intercepted open reports the
+          // same success the native receipt would (a rerouted open must
+          // not surface the Host opener's failure — or the headless
+          // `xdg-open ENOENT` — to the chat UI).
+          return Promise.resolve({ ok: true, value: { opened: true } })
+        }
       }
       return original(request as { readonly path: string }, signal)
     },

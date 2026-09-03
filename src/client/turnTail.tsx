@@ -13,10 +13,12 @@
  * default deliverables row — so switch-off keeps the stock behavior.
  *
  * Per-chip routing honors the open blocklist (openBlocklist.ts): a chip
- * whose path is blocked calls the render site's own stock `openFile`
- * (carried on the matched value) instead of the VSCode reroute — the same
- * funnel the prose path links drive, where the blocklist declines the
- * open to the Host OS opener.
+ * whose path is blocked reroutes into better-sidebar's built-in Files tab
+ * (its file viewers render the Office/image/PDF types the code editor
+ * shows poorly). When that reroute declines — the Files tab type disabled
+ * in the side card settings — the chip degrades to the render site's own
+ * stock `openFile` (carried on the matched value), and finally to the
+ * VSCode open (never a dead chip).
  *
  * The slot is a CHILD slot the host's ui-conversation declares in its
  * `conversation.chat.node` children table (kind: chain, scope: session).
@@ -138,12 +140,17 @@ function DocGlyph(): ReactNode {
 export function TurnTailProducedFiles(props: {
   matched: TurnTailMatch
   openInVscode: (path: string) => void
-  /** The open blocklist verdict (per click): a blocked path routes to the
-   * stock `matched.openFile` when the composition provides one, else
-   * degrades to the VSCode open (never a dead chip). */
+  /** The open blocklist verdict (per click): a blocked path reroutes into
+   * the built-in Files tab first (openInFiles), degrading to the stock
+   * `matched.openFile` when that declines — else to the VSCode open
+   * (never a dead chip). */
   isBlocked: (path: string) => boolean
+  /** Reroute one blocked path into better-sidebar's built-in Files tab.
+   * Returns whether the reroute landed (false = the tab type is disabled
+   * in the side card settings and the click must degrade). */
+  openInFiles: (path: string) => boolean
 }): ReactNode {
-  const { matched, openInVscode, isBlocked } = props
+  const { matched, openInVscode, isBlocked, openInFiles } = props
   const shown = matched.paths.slice(0, 6)
   const hidden = matched.paths.length - shown.length
   return (
@@ -151,19 +158,29 @@ export function TurnTailProducedFiles(props: {
       <span className="dsh_vscodeTurnTail_label">{t('produced')}</span>
       {shown.map(path => {
         const blocked = isBlocked(path)
-        const stock = blocked && matched.openFile !== undefined
         return (
           <button
             key={path}
             type="button"
             className="dsh_vscodeTurnTail_chip"
-            title={stock ? t('producedOpenSystem') : t('producedOpen')}
+            title={blocked ? t('producedOpenFiles') : t('producedOpen')}
             onClick={() => {
-              if (stock) matched.openFile?.(path)
-              else openInVscode(path)
+              if (!blocked) {
+                openInVscode(path)
+                return
+              }
+              // Blocked: the built-in Files tab first (the viewer surface
+              // for this type), the stock openFile funnel when it refuses,
+              // and the VSCode open as the last resort — never a dead chip.
+              if (openInFiles(path)) return
+              if (matched.openFile !== undefined) {
+                matched.openFile(path)
+                return
+              }
+              openInVscode(path)
             }}
           >
-            {stock ? <DocGlyph /> : <CodeGlyph />}
+            {blocked ? <DocGlyph /> : <CodeGlyph />}
             <span>{baseNameOf(path)}</span>
           </button>
         )
@@ -194,13 +211,17 @@ export interface TurnTailSlotsFace {
  * applies to the next row render).
  * @param openInVscode - the chip click handler (reroutes into the VSCode tab).
  * @param isBlocked - the open blocklist verdict per path (a blocked chip
- * routes to the stock `matched.openFile` instead).
+ * reroutes into the built-in Files tab instead).
+ * @param openInFiles - the blocklist-hit reroute (better-sidebar's built-in
+ * Files tab); returns whether it landed, so a refusal degrades the click to
+ * the stock `matched.openFile` (and then the VSCode open).
  */
 export function registerTurnTailVscode(
   slots: TurnTailSlotsFace,
   takeoverEnabled: () => boolean,
   openInVscode: (sessionId: string, path: string) => void,
   isBlocked: (path: string) => boolean = () => false,
+  openInFiles: (sessionId: string, path: string) => boolean = () => false,
 ): () => void {
   return slots.inject('conversation.chat.turnTail', () => slots.register({
     name: 'conversation.chat.turnTail',
@@ -212,6 +233,7 @@ export function registerTurnTailVscode(
     inject: (sessionId: string) => ({
       openInVscode: (path: string) => { openInVscode(sessionId, path) },
       isBlocked,
+      openInFiles: (path: string) => openInFiles(sessionId, path),
     }),
   }, TurnTailProducedFiles))
 }

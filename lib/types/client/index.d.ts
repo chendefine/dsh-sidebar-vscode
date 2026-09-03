@@ -19,7 +19,9 @@
  *   clicks open inside the VSCode tab, gated by the same `openAsDefault`
  *   switch as the default-tab swap — except paths whose extension is on
  *   the open blocklist (openBlocklist.ts: Office/image/PDF types), which
- *   keep the stock Host-opener behavior;
+ *   open in better-sidebar's built-in Files tab instead (its file viewers
+ *   render those types; the stock Host opener only when that tab type is
+ *   disabled);
  * - the settings-open takeover (settingsTakeover.ts): the settings page's
  *   「打开配置文件」button resolves the configuration file through this
  *   plugin's fenced node-half route and opens it inside the VSCode tab

@@ -13,10 +13,12 @@
  * default deliverables row — so switch-off keeps the stock behavior.
  *
  * Per-chip routing honors the open blocklist (openBlocklist.ts): a chip
- * whose path is blocked calls the render site's own stock `openFile`
- * (carried on the matched value) instead of the VSCode reroute — the same
- * funnel the prose path links drive, where the blocklist declines the
- * open to the Host OS opener.
+ * whose path is blocked reroutes into better-sidebar's built-in Files tab
+ * (its file viewers render the Office/image/PDF types the code editor
+ * shows poorly). When that reroute declines — the Files tab type disabled
+ * in the side card settings — the chip degrades to the render site's own
+ * stock `openFile` (carried on the matched value), and finally to the
+ * VSCode open (never a dead chip).
  *
  * The slot is a CHILD slot the host's ui-conversation declares in its
  * `conversation.chat.node` children table (kind: chain, scope: session).
@@ -36,10 +38,15 @@ export declare function adoptTurnTailStyles(): () => void;
 export declare function TurnTailProducedFiles(props: {
     matched: TurnTailMatch;
     openInVscode: (path: string) => void;
-    /** The open blocklist verdict (per click): a blocked path routes to the
-     * stock `matched.openFile` when the composition provides one, else
-     * degrades to the VSCode open (never a dead chip). */
+    /** The open blocklist verdict (per click): a blocked path reroutes into
+     * the built-in Files tab first (openInFiles), degrading to the stock
+     * `matched.openFile` when that declines — else to the VSCode open
+     * (never a dead chip). */
     isBlocked: (path: string) => boolean;
+    /** Reroute one blocked path into better-sidebar's built-in Files tab.
+     * Returns whether the reroute landed (false = the tab type is disabled
+     * in the side card settings and the click must degrade). */
+    openInFiles: (path: string) => boolean;
 }): ReactNode;
 /** The slots service slice the registration touches (structural). */
 export interface TurnTailSlotsFace {
@@ -61,6 +68,9 @@ export interface TurnTailSlotsFace {
  * applies to the next row render).
  * @param openInVscode - the chip click handler (reroutes into the VSCode tab).
  * @param isBlocked - the open blocklist verdict per path (a blocked chip
- * routes to the stock `matched.openFile` instead).
+ * reroutes into the built-in Files tab instead).
+ * @param openInFiles - the blocklist-hit reroute (better-sidebar's built-in
+ * Files tab); returns whether it landed, so a refusal degrades the click to
+ * the stock `matched.openFile` (and then the VSCode open).
  */
-export declare function registerTurnTailVscode(slots: TurnTailSlotsFace, takeoverEnabled: () => boolean, openInVscode: (sessionId: string, path: string) => void, isBlocked?: (path: string) => boolean): () => void;
+export declare function registerTurnTailVscode(slots: TurnTailSlotsFace, takeoverEnabled: () => boolean, openInVscode: (sessionId: string, path: string) => void, isBlocked?: (path: string) => boolean, openInFiles?: (sessionId: string, path: string) => boolean): () => void;

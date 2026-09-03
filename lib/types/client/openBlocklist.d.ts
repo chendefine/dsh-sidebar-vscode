@@ -3,8 +3,9 @@
  * claim. When the `openAsDefault` switch is on, every chat-originated file
  * open (turn-tail produced chips, tool-row path links, prose file mentions)
  * is rerouted into the VSCode tab — but some files (Office documents,
- * images, PDFs) belong to the Host OS opener, not a code editor. This
- * module owns the whole pure contract both sides share:
+ * images, PDFs) belong to the sidebar's viewer surface (better-sidebar's
+ * built-in Files tab), not a code editor. This module owns the whole pure
+ * contract both sides share:
  *
  * - the stored shape (`pluginSettings['dsh-sidebar-vscode:vscode']
  *   .openBlocklist` — a string array of file extensions) and its code
