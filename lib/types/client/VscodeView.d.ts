@@ -11,11 +11,14 @@
  *   `/sidebar/vscode` proxy, or the deployment's gateway subpath — cookies
  *   flow, the WebSocket terminal works) and the VS Code session should
  *   survive tab switches inside the sidebar. The FIRST load is deferred,
- *   though, until the tab has been visible once (see the hidden-frame
- *   focus guards below): a workbench booted inside a hidden iframe steals
- *   the caret from the composer via its Getting Started page, so the boot
- *   waits for an audience — and a focus fence keeps a hidden, already
- *   loaded workbench from grabbing focus later.
+ *   though, until the tab has been visible once (see the focus guards
+ *   below): a workbench booted inside a hidden iframe steals the caret
+ *   from the composer via its Getting Started page, so the boot waits
+ *   for an audience — and a focus fence keeps both a hidden frame AND a
+ *   freshly-booted one from grabbing focus the user never aimed at the
+ *   workbench (VS Code focuses a restored editor on boot too, which a
+ *   workspace switch-back's iframe re-insertion used to unleash on the
+ *   composer).
  * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
  * (`session.cwd`); the scope's optional cwd is used as a fast path.
  * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
