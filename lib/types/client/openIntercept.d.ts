@@ -107,6 +107,14 @@ export interface OpenRequest {
     nonce: number;
     /** The DSH-side absolute path to open. */
     path: string;
+    /**
+     * The session whose workbench the request targets. Stamped at mint from
+     * the session that produced the path; a consumer mounting another
+     * session's VSCode tab declines the request (it would land the file in a
+     * FOREIGN workspace — the observed cross-workspace poison deliveries).
+     * Absent = wildcard (the settings takeover has no session context).
+     */
+    sessionId?: string;
     /** Optional 1-based cursor position (reserved; produced chips are path-only). */
     line?: number;
     column?: number;
@@ -118,10 +126,46 @@ export interface OpenRequest {
  */
 export declare function extractOpenRequest(meta: unknown): OpenRequest | null;
 /**
+ * Whether `request` is addressed to the session whose VSCode tab mounted
+ * the consumer. A request stamped with a `sessionId` (every chat-originated
+ * open) only executes for that session — a page/window showing a DIFFERENT
+ * conversation (its workbench embeds a different workspace folder) must
+ * decline it, or the open lands a foreign file into that workspace's spool
+ * (the exact cross-workspace delivery observed in the poisoned spools).
+ * An unstamped request (the settings takeover, which has no session
+ * context) stays a wildcard.
+ */
+export declare function requestAddressedTo(request: OpenRequest, sessionId: string | undefined): boolean;
+/**
  * Merge one openRequest into an existing tab meta, preserving sibling keys
  * (any other plugin-owned fields on the same meta object survive verbatim).
  */
 export declare function mergeOpenRequest(meta: unknown, request: OpenRequest): Record<string, unknown>;
+/**
+ * Copy one tab meta WITHOUT its openRequest, preserving sibling keys.
+ * Returns null when there was nothing to strip (the meta carried no
+ * request) so callers skip a pointless store mutation.
+ *
+ * The openRequest is a ONE-SHOT command, not durable tab state: the
+ * sidebar layout (meta included) is persisted and shared across windows
+ * and reloads, so an executed-but-unstripped request sat in the layout
+ * until some later remount mistook it for a fresh click — the mechanism
+ * behind the hours-later re-executions that poisoned foreign workspaces'
+ * spools. Stripping on consumption retires it for every observer.
+ */
+export declare function stripOpenRequest(meta: unknown): Record<string, unknown> | null;
+/** The mutating store face the meta strip needs (SidebarStore.update). */
+export interface MutatingStoreFace {
+    update(mutator: (draft: unknown) => void): void;
+}
+/**
+ * Strip the VSCode tab's openRequest from the CURRENT session's persisted
+ * layout. One-shot semantics for a one-shot command: call after executing
+ * (or declining) a request. Fail-soft by construction — a store without
+ * `update` (a foreign peer) is a no-op, and a missing tab id simply finds
+ * nothing to strip.
+ */
+export declare function clearTabOpenRequest(store: MutatingStoreFace | undefined, tabId: string): void;
 /**
  * Mint the next nonce: wall-clock based so sequences survive reloads, but
  * strictly monotonic within a page (two clicks in the same millisecond must
@@ -152,9 +196,11 @@ export declare function resolveAgainst(cwd: string | undefined, path: string): s
  * panel auto-expansion + single-instance focus) and stamp the openRequest
  * meta. The `openTab` call lands on the real service untouched — neither
  * seam wraps openTab (option I was rolled back), and the openPath wrapper
- * is not on this path.
+ * is not on this path. `sessionId` (the session whose workbench the open
+ * targets) rides the request so a consumer in another session's tab
+ * declines it instead of delivering a foreign file.
  */
-export declare function rerouteChatOpen(service: InterceptServiceFace, tabId: string, path: string): void;
+export declare function rerouteChatOpen(service: InterceptServiceFace, tabId: string, path: string, sessionId?: string): void;
 /** better-sidebar's built-in Files tab type (the editor/files window). */
 export declare const SIDEBAR_FILES_TAB_TYPE = "editor";
 /**

@@ -16,7 +16,9 @@
  *
  * - `/sidebar-vscode/api/open.capability` + `/open.request`: the spool the
  *   embedded workbench's extension polls (see `src/openChannel.ts`), fenced
- *   by the same browser-trust rules as every other plugin route;
+ *   by the same browser-trust rules as every other plugin route; the
+ *   `boot.begin` / `boot.status` pair rides the same fence to gate the
+ *   iframe reveal on the extension's post-reconcile boot receipt;
  *
  * - `/sidebar-vscode/api/settings.document`: locates the settings provider's
  *   local document (prepareDocument) for the browser-half takeover of the

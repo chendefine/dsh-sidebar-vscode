@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.6
+- 版本：0.2.7
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：421 例全部通过（17 个规格文件）
+- 测试：451 例全部通过（19 个规格文件）
 
 ## 功能简介
 
@@ -63,7 +63,7 @@
 
 - **默认标签**：可选开关让**全新会话**的侧边栏默认打开 VSCode 标签（替换 better-sidebar 硬编码的「文件」种子标签）；已打开过的会话保持各自布局，关闭后只影响之后的新会话。
 
-- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在功能设置增删）的文件不进 VSCode，改道 better-sidebar 自带「文件」标签打开——其文件查看器正是侧边栏渲染图片/PDF/Office 文档的界面（仍走侧边栏接管，不落宿主打开器）。方案 III 的包装器对该路径改调「文件」标签改道并照常返回成功回执（仅当「文件」标签类型在侧边卡片设置里被禁用时才回落宿主 OS 打开器），方案 II 的 chips 走同一改道，改道被拒时降级调渲染站点原生 `openFile`；未命中路径行为不变，每次点击现读设置。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行（优先读引擎 Turn data 的 `deliverables` 记录，nodes 推导作 fallback；匹配值额外携带 owner 的 `openFile` 供命中回退），chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装运行时的对话文件打开漏斗，按运行时版本二选一：gateway 时代的 `remote.session.openWorkspacePath` 宿主 Remote（ui-chat 注入的 `openFile` —— 工具行路径链接与正文引用的唯一生产调用方；命名空间方法是 getter-only 自有属性，包装器以自定义 getter 重定义它且每次访问都重读原方法，经一个嵌套的可选 inject 安装——该子 fiber 会一直等待直到 `remote.session` 服务出现），或旧版 `workspaces.openPath` 客户端服务（ui-conversation 的 apply.ts）——两者恰好只会装上一个。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.1）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
+- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在功能设置增删）的文件不进 VSCode，改道 better-sidebar 自带「文件」标签打开——其文件查看器正是侧边栏渲染图片/PDF/Office 文档的界面（仍走侧边栏接管，不落宿主打开器）。方案 III 的包装器对该路径改调「文件」标签改道并照常返回成功回执（仅当「文件」标签类型在侧边卡片设置里被禁用时才回落宿主 OS 打开器），方案 II 的 chips 走同一改道，改道被拒时降级调渲染站点原生 `openFile`；未命中路径行为不变，每次点击现读设置。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行（优先读引擎 Turn data 的 `deliverables` 记录，nodes 推导作 fallback；匹配值额外携带 owner 的 `openFile` 供命中回退），chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装运行时的对话文件打开漏斗，按运行时版本二选一：gateway 时代的 `remote.session.openWorkspacePath` 宿主 Remote（ui-chat 注入的 `openFile` —— 工具行路径链接与正文引用的唯一生产调用方；命名空间方法是 getter-only 自有属性，包装器以自定义 getter 重定义它且每次访问都重读原方法，经一个嵌套的可选 inject 安装——该子 fiber 会一直等待直到 `remote.session` 服务出现），或旧版 `workspaces.openPath` 客户端服务（ui-conversation 的 apply.ts）——两者恰好只会装上一个。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.2）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
 
 - **设置页「打开配置文件」接管**（方案 IV，同一开关）：按钮原本把 `$DSH_HOME/settings.yaml` 交给系统原生打开器——headless 容器上直接失败（`xdg-open` 缺失）；当前运行时上点击走 `remote.settings.openSettingsDocument` 宿主 Remote（SettingsDocumentStore.open 是唯一生产调用方；包装器重定义该命名空间方法的 getter-only 自有属性，经嵌套可选 inject 安装——子 fiber 等到 `remote.settings` 服务出现才运行），gateway 之前的运行时则走旧版 `/api/settings.openDocument` 成员——两者恰好只会拦截到一个。开关开启时，本插件改走自有的受信围栏路由（`POST /sidebar-vscode/api/settings.document` → `prepareDocument()`）取到文档绝对路径，再复用与对话点击完全相同的 `openRequest` 通道改道——配置文件在内嵌 VS Code 里打开（绝对路径无需命中 `pathMap` 规则，`mapPathForOpen` 对未匹配路径原样透传）。改道落地后「设置」弹框也会自动关闭：弹框开启状态是组件本地 state（没有服务暴露关闭方法），关闭走弹框自身挂在 document 上的 Escape 监听（生命周期恰好等于弹框开启期）——合成一次 Escape 键事件即可，视野留给工作台。全程 fail-soft：settings 服务缺失、host 半未重载、任何传输错误都回退到原生打开（弹框不关），按钮不会因本插件而坏。
 
@@ -80,7 +80,7 @@
      路由以首页 HTML 烘焙的真实 `serverBasePath` 自动校正——serve-web 加不加 `--server-base-path` 都行（非挂载点基路径注册恒等镜像，根路径注册 `<quality>-<commit>` 补片）。宿主暂时探不到该地址时自动回退直连 iframe 并提示，代理就绪后自动切回挂载点。免配置预启用可设 `DSH_SIDEBAR_VSCODE_UPSTREAM`（同样接受完整地址；默认 `http://127.0.0.1:8000`；`off` 关闭）。`/sidebar/vscode` 被其他插件占用时仅告警退出，不影响插件其余功能；
   2. **网关同源反代（参考拓扑）**——serve-web 与 dsh-runtime 同容器，经网关子路径 `/vscode` 反代（见[部署拓扑](#部署拓扑默认值的依据)）；同机部署留空 serverUrl 也可（内置反代接管）。仅当 serve-web 不在 DSH 宿主可达范围内时才需显式配置（`serverUrl` 填 `/vscode` 或预配置环境变量指向真实地址）；
   3. **跨域直连（自动降级形态）**——仅当宿主半无法反代时自动出现：同源剪贴板桥不可用（粘贴兜底仍在），选区发送走「复制 → 粘贴」链路；
-- 配套 VS Code 扩展 `dsh.selection-reference` 已装入该 serve-web 实例（提供右键命令与快捷键；**对话文件点击打开通道需 ≥ 0.1.1**，见下）。
+- 配套 VS Code 扩展 `dsh.selection-reference` 已装入该 serve-web 实例（提供右键命令与快捷键；**对话文件点击打开通道需 ≥ 0.1.2**，见下）。
 
 ### 插件本体
 
@@ -124,7 +124,7 @@ pnpm -C <profile-dir> add link:<repo-checkout>
 
 ### VS Code 扩展
 
-选中 / 文件发送命令与**对话文件点击的轮询通道**由扩展 `dsh.selection-reference`（源码在 `extension/`）提供，需装入 serve-web 实例。**文件打开通道需要 ≥ 0.1.1**（旧版本只有发送命令；打开点击会降级为 URL payload 重载）：
+选中 / 文件发送命令与**对话文件点击的轮询通道**由扩展 `dsh.selection-reference`（源码在 `extension/`）提供，需装入 serve-web 实例。**文件打开通道需要 ≥ 0.1.2**（0.1.1 会在每次 workbench 重启时重放已消费的命令——见下方重放防护；其能力标记过不了版本探测，打开点击会安全降级为 URL payload 重载）：
 
 ```sh
 scripts/install-extension.sh                  # 打包 VSIX → 装入 serve-web → 注册清单 → 重启 → 健康检查
@@ -133,6 +133,14 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 ```
 
 本机的 `code` 是 standalone CLI（无桌面安装），`code --install-extension` 不可用，脚本以「vsce 打包 → 落文件 → 注册 `extensions.json` 清单 → 按原参数重启 serve-web」四步完成安装。分步流程与排障见 [`scripts/install-extension.md`](scripts/install-extension.md)。
+
+**重放防护（≥ 0.1.2）** —— 关闭侧边栏 VSCode 标签会把 workbench iframe 整个从 DOM 撕掉，重新打开时扩展宿主全新启动；一条在消费后仍留在 spool 里的命令会在每次这样的重启时重新打开它的文件（即「文件已关闭、下次启动 VS Code 又自动打开」bug）。三重独立防护：扩展**消费即删除 `cmd.json`**（垃圾/超期命令同样当场删除——超过 10 分钟的命令永不打开）、已消费 nonce **水位线持久化在 `last.json`**（删除失败的兜底）、**带版本的 `cap.json` 标记（`{v:2,at}`）**让客户端能力探测直接拒绝会重放的 0.1.1。
+
+**内嵌启动干净开场：台账 + 对账 + 隐藏揭幕（≥ 0.1.2）** —— iframe 的销毁同样跳过 VS Code 的 unload 生命周期，其编辑器状态恢复可能重放用户在关标签前几秒刚关闭的文件（VS Code 仅周期性落盘工作区编辑器状态）。本模型精确复原关闭前仍打开的文件，且中间过程不可见：
+
+- **编辑器台账（`editors.json`）**——扩展在每次标签变动时把窗口当前打开的文件标签（顺序 + 活动编辑器）**同步**写进 spool，销毁竞态无法弄丢它；下次激活时磁盘上的内容就是上一会话的最终状态。
+- **启动对账**——激活时先等 VS Code 自身的恢复落定，再让窗口对齐台账：台账里没有的恢复标签（关标签前已关闭的文件）被关闭（脏标签保留，数据优先）、恢复丢失的台账文件被补开、活动编辑器复原。**无台账**的启动（工作区首次启动，或降级 URL-payload 打开）完全不动 VS Code 自身行为。
+- **隐藏揭幕（`boot.begin` / `boot.status`）**——挂载 iframe 之前，标签页先在 spool 里停放一枚启动 nonce（`bootreq.json`）；扩展对账完成后在 `boot.json` 回执里回显它，客户端在此之前让 iframe 保持 opacity 0、以加载遮罩示人（超时兜底直接揭幕）。用户看到的**第一帧**就是对账完的编辑器区——绝不会先看见某文件被打开又被关掉。全链路 fail-soft：较旧的 host 半（boot 路由尚未重载）回落到 **DOM 静默观察器**（同源读取 workbench 的编辑器标签条——静默即揭幕），跨源直连 iframe 则不加门控、按原生行为可见启动。
 
 ## 使用方法
 

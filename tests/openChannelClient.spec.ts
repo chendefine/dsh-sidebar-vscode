@@ -9,7 +9,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   OPEN_CHANNEL_API,
+  beginBoot,
   fetchSettingsDocumentPath,
+  pollBootStatus,
   probeCapability,
   resetCapabilityCache,
   sendOpenCommand,
@@ -107,6 +109,44 @@ describe('sendOpenCommand', () => {
         { folder: '/w', path: '/w/a.ts', nonce: 1 },
         fetchLike,
       )).resolves.toBe(false)
+    }
+  })
+})
+
+describe('beginBoot / pollBootStatus (the boot-reveal handshake)', () => {
+  it('beginBoot POSTs folder+nonce and maps a 200 {ok:true} to true', async () => {
+    const fetchLike = makeFetch([{ status: 200, body: { ok: true } }])
+    await expect(beginBoot('/data/workspace', 'boot-7', fetchLike)).resolves.toBe(true)
+    expect(fetchLike.calls).toEqual([
+      { url: `${OPEN_CHANNEL_API}/boot.begin`, body: { folder: '/data/workspace', nonce: 'boot-7' } },
+    ])
+  })
+
+  it('a missing route (older host half) and errors map beginBoot to false — no gating', async () => {
+    for (const answer of [
+      { status: 404, body: { ok: false, error: { code: 'not-found' } } },
+      { status: 500, body: null },
+      new Error('network down'),
+    ]) {
+      const fetchLike = makeFetch([answer])
+      await expect(beginBoot('/w', 'n', fetchLike)).resolves.toBe(false)
+    }
+  })
+
+  it('pollBootStatus maps {ok, value:{matched:true}} to true; everything else to false', async () => {
+    const fetchLike = makeFetch([{ status: 200, body: { ok: true, value: { matched: true } } }])
+    await expect(pollBootStatus('/w', 'n', fetchLike)).resolves.toBe(true)
+    expect(fetchLike.calls).toEqual([
+      { url: `${OPEN_CHANNEL_API}/boot.status`, body: { folder: '/w', nonce: 'n' } },
+    ])
+    for (const answer of [
+      { status: 200, body: { ok: true, value: { matched: false } } },
+      { status: 200, body: { ok: true, value: {} } },
+      { status: 500, body: null },
+      new Error('abort'),
+    ]) {
+      const other = makeFetch([answer])
+      await expect(pollBootStatus('/w', 'n', other)).resolves.toBe(false)
     }
   })
 })

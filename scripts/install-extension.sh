@@ -78,16 +78,51 @@ VSIX="${VSIX_ARG:-$VSIX_DIR/dsh-selection-reference-${EXT_VERSION}.vsix}"
 log() { printf '\n== %s\n' "$*"; }
 
 # ---------------------------------------------------------------- 1. VSIX ---
+# `run_vsce` packages the VSIX and answers 0 only when the artifact EXISTS
+# afterward. vsce/npm have transient failure modes that still exit 0
+# (observed once: an npm-exec cache race left no artifact with a zero
+# status), so the output is captured to a log the FATAL path can dump, a
+# stale target can never masquerade as success (rm -f first), and the
+# whole invocation is retried once. --no-dependencies skips vsce's
+# `npm list --production` probe (this extension has no runtime deps), and
+# --skip-license silences the known no-LICENSE-file warning (the license
+# is declared in package.json).
+run_vsce() { # run_vsce <logfile> — appends its output to the log
+  rm -f -- "$VSIX"
+  ( cd "$EXT_SRC" && npm_config_cache="$NPM_CACHE" \
+      npx --yes @vscode/vsce package --allow-missing-repository \
+      --no-dependencies --skip-license \
+      --out "$VSIX" </dev/null ) >>"$1" 2>&1
+  [ -f "$VSIX" ]
+}
+
 if [ "$SKIP_BUILD" = 1 ]; then
   [ -f "$VSIX" ] || { echo "FATAL: --skip-build but VSIX not found: $VSIX" >&2; exit 1; }
   log "skip build, reusing $VSIX"
 else
   log "packaging VSIX from $EXT_SRC (vsce) into $VSIX_DIR"
   mkdir -p "$VSIX_DIR"
-  ( cd "$EXT_SRC" && npm_config_cache="$NPM_CACHE" \
-      npx --yes @vscode/vsce package --allow-missing-repository \
-      --out "$VSIX" </dev/null )
-  [ -f "$VSIX" ] || { echo "FATAL: vsce reported success but VSIX missing" >&2; exit 1; }
+  VSCE_LOG="$(mktemp /tmp/dsh-vsce-build-XXXXXX.log)"
+  : >"$VSCE_LOG"
+  VSCE_OK=0
+  if run_vsce "$VSCE_LOG"; then
+    VSCE_OK=1
+  else
+    echo "== attempt 1 left no VSIX — retrying (attempt 2) ==" | tee -a "$VSCE_LOG" >&2
+    if run_vsce "$VSCE_LOG"; then VSCE_OK=1; fi
+  fi
+  if [ "$VSCE_OK" != 1 ]; then
+    echo "FATAL: vsce produced no VSIX at $VSIX (two attempts)" >&2
+    echo "--- vsce output (last 40 lines) ---" >&2
+    tail -40 "$VSCE_LOG" >&2
+    echo "--- environment ---" >&2
+    command -v node npx >&2 || true
+    node --version >&2 || true
+    ls -la "$VSIX_DIR" >&2 || true
+    rm -f "$VSCE_LOG"
+    exit 1
+  fi
+  rm -f "$VSCE_LOG"
 fi
 
 # -------------------------------------------------------- 2. install files ---

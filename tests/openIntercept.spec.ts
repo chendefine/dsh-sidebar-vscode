@@ -18,7 +18,10 @@ import {
   nextNonce,
   rerouteChatOpen,
   rerouteFilesOpen,
+  requestAddressedTo,
   resolveAgainst,
+  stripOpenRequest,
+  clearTabOpenRequest,
   SIDEBAR_FILES_TAB_TYPE,
   wrapRemoteOpenWorkspacePath,
   wrapWorkspacesOpenPath,
@@ -443,6 +446,26 @@ describe('openRequest vehicle', () => {
     expect(extractOpenRequest([1, 2])).toBeNull()
   })
 
+  it('extractOpenRequest carries a well-formed sessionId and drops a meaningless one', () => {
+    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', sessionId: 's-7' } }))
+      .toEqual({ nonce: 3, path: '/w/a.ts', sessionId: 's-7' })
+    // '' is the wrappers' "no session context" marker — it must not ride
+    // the persisted request as an address nothing can match.
+    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', sessionId: '' } }))
+      .toEqual({ nonce: 3, path: '/w/a.ts' })
+    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', sessionId: 7 } }))
+      .toEqual({ nonce: 3, path: '/w/a.ts' })
+  })
+
+  it('requestAddressedTo: unstamped wildcard matches anything; a stamp demands its session', () => {
+    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts' }, 's-1')).toBe(true)
+    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts' }, undefined)).toBe(true)
+    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts', sessionId: 's-1' }, 's-1')).toBe(true)
+    // The cross-workspace guard: another session's tab declines.
+    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts', sessionId: 's-1' }, 's-2')).toBe(false)
+    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts', sessionId: 's-1' }, undefined)).toBe(false)
+  })
+
   it('mergeOpenRequest preserves sibling meta keys', () => {
     const merged = mergeOpenRequest({ treeOpen: true, other: { deep: 1 } }, { nonce: 7, path: '/w/a.ts' })
     expect(merged).toEqual({
@@ -590,6 +613,20 @@ describe('rerouteChatOpen', () => {
     expect(second.openRequest.nonce).toBeGreaterThan(meta.openRequest.nonce)
   })
 
+  it('stamps the addressed session so foreign workbenches decline the open', () => {
+    const state = {
+      splits: { kind: 'leaf', tabs: [{ id: 'dsh-sidebar-vscode:vscode' }] },
+    }
+    const service = makeService(state)
+    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/a.ts', 's-42')
+    const meta = service.updates[0]!.patch.meta as { openRequest: { sessionId?: string } }
+    expect(meta.openRequest.sessionId).toBe('s-42')
+    // An empty id (the wrappers' unknown-session marker) stays a wildcard.
+    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/b.ts', '')
+    const wildcard = service.updates[1]!.patch.meta as { openRequest: { sessionId?: string } }
+    expect(wildcard.openRequest.sessionId).toBeUndefined()
+  })
+
   it('is harmless when the tab never landed (updateTab is the no-op path)', () => {
     const service = makeService()
     service.refusals.push('dsh-sidebar-vscode:vscode') // disabled in settings
@@ -598,5 +635,57 @@ describe('rerouteChatOpen', () => {
     expect(service.updates).toEqual([
       { tabId: 'dsh-sidebar-vscode:vscode', patch: { meta: { openRequest: expect.objectContaining({ path: '/w/a.ts' }) } } },
     ])
+  })
+})
+
+describe('stripOpenRequest / clearTabOpenRequest (the one-shot retirement)', () => {
+  it('stripOpenRequest removes only the request, preserving sibling keys', () => {
+    expect(stripOpenRequest({ treeOpen: true, openRequest: { nonce: 1, path: '/w' }, keep: 2 }))
+      .toEqual({ treeOpen: true, keep: 2 })
+  })
+
+  it('stripOpenRequest answers null when there is nothing to strip', () => {
+    expect(stripOpenRequest(undefined)).toBeNull()
+    expect(stripOpenRequest(null)).toBeNull()
+    expect(stripOpenRequest({})).toBeNull()
+    expect(stripOpenRequest({ treeOpen: true })).toBeNull()
+    expect(stripOpenRequest([1])).toBeNull()
+  })
+
+  it('clearTabOpenRequest strips the addressed tab in the top tree', () => {
+    const state = {
+      splits: {
+        kind: 'split',
+        children: [
+          { kind: 'leaf', tabs: [{ id: 'other', meta: { a: 1 } }] },
+          { kind: 'leaf', tabs: [{ id: 'vscode', meta: { treeOpen: true, openRequest: { nonce: 5, path: '/w' } } }] },
+        ],
+      },
+    }
+    const store = { update(mutator: (draft: unknown) => void) { mutator(state) } }
+    clearTabOpenRequest(store, 'vscode')
+    expect(state.splits.children[1]!.tabs[0]!.meta).toEqual({ treeOpen: true })
+  })
+
+  it('clearTabOpenRequest reaches the bottom tree and drops an emptied meta entirely', () => {
+    const state = {
+      bottomSplits: { kind: 'leaf', tabs: [{ id: 'vscode', meta: { openRequest: { nonce: 5, path: '/w' } } }] },
+    }
+    const store = { update(mutator: (draft: unknown) => void) { mutator(state) } }
+    clearTabOpenRequest(store, 'vscode')
+    expect(state.bottomSplits.tabs[0]!.meta).toBeUndefined()
+  })
+
+  it('clearTabOpenRequest is a no-op for missing tabs, foreign metas, and store-less callers', () => {
+    const state = { splits: { kind: 'leaf', tabs: [{ id: 'other', meta: { openRequest: { nonce: 1, path: '/w' } } }] } }
+    const before = JSON.parse(JSON.stringify(state))
+    const store = { update(mutator: (draft: unknown) => void) { mutator(state) } }
+    clearTabOpenRequest(store, 'vscode') // not in the tree
+    expect(state).toEqual(before)
+    expect(() => clearTabOpenRequest(undefined, 'vscode')).not.toThrow()
+    expect(() => clearTabOpenRequest({} as unknown as { update(): void }, 'vscode')).not.toThrow()
+    // A throwing mutator never breaks the open path.
+    const throwing = { update() { throw new Error('store gone') } }
+    expect(() => clearTabOpenRequest(throwing, 'vscode')).not.toThrow()
   })
 })

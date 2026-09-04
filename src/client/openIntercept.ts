@@ -106,6 +106,14 @@ export interface OpenRequest {
   nonce: number
   /** The DSH-side absolute path to open. */
   path: string
+  /**
+   * The session whose workbench the request targets. Stamped at mint from
+   * the session that produced the path; a consumer mounting another
+   * session's VSCode tab declines the request (it would land the file in a
+   * FOREIGN workspace — the observed cross-workspace poison deliveries).
+   * Absent = wildcard (the settings takeover has no session context).
+   */
+  sessionId?: string
   /** Optional 1-based cursor position (reserved; produced chips are path-only). */
   line?: number
   column?: number
@@ -120,10 +128,11 @@ export function extractOpenRequest(meta: unknown): OpenRequest | null {
   if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) return null
   const record = (meta as { openRequest?: unknown }).openRequest
   if (record === null || typeof record !== 'object' || Array.isArray(record)) return null
-  const req = record as { nonce?: unknown, path?: unknown, line?: unknown, column?: unknown }
+  const req = record as { nonce?: unknown, path?: unknown, sessionId?: unknown, line?: unknown, column?: unknown }
   if (typeof req.nonce !== 'number' || !Number.isFinite(req.nonce)) return null
   if (typeof req.path !== 'string' || req.path === '') return null
   const out: OpenRequest = { nonce: req.nonce, path: req.path }
+  if (typeof req.sessionId === 'string' && req.sessionId !== '') out.sessionId = req.sessionId
   if (typeof req.line === 'number' && Number.isFinite(req.line) && req.line > 0) {
     out.line = Math.floor(req.line)
   }
@@ -131,6 +140,21 @@ export function extractOpenRequest(meta: unknown): OpenRequest | null {
     out.column = Math.floor(req.column)
   }
   return out
+}
+
+/**
+ * Whether `request` is addressed to the session whose VSCode tab mounted
+ * the consumer. A request stamped with a `sessionId` (every chat-originated
+ * open) only executes for that session — a page/window showing a DIFFERENT
+ * conversation (its workbench embeds a different workspace folder) must
+ * decline it, or the open lands a foreign file into that workspace's spool
+ * (the exact cross-workspace delivery observed in the poisoned spools).
+ * An unstamped request (the settings takeover, which has no session
+ * context) stays a wildcard.
+ */
+export function requestAddressedTo(request: OpenRequest, sessionId: string | undefined): boolean {
+  if (request.sessionId === undefined) return true
+  return sessionId !== undefined && sessionId === request.sessionId
 }
 
 /**
@@ -143,6 +167,81 @@ export function mergeOpenRequest(meta: unknown, request: OpenRequest): Record<st
     : {}
   base.openRequest = { ...request }
   return base
+}
+
+/**
+ * Copy one tab meta WITHOUT its openRequest, preserving sibling keys.
+ * Returns null when there was nothing to strip (the meta carried no
+ * request) so callers skip a pointless store mutation.
+ *
+ * The openRequest is a ONE-SHOT command, not durable tab state: the
+ * sidebar layout (meta included) is persisted and shared across windows
+ * and reloads, so an executed-but-unstripped request sat in the layout
+ * until some later remount mistook it for a fresh click — the mechanism
+ * behind the hours-later re-executions that poisoned foreign workspaces'
+ * spools. Stripping on consumption retires it for every observer.
+ */
+export function stripOpenRequest(meta: unknown): Record<string, unknown> | null {
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) return null
+  const record = meta as Record<string, unknown>
+  if (!('openRequest' in record) || record.openRequest === undefined) return null
+  const rest = { ...record }
+  delete rest.openRequest
+  return rest
+}
+
+/** The mutating store face the meta strip needs (SidebarStore.update). */
+export interface MutatingStoreFace {
+  update(mutator: (draft: unknown) => void): void
+}
+
+/**
+ * Strip the VSCode tab's openRequest from the CURRENT session's persisted
+ * layout. One-shot semantics for a one-shot command: call after executing
+ * (or declining) a request. Fail-soft by construction — a store without
+ * `update` (a foreign peer) is a no-op, and a missing tab id simply finds
+ * nothing to strip.
+ */
+export function clearTabOpenRequest(store: MutatingStoreFace | undefined, tabId: string): void {
+  if (store === undefined || typeof store.update !== 'function') return
+  try {
+    store.update(draft => { stripOpenRequestFromState(draft, tabId) })
+  } catch {
+    // Never let hygiene break the open path.
+  }
+}
+
+/** Find the tab in one sidebar state draft and strip its meta request. */
+function stripOpenRequestFromState(state: unknown, tabId: string): void {
+  if (state === null || typeof state !== 'object') return
+  const record = state as { splits?: unknown, bottomSplits?: unknown }
+  if (stripOpenRequestFromNode(record.splits, tabId)) return
+  stripOpenRequestFromNode(record.bottomSplits, tabId)
+}
+
+function stripOpenRequestFromNode(node: unknown, tabId: string): boolean {
+  if (node === null || typeof node !== 'object') return false
+  const record = node as { kind?: unknown, tabs?: unknown, children?: unknown }
+  if (record.kind === 'leaf' && Array.isArray(record.tabs)) {
+    for (const tab of record.tabs) {
+      if (tab !== null && typeof tab === 'object' && (tab as { id?: unknown }).id === tabId) {
+        const target = tab as { meta?: unknown }
+        const stripped = stripOpenRequest(target.meta)
+        if (stripped !== null) {
+          target.meta = Object.keys(stripped).length > 0 ? stripped : undefined
+          return true
+        }
+        return false
+      }
+    }
+    return false
+  }
+  if (Array.isArray(record.children)) {
+    for (const child of record.children) {
+      if (stripOpenRequestFromNode(child, tabId)) return true
+    }
+  }
+  return false
 }
 
 /** The last minted nonce (module state — one monotonic sequence per page). */
@@ -235,12 +334,21 @@ export function resolveAgainst(cwd: string | undefined, path: string): string {
  * panel auto-expansion + single-instance focus) and stamp the openRequest
  * meta. The `openTab` call lands on the real service untouched — neither
  * seam wraps openTab (option I was rolled back), and the openPath wrapper
- * is not on this path.
+ * is not on this path. `sessionId` (the session whose workbench the open
+ * targets) rides the request so a consumer in another session's tab
+ * declines it instead of delivering a foreign file.
  */
-export function rerouteChatOpen(service: InterceptServiceFace, tabId: string, path: string): void {
+export function rerouteChatOpen(
+  service: InterceptServiceFace,
+  tabId: string,
+  path: string,
+  sessionId?: string,
+): void {
   service.openTab({ type: tabId, path })
   const state = service.getSnapshot().state
-  service.updateTab(tabId, { meta: mergeOpenRequest(findTabMeta(state, tabId), { nonce: nextNonce(), path }) })
+  const request: OpenRequest = { nonce: nextNonce(), path }
+  if (sessionId !== undefined && sessionId !== '') request.sessionId = sessionId
+  service.updateTab(tabId, { meta: mergeOpenRequest(findTabMeta(state, tabId), request) })
 }
 
 // ---- blocklist-hit reroute (the built-in Files tab) ----

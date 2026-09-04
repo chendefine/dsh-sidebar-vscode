@@ -16,7 +16,9 @@
  *
  * - `/sidebar-vscode/api/open.capability` + `/open.request`: the spool the
  *   embedded workbench's extension polls (see `src/openChannel.ts`), fenced
- *   by the same browser-trust rules as every other plugin route;
+ *   by the same browser-trust rules as every other plugin route; the
+ *   `boot.begin` / `boot.status` pair rides the same fence to gate the
+ *   iframe reveal on the extension's post-reconcile boot receipt;
  *
  * - `/sidebar-vscode/api/settings.document`: locates the settings provider's
  *   local document (prepareDocument) for the browser-half takeover of the
@@ -45,7 +47,10 @@ import { createFileRangeReader, vscodeMentionPreStep } from './mention.ts'
 import {
   OPEN_CHANNEL_BASE,
   parseOpenCommand,
+  readBootStatus,
   readCapability,
+  writeBootRequest,
+  writeEmbeddedBoot,
   writeOpenCommand,
 } from './openChannel.ts'
 import { isTrustedApiRequest } from './trust-fence.ts'
@@ -226,6 +231,20 @@ export function apply(ctx: Context): void {
           writeJson(res, 200, { ok: true, value: { present } })
           return
         }
+        if (method === 'open.embedded') {
+          // The sidebar's workbench iframe just loaded for this folder:
+          // stamp the embedded-boot marker the extension reads at
+          // activation (a fresh stamp = an EMBEDDED boot, which starts
+          // with a clean editor area — see writeEmbeddedBoot).
+          const record = payload as { folder?: unknown } | null
+          if (record === null || typeof record.folder !== 'string' || !record.folder.startsWith('/')) {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'folder must be an absolute path' } })
+            return
+          }
+          await writeEmbeddedBoot(OPEN_CHANNEL_BASE, record.folder)
+          writeJson(res, 200, { ok: true })
+          return
+        }
         if (method === 'open.request') {
           const command = parseOpenCommand(payload)
           if (command === null) {
@@ -234,6 +253,40 @@ export function apply(ctx: Context): void {
           }
           await writeOpenCommand(OPEN_CHANNEL_BASE, command)
           writeJson(res, 200, { ok: true })
+          return
+        }
+        if (method === 'boot.begin') {
+          // The sidebar's client parks one boot nonce BEFORE mounting the
+          // workbench iframe; the extension (≥ 0.1.2) echoes it in its
+          // post-reconcile boot.json receipt, and boot.status reports the
+          // match — the client keeps the iframe hidden (opacity 0) until
+          // then, so a reconciled editor area is the FIRST thing the user
+          // sees: restored-but-closed ghost files never visibly open.
+          const record = payload as { folder?: unknown, nonce?: unknown } | null
+          if (record === null || typeof record.folder !== 'string' || !record.folder.startsWith('/')) {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'folder must be an absolute path' } })
+            return
+          }
+          if (typeof record.nonce !== 'string' || record.nonce === '' || record.nonce.length > 128) {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'nonce must be a non-empty string of at most 128 characters' } })
+            return
+          }
+          await writeBootRequest(OPEN_CHANNEL_BASE, record.folder, record.nonce)
+          writeJson(res, 200, { ok: true })
+          return
+        }
+        if (method === 'boot.status') {
+          const record = payload as { folder?: unknown, nonce?: unknown } | null
+          if (record === null || typeof record.folder !== 'string' || !record.folder.startsWith('/')) {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'folder must be an absolute path' } })
+            return
+          }
+          if (typeof record.nonce !== 'string' || record.nonce === '' || record.nonce.length > 128) {
+            writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'nonce must be a non-empty string of at most 128 characters' } })
+            return
+          }
+          const matched = await readBootStatus(OPEN_CHANNEL_BASE, record.folder, record.nonce)
+          writeJson(res, 200, { ok: true, value: { matched } })
           return
         }
         writeJson(res, 404, { ok: false, error: { code: 'not-found', message: `unknown method "${method}"` } })

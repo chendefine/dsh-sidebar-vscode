@@ -3,7 +3,7 @@
   "displayName": "DSH Selection Reference",
   "description": "Send the current editor selection (file + line range + code) or the explorer-selected files/folders (path + kind only) to the DeepSeek Harness conversation composer, when the workbench is embedded in the DSH sidebar.",
   "publisher": "dsh",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "private": true,
   "repository": {

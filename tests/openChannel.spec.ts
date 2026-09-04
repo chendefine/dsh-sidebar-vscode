@@ -14,7 +14,9 @@ import {
   CAPABILITY_MAX_AGE_MS,
   slugOf,
   parseOpenCommand,
+  readBootStatus,
   readCapability,
+  writeBootRequest,
   writeOpenCommand,
 } from '../src/openChannel.ts'
 
@@ -120,12 +122,34 @@ describe('writeOpenCommand / readCapability', () => {
     expect(parsed.path).toBe('/data/workspace/b.ts')
   })
 
-  it('capability is false without a marker and true while fresh', async () => {
+  it('capability is false without a marker and true while a v2 marker is fresh', async () => {
     const folder = '/no-marker'
     expect(await readCapability(base, folder)).toBe(false)
     const dir = join(base, slugOf(folder))
     await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'cap.json'), JSON.stringify({ v: 2, at: Date.now() }), 'utf8')
+    expect(await readCapability(base, folder)).toBe(true)
+  })
+
+  it('capability refuses the pre-0.1.2 bare-timestamp marker even while fresh', async () => {
+    // The v0.1.1 extension wrote String(Date.now()) and REPLAYED the last
+    // command on every extension-host restart — the exact "closed file
+    // reopens on next VS Code start" bug. Its marker must never count as
+    // capable, so the client degrades to the URL-payload channel.
+    const folder = '/old-marker'
+    const dir = join(base, slugOf(folder))
+    await mkdir(dir, { recursive: true })
     await writeFile(join(dir, 'cap.json'), String(Date.now()), 'utf8')
+    expect(await readCapability(base, folder)).toBe(false)
+    // Nor a versioned marker below the trusted floor, nor garbage.
+    await writeFile(join(dir, 'cap.json'), JSON.stringify({ v: 1, at: Date.now() }), 'utf8')
+    expect(await readCapability(base, folder)).toBe(false)
+    await writeFile(join(dir, 'cap.json'), 'not json', 'utf8')
+    expect(await readCapability(base, folder)).toBe(false)
+    await writeFile(join(dir, 'cap.json'), JSON.stringify({ at: Date.now() }), 'utf8')
+    expect(await readCapability(base, folder)).toBe(false)
+    // A future build version stays trusted.
+    await writeFile(join(dir, 'cap.json'), JSON.stringify({ v: 3, at: Date.now() }), 'utf8')
     expect(await readCapability(base, folder)).toBe(true)
   })
 
@@ -134,12 +158,46 @@ describe('writeOpenCommand / readCapability', () => {
     const dir = join(base, slugOf(folder))
     await mkdir(dir, { recursive: true })
     const capFile = join(dir, 'cap.json')
-    await writeFile(capFile, '0', 'utf8')
+    await writeFile(capFile, JSON.stringify({ v: 2, at: 0 }), 'utf8')
     // mtime is what counts: push it far into the past.
     const ancient = new Date(Date.now() - CAPABILITY_MAX_AGE_MS - 60_000)
     await utimes(capFile, ancient, ancient)
     expect(await readCapability(base, folder)).toBe(false)
     // A custom window (the route uses the default) is honored too.
     expect(await readCapability(base, folder, CAPABILITY_MAX_AGE_MS + 120_000)).toBe(true)
+  })
+})
+
+describe('writeBootRequest / readBootStatus (the boot-reveal handshake)', () => {
+  it('parks the nonce in bootreq.json inside the folder slug dir', async () => {
+    await writeBootRequest(base, '/data/workspace', 'boot-42')
+    const raw = JSON.parse(
+      await readFile(join(base, slugOf('/data/workspace'), 'bootreq.json'), 'utf8'),
+    ) as { nonce?: unknown }
+    expect(raw.nonce).toBe('boot-42')
+    // No temp siblings survive the atomic rename.
+    expect(await readBootStatus(base, '/data/workspace', 'boot-42')).toBe(false)
+  })
+
+  it('matched only when boot.json echoes exactly this nonce', async () => {
+    const folder = '/boot-echo'
+    const dir = join(base, slugOf(folder))
+    await mkdir(dir, { recursive: true })
+    // Nothing yet → not matched.
+    expect(await readBootStatus(base, folder, 'n1')).toBe(false)
+    // A receipt for a DIFFERENT boot (the previous iframe load) → no.
+    await writeFile(join(dir, 'boot.json'), JSON.stringify({ v: 1, ts: 1, nonce: 'other' }), 'utf8')
+    expect(await readBootStatus(base, folder, 'n1')).toBe(false)
+    // The extension's receipt echoing our nonce → matched.
+    await writeFile(join(dir, 'boot.json'), JSON.stringify({ v: 1, ts: 2, nonce: 'n1' }), 'utf8')
+    expect(await readBootStatus(base, folder, 'n1')).toBe(true)
+  })
+
+  it('a corrupt boot.json never counts as matched', async () => {
+    const folder = '/boot-corrupt'
+    const dir = join(base, slugOf(folder))
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'boot.json'), 'not json', 'utf8')
+    expect(await readBootStatus(base, folder, 'n1')).toBe(false)
   })
 })

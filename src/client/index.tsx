@@ -415,10 +415,16 @@ export function apply(ctx: unknown): void {
       // be workspace-relative); both openPath wrappers pass '' and fall back
       // to the CURRENT session's cwd (their callers resolve absolutes
       // already — ui-chat's openFile, formerly ui-conversation's apply.ts).
+      // The resolved id also STAMPS the openRequest (rerouteChatOpen), so a
+      // consumer in another session's tab declines the open instead of
+      // delivering a foreign file into that workspace's spool.
+      const current = sessionId !== ''
+        ? sessionId
+        : client.sessions?.list?.getSnapshot()?.current ?? ''
       const cwd = sessionId !== ''
         ? client.sessions?.list?.getSnapshot()?.byId?.[sessionId]?.cwd
         : currentCwd()
-      rerouteChatOpen(betterSidebar, TAB_ID, resolveAgainst(cwd, path))
+      rerouteChatOpen(betterSidebar, TAB_ID, resolveAgainst(cwd, path), current)
     }
     // A blocklist hit reroutes into better-sidebar's built-in Files tab —
     // its file viewers are the sidebar's own surface for exactly the types
