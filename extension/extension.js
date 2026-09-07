@@ -71,6 +71,18 @@
  * in a workspace, or a degraded URL-payload open) keeps VS Code's own
  * behavior untouched.
  *
+ * The ledger is OWNED by the boot (v0.1.3+): serve-web keeps extension
+ * hosts alive for a while after their renderer went away, and such a
+ * lingering host would keep writing ITS (invisible) window's tab set into
+ * the shared ledger — and re-opening ledger files into that window, whose
+ * tab events then re-write the ledger again. Every ledger write and the
+ * whole reconcile are therefore fenced on the boot nonce still being
+ * current in `bootreq.json` (the client rotates it when a still-mounted
+ * frame reloads, and as the tab unmounts), and a slow restore that lands
+ * closed-file ghosts AFTER the reconcile is swept by the late-ghost
+ * passes (close-only diffs spaced over the restore tail; the active
+ * editor and dirty tabs are never theirs to close).
+ *
  * No workspace-relative guessing here beyond asRelativePath: the payload
  * carries both the absolute path and the workspace-relative path; the DSH
  * side picks the display form and translates container paths back into the
@@ -96,9 +108,27 @@ const CHANNEL_CAP_REFRESH_MS = 60000
  * Channel build marker carried in cap.json. The replaying v0.1.1 wrote a
  * bare `String(Date.now())`; the client's capability probe only trusts the
  * channel from this version up (see capMarkerOf). v3 = the reconcile build
- * (ledger + boot receipt).
+ * (ledger + boot receipt). v4 = the boot-tagged command build: an open
+ * request minted by an embedded boot carries that boot's nonce
+ * (`cmd.json {boot}`), and only the host that activated with the SAME
+ * nonce consumes it — a lingering previous host (serve-web keeps it alive
+ * for a while after the iframe went away) must not eat the new boot's
+ * command, open it into a dying window, and let the fresh host's
+ * reconcile close the file as a ghost. v5 = the fenced-ledger build: a
+ * host may write the ledger (and run the boot reconcile at all) only
+ * while the bootreq nonce on disk is STILL the one it activated with —
+ * the client rotates the nonce when a still-mounted frame reloads and
+ * when the tab unmounts, so a lingering host is fenced the moment its
+ * window stops being the one the user sees. Unfenced, such a host kept
+ * writing ITS (invisible) window's tab set into the shared ledger and
+ * re-running the reconcile's reopen loop into it — poisoning editors.json
+ * with files the visible workbench never showed, which every later boot
+ * then faithfully reopened (the "closed files come back" regression).
+ * v5 also adds the late-ghost passes: close-only diff passes after the
+ * reconcile, because a slow restore can still be landing ghost tabs
+ * after the settle budget ran out.
  */
-const CHANNEL_CAP_V = 3
+const CHANNEL_CAP_V = 5
 
 /** Ledger document version (`editors.json`). */
 const LEDGER_V = 1
@@ -230,6 +260,27 @@ function readBootNonce (dir) {
 }
 
 /**
+ * Whether THIS host still owns the channel: the bootreq nonce on disk must
+ * still be the one this host activated with. The sidebar's client parks a
+ * fresh nonce whenever the workbench iframe mounts, ROTATES it when a
+ * still-mounted frame reloads (the pane DOM is detached on a panel
+ * collapse or a workspace switch and re-inserted later, which the browser
+ * treats as a reload), and rotates again as the tab unmounts — so a host
+ * left behind (serve-web keeps extension hosts alive for a while after
+ * their renderer went away) sees the nonce change under it. Such a host
+ * MUST stand down: its window is invisible, and letting it write the
+ * shared ledger (or run the reconcile's reopen loop into its own window,
+ * whose tab events then re-write the ledger) poisons editors.json with a
+ * tab set the user cannot see — which every later boot faithfully
+ * restores. An absent bootreq counts as current only for a host that
+ * never had one (a standalone window); a host whose bootreq vanished was
+ * parked by an embedded client and is fenced with it.
+ */
+function isCurrentBoot (dir, myBoot) {
+  return readBootNonce(dir) === myBoot
+}
+
+/**
  * The window's file-backed editor tabs in group/tab order (the order the
  * ledger stores and the reconcile reopens in). Duck-typed over the
  * tabGroups API: a tab counts when its input carries a file-scheme uri —
@@ -289,12 +340,20 @@ async function settleTabs () {
  * waits for before revealing the iframe (nothing ever visibly opens just
  * to be closed again). A null ledger (first boot / degraded payload open)
  * touches nothing — VS Code's own behavior stands — and still writes the
- * receipt so the client reveals promptly.
+ * receipt so the client reveals promptly. A host whose boot nonce is no
+ * longer current stands down ENTIRELY (no reconcile, no receipt): it is a
+ * lingering host whose window the user cannot see, and the rightful host
+ * writes the receipt. The fence is checked twice — before the settle
+ * watch starts and again after it settles: a rotation that lands mid-
+ * settle (the frame reloaded while the reconcile was waiting) retires
+ * this host just as thoroughly.
  */
 async function reconcileBoot (dir, desired, bootNonce) {
   const report = { applied: false, closed: 0, opened: 0, skippedDirty: 0 }
+  if (!isCurrentBoot(dir, bootNonce)) return report
   try {
     await settleTabs()
+    if (!isCurrentBoot(dir, bootNonce)) return report
     if (desired !== null) {
       const keep = new Set(desired.editors)
       const tabs = fileTabsOf()
@@ -362,6 +421,50 @@ function writeMarker (file, value) {
   nodeFs.renameSync(tmp, file)
 }
 
+/**
+ * Late-ghost passes: VS Code's own editor restore can still be landing
+ * tabs AFTER the reconcile's settle budget ran out (a slow first boot of
+ * a heavy workspace restores for seconds past it — measured receipts at
+ * the full budget with tabs arriving after), and those late arrivals are
+ * exactly the closed-file ghosts the reconcile meant to close — nobody
+ * else ever will. A few close-only diff passes run after the arming,
+ * spaced across the restore tail: each closes BACKGROUND tabs the boot
+ * ledger does not list, skipping dirty tabs (data wins) and the ACTIVE
+ * editor — seconds after a remount the only deliberate opens are user
+ * ones, and a user open becomes the active editor, while a restore ghost
+ * lands in the background. No pass ever OPENS anything: reopening is the
+ * reconcile's job alone, and a late reopen could fight a restore that is
+ * still deciding its own set. The boot-nonce fence applies per pass: a
+ * host left behind stands down with the rest of the ledger machinery.
+ */
+const GHOST_PASS_DELAYS_MS = [1500, 3500, 7000]
+
+/** One close-only diff of the live tab set against the boot ledger's keep set. */
+async function closeGhostTabs (dir, myBoot, keep) {
+  let closedCount = 0
+  if (!isCurrentBoot(dir, myBoot)) return closedCount
+  try {
+    const tabs = fileTabsOf()
+    const activeEditor = vscode.window.activeTextEditor
+    const activeUri = activeEditor && activeEditor.document ? activeEditor.document.uri : null
+    const activeFsPath = activeUri !== null && activeUri.scheme === 'file'
+      && typeof activeUri.fsPath === 'string'
+      ? activeUri.fsPath
+      : null
+    for (const tab of tabs) {
+      const fsPath = tab.input.uri.fsPath
+      if (keep.has(fsPath)) continue
+      if (tab.isDirty === true) continue
+      if (fsPath === activeFsPath) continue
+      try {
+        await vscode.window.tabGroups.close(tab, true)
+        closedCount += 1
+      } catch { /* best effort per tab */ }
+    }
+  } catch { /* best effort */ }
+  return closedCount
+}
+
 /** The versioned capability marker: `{v:2,at}` (the v0.1.1 wrote a bare timestamp). */
 function capMarkerOf (at) {
   return JSON.stringify({ v: CHANNEL_CAP_V, at })
@@ -378,8 +481,11 @@ function deleteCommand (dir) {
  * One poll tick over every workspace folder: refresh the capability marker
  * when stale, then consume any fresh command (monotonic nonce per folder —
  * a command is consumed at most once even across overlapping ticks).
+ * `myBoot` is the boot nonce THIS host activated with (null for a
+ * standalone window or a boot whose bootreq could not be read): a
+ * boot-tagged command is consumed only by the host owning that boot.
  */
-async function channelTick (lastNonceByDir) {
+async function channelTick (lastNonceByDir, myBoot) {
   const folders = vscode.workspace.workspaceFolders || []
   for (const folder of folders) {
     const dir = channelDirOf(folder.uri.fsPath)
@@ -416,6 +522,19 @@ async function channelTick (lastNonceByDir) {
     if (nonce === null || target === null) {
       // Garbage in the spool: drop it so it cannot confuse a later boot.
       deleteCommand(dir)
+      continue
+    }
+    // The boot-tag gate: a command minted by an embedded boot names that
+    // boot's nonce, and only the host that activated with the SAME nonce
+    // may consume it. The lingering previous host (serve-web keeps an
+    // extension host alive for a while after its iframe went away — its
+    // 500ms poll keeps running) would otherwise eat the fresh boot's
+    // command within its first ticks, showTextDocument into a window the
+    // user no longer sees, and the fresh host's boot reconcile would then
+    // close that file as a ledger ghost — the open silently lost. Skipping
+    // (NOT deleting, NOT watermarking) leaves the file in the spool for
+    // the rightful host; the TTL eventually cleans an orphaned one.
+    if (typeof command.boot === 'string' && command.boot !== myBoot) {
       continue
     }
     // A command too old to be a live delivery is dropped, never opened —
@@ -646,6 +765,9 @@ function activate (context) {
   let ledgerArmed = false
   const writeCurrentLedger = () => {
     if (!ledgerArmed || bootDir === null) return
+    // The fence: a host whose boot nonce was rotated away writes nothing —
+    // its window is invisible and its tab set would poison the ledger.
+    if (!isCurrentBoot(bootDir, bootNonce)) return
     const tabs = fileTabsOf()
     const activeEditor = vscode.window.activeTextEditor
     const activeUri = activeEditor && activeEditor.document ? activeEditor.document.uri : null
@@ -674,7 +796,7 @@ function activate (context) {
   const schedulePoll = () => {
     pollHandle = setTimeout(async () => {
       try {
-        await channelTick(lastNonceByDir)
+        await channelTick(lastNonceByDir, bootNonce)
       } catch (error) {
         console.error('[dsh.selection-reference] channel tick failed:', error)
       }
@@ -687,12 +809,22 @@ function activate (context) {
   // not list, and a command-channel open arriving mid-reconcile would be
   // such a tab — its file must not bounce open→closed. The poll delay is
   // bounded by the settle budget plus the diff itself (a couple of
-  // seconds); commands simply wait that out in the spool.
+  // seconds); commands simply wait that out in the spool. The poll carries
+  // THIS activation's boot nonce so a boot-tagged command is consumed only
+  // by its own host (see channelTick). After the arming, the late-ghost
+  // passes keep closing restore stragglers the settle budget missed (only
+  // when a ledger existed — a null-ledger boot keeps stock behavior).
   void (async () => {
     if (bootDir !== null) await reconcileBoot(bootDir, desired, bootNonce)
     ledgerArmed = true
     writeCurrentLedger()
     schedulePoll()
+    if (bootDir !== null && desired !== null) {
+      const keep = new Set(desired.editors)
+      for (const delay of GHOST_PASS_DELAYS_MS) {
+        setTimeout(() => { void closeGhostTabs(bootDir, bootNonce, keep) }, delay)
+      }
+    }
   })()
 }
 

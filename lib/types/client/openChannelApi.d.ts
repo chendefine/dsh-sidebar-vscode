@@ -35,13 +35,20 @@ export interface OpenCommand {
     nonce: number;
     line?: number;
     column?: number;
+    /**
+     * The boot nonce of the embedded workbench this open was minted for
+     * (extension cap ≥ 4 only): the extension consumes a tagged command
+     * solely on the host that activated with the same nonce, so a lingering
+     * previous host cannot eat it during the fresh boot's reconcile window.
+     */
+    boot?: string;
 }
 /** POST one JSON body and answer `{ok, value}` structurally; null on any failure. */
 export declare function postJson(method: string, body: Record<string, unknown>, fetchLike: FetchLike): Promise<{
     ok: boolean;
     value: unknown;
 } | null>;
-export declare function probeCapability(folder: string, fetchLike?: FetchLike, now?: () => number): Promise<boolean>;
+export declare function probeCapability(folder: string, fetchLike?: FetchLike, now?: () => number): Promise<false | number>;
 /** Test-only: drop the capability cache (each spec starts cold). */
 export declare function resetCapabilityCache(): void;
 /**

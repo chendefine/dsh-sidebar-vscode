@@ -449,6 +449,22 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   const openInputs = useRef({ serverUrl, pathMap, cwd })
   openInputs.current = { serverUrl, pathMap, cwd }
 
+  // ---- Boot gate state (declared early: the open effect below reads the
+  // phase; the gate itself is computed further down, once `loadKey` exists).
+  // 'pending' = this load's boot nonce is not parked yet — the frame is NOT
+  // mounted at all, and an open request arriving then DEFERS (see the open
+  // effect) so its command can carry the nonce; 'rotating' = a still-mounted
+  // frame RELOADED in place (pane detach/reattach) and a fresh nonce is being
+  // parked for it — the frame stays mounted but hidden until the new receipt;
+  // 'hidden' = parked and the receipt is being awaited (the nonce is
+  // taggable); 'dom'/'off' = no exact handshake (stock open, no tag).
+  type BootGatePhase = 'pending' | 'rotating' | 'hidden' | 'dom' | 'off'
+  type BootGateState = { key: string, phase: BootGatePhase, nonce: string, workspace: string }
+  const [gateState, setGateState] = useState<BootGateState>(
+    { key: '', phase: 'pending', nonce: '', workspace: '' })
+  const [revealState, setRevealState] = useState<{ key: string, revealed: boolean }>({ key: '', revealed: false })
+  const bootGateRef = useRef<BootGateState>({ key: '', phase: 'pending', nonce: '', workspace: '' })
+
   const executeOpen = useCallback(async (request: OpenRequest): Promise<void> => {
     const { serverUrl: base, pathMap: rules, cwd: workdir } = openInputs.current
     const workspace = workdir !== undefined ? mapPath(workdir, rules) : undefined
@@ -469,12 +485,23 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     if (workspace != null) {
       const capable = await probeCapability(workspace)
       if (capable) {
+        // Boot tag (extension cap ≥ 4): the command names THIS workbench
+        // boot's nonce, so only the host that activated with it consumes
+        // the open. Without the tag, a LINGERING previous host (serve-web
+        // keeps it — and its 500ms spool poll — alive for a while after
+        // the tab's iframe went away) eats the command during the fresh
+        // boot's window: it opens into a dying window and the fresh
+        // host's ledger reconcile closes the file as a ghost — the open
+        // silently lost (the closed-tab-then-click hole).
+        const gate = bootGateRef.current
+        const boot = gate.phase === 'hidden' ? gate.nonce : undefined
         const sent = await sendOpenCommand({
           folder: workspace,
           path: file,
           nonce: request.nonce,
           line: request.line,
           column: request.column,
+          ...(boot !== undefined && capable >= 4 ? { boot } : {}),
         })
         if (sent) return
       }
@@ -526,6 +553,14 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
       retire()
       return
     }
+    // Defer while THIS load's boot nonce is not parked yet (gate 'pending',
+    // or 'rotating' — a reloaded frame whose fresh nonce is in flight): the
+    // click that re-creates the tab lands in the very render that mounts
+    // the iframe, and its open command must carry the boot nonce
+    // (executeOpen) — which beginBoot parks only milliseconds later. The
+    // effect re-runs when the gate settles ('hidden'/'dom'/'off'); nothing
+    // is advanced or retired here, so the deferred request still executes.
+    if (bootGateRef.current.phase === 'pending' || bootGateRef.current.phase === 'rotating') return
     lastNonce.current = openRequest.nonce
     lastExecutedNonceAtPage = openRequest.nonce
     // An openRequest is a ONE-SHOT command, not durable tab state: retire
@@ -538,7 +573,7 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     // spool. Unstamped requests (the settings takeover) stay wildcards.
     if (!requestAddressedTo(openRequest, scope.sessionId)) return
     void executeOpen(openRequest)
-  }, [openRequest?.nonce, executeOpen, store, scope.sessionId])
+  }, [openRequest?.nonce, executeOpen, store, scope.sessionId, gateState.phase])
 
   // The iframe target: the pending payload URL while one is valid for the
   // current basis, else the plain folder URL.
@@ -612,10 +647,6 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   // reloaded yet), no workspace, a dead extension — the workbench boots
   // visible with stock behavior.
   const loadKey = `${target}#${nonce}`
-  const [gateState, setGateState] = useState<{
-    key: string, phase: 'pending' | 'hidden' | 'dom' | 'off', nonce: string, workspace: string,
-  }>({ key: '', phase: 'pending', nonce: '', workspace: '' })
-  const [revealState, setRevealState] = useState<{ key: string, revealed: boolean }>({ key: '', revealed: false })
   // Keyed reads: a changed loadKey starts its gate at 'pending' in the
   // very render that remounts the iframe — no stale phase can leak across
   // loads, and the frame never mounts before its boot nonce is parked.
@@ -623,24 +654,34 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     ? gateState
     : { key: loadKey, phase: 'pending' as const, nonce: '', workspace: '' }
   const revealed = revealState.key === loadKey && revealState.revealed
-  const bootHidden = (bootGate.phase === 'hidden' || bootGate.phase === 'dom') && !revealed
-  const bootGateRef = useRef(bootGate)
+  const bootHidden = (bootGate.phase === 'hidden' || bootGate.phase === 'dom' || bootGate.phase === 'rotating') && !revealed
   bootGateRef.current = bootGate
   const loadKeyRef = useRef(loadKey)
   loadKeyRef.current = loadKey
   const revealStopRef = useRef<(() => void) | null>(null)
+  // How many times the CURRENT loadKey's iframe has fired load: 1 = the
+  // mount load (the gate parked its nonce before it), 2+ = the SAME frame
+  // reloaded in place — the pane DOM was detached (panel collapse,
+  // workspace switch) and re-inserted, which the browser treats as a
+  // reload. Those reloads need a fresh nonce (see the rotation below).
+  const loadCountRef = useRef(0)
+  const workspaceOf = useCallback((): string | null => {
+    const { pathMap: rules, cwd: workdir } = openInputs.current
+    return workdir !== undefined ? mapPath(workdir, rules) : null
+  }, [])
+  const mintBootNonce = (): string => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   useEffect(() => {
     if (!ready) return
     let cancelled = false
+    loadCountRef.current = 0
     setGateState({ key: loadKey, phase: 'pending', nonce: '', workspace: '' })
     setRevealState({ key: loadKey, revealed: false })
-    const { pathMap: rules, cwd: workdir } = openInputs.current
-    const workspace = workdir !== undefined ? mapPath(workdir, rules) : null
+    const workspace = workspaceOf()
     if (workspace === null) {
       setGateState({ key: loadKey, phase: 'off', nonce: '', workspace: '' })
       return () => { cancelled = true }
     }
-    const bootNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const bootNonce = mintBootNonce()
     void (async () => {
       const began = await beginBoot(workspace, bootNonce)
       if (cancelled) return
@@ -653,8 +694,17 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
         ? { key: loadKey, phase: 'hidden', nonce: bootNonce, workspace }
         : { key: loadKey, phase: 'dom', nonce: '', workspace: '' })
     })()
-    return () => { cancelled = true }
-  }, [ready, loadKey])
+    return () => {
+      cancelled = true
+      // Fence the dying boot on the way out (a loadKey change remounts the
+      // frame and parks its own nonce milliseconds later; a true unmount
+      // leaves this one standing): rotating the parked nonce retires any
+      // lingering extension host still bound to this boot — it must stop
+      // writing the ledger before its invisible window poisons it.
+      const fenceWorkspace = workspaceOf()
+      if (fenceWorkspace !== null) void beginBoot(fenceWorkspace, mintBootNonce())
+    }
+  }, [ready, loadKey, workspaceOf])
   useEffect(() => () => { revealStopRef.current?.() }, [])
 
   // ---- Selection bridge: intercept envelope-carrying clipboard writes the
@@ -773,28 +823,20 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     parentTabAt: 0,
   })
 
-  // Frame load completion: bridge install + boot-fence arming. The
-  // gesture trackers are re-attached on EVERY load — the document they
-  // must live in is whichever the frame shows now, and an intermediate
-  // about:blank would otherwise leave them aimed at a dead document.
-  const handleFrameLoad = useCallback(() => {
-    setLoaded(true)
-    installBridge()
-    // Boot reveal watch — two paths, one goal: keep the frame invisible
-    // until the extension's post-reconcile state is on screen, so a
-    // restored-but-closed ghost file never visibly opens.
-    //  - 'hidden': the exact nonce handshake. The extension echoes this
-    //    load's boot nonce in its boot.json receipt after the editor
-    //    reconcile (pollBootStatus); a bounded timeout reveals as-is so a
-    //    dead or mid-upgrade extension cannot blank the tab for good.
-    //  - 'dom': the fallback for an older host half without the boot
-    //    routes — watch the workbench's editor tab strip (same-origin
-    //    privilege) until it holds still, bounded the same way.
-    // The watch is per-load: a new load stops the previous loop.
+  // Boot reveal watch — two paths, one goal: keep the frame invisible
+  // until the extension's post-reconcile state is on screen, so a
+  // restored-but-closed ghost file never visibly opens.
+  //  - 'hidden': the exact nonce handshake. The extension echoes this
+  //    load's boot nonce in its boot.json receipt after the editor
+  //    reconcile (pollBootStatus); a bounded timeout reveals as-is so a
+  //    dead or mid-upgrade extension cannot blank the tab for good.
+  //  - 'dom': the fallback for an older host half without the boot
+  //    routes — watch the workbench's editor tab strip (same-origin
+  //    privilege) until it holds still, bounded the same way.
+  // The watch is per-load: starting one stops the previous loop.
+  const startRevealWatch = useCallback((gate: BootGateState, key: string): void => {
     revealStopRef.current?.()
     revealStopRef.current = null
-    const gate = bootGateRef.current
-    const key = loadKeyRef.current
     const reveal = (): void => { setRevealState({ key, revealed: true }) }
     if (gate.key === key && gate.phase === 'hidden') {
       const startedAt = Date.now()
@@ -838,6 +880,56 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     } else {
       reveal()
     }
+  }, [])
+
+  // Boot ROTATION: the pane DOM is detached on a panel collapse or a
+  // workspace switch and re-inserted later, which the browser treats as a
+  // RELOAD of the still-mounted iframe — a fresh renderer whose extension
+  // host activates against a bootreq.json that still names the PREVIOUS
+  // boot. The hosts of that previous boot may be lingering (serve-web
+  // keeps them alive): still holding the old nonce, still armed to write
+  // the shared editors.json ledger from their invisible windows, and (per
+  // the extension's fence) trusted exactly as long as the parked nonce
+  // says so. Rotating the nonce here re-attributes the channel to the
+  // reloaded frame: the fresh host adopts the new nonce at activation
+  // (the rotation completes within milliseconds of the load event, well
+  // ahead of it), every old host stands down, and the gate re-arms its
+  // hidden reveal against the new receipt.
+  const rotateBoot = useCallback(async (key: string): Promise<void> => {
+    const workspace = workspaceOf()
+    if (workspace === null) {
+      startRevealWatch(bootGateRef.current, key)
+      return
+    }
+    const fresh = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    setGateState({ key, phase: 'rotating', nonce: '', workspace: '' })
+    setRevealState({ key, revealed: false })
+    const began = await beginBoot(workspace, fresh)
+    const next: BootGateState = began
+      ? { key, phase: 'hidden', nonce: fresh, workspace }
+      : { key, phase: 'dom', nonce: '', workspace: '' }
+    setGateState(next)
+    bootGateRef.current = next
+    startRevealWatch(next, key)
+  }, [workspaceOf, startRevealWatch])
+
+  // Frame load completion: bridge install + boot-fence arming. The
+  // gesture trackers are re-attached on EVERY load — the document they
+  // must live in is whichever the frame shows now, and an intermediate
+  // about:blank would otherwise leave them aimed at a dead document.
+  const handleFrameLoad = useCallback(() => {
+    setLoaded(true)
+    installBridge()
+    loadCountRef.current += 1
+    const key = loadKeyRef.current
+    const gate = bootGateRef.current
+    if (loadCountRef.current > 1 && (gate.phase === 'hidden' || gate.phase === 'rotating')) {
+      // A reload of the still-mounted frame (not the mount load): rotate
+      // the boot nonce for it and reveal against the new receipt.
+      void rotateBoot(key)
+    } else {
+      startRevealWatch(gate, key)
+    }
     const frame = iframeRef.current
     if (frame === null) return
     const fence = fenceRef.current
@@ -874,7 +966,7 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     const sanctionedReveal = firstLoad && !bornVisibleRef.current
     fence.bootArmed = gesturesVisible && !sanctionedReveal
     fence.bootUntil = Date.now() + BOOT_WINDOW_MS
-  }, [installBridge])
+  }, [installBridge, rotateBoot, startRevealWatch])
 
   // Parent-side listeners live for the component's whole life (both
   // fence situations share them); everything they need is in refs, so

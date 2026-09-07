@@ -39,18 +39,26 @@ function makeFetch(answers: Array<{ status: number, body: unknown } | Error>): F
 }
 
 describe('probeCapability', () => {
-  it('POSTs the folder and maps {ok, value:{present:true}} to true', async () => {
+  it('POSTs the folder and maps {ok, value:{present:true}} to the minimum version', async () => {
     resetCapabilityCache()
     const fetchLike = makeFetch([{ status: 200, body: { ok: true, value: { present: true } } }])
-    await expect(probeCapability('/data/workspace', fetchLike)).resolves.toBe(true)
+    // No version in the answer (an older node half): present since the
+    // minimum trusted build — truthy, but pre-boot-tag.
+    await expect(probeCapability('/data/workspace', fetchLike)).resolves.toBe(2)
     expect(fetchLike.calls).toEqual([
       { url: `${OPEN_CHANNEL_API}/open.capability`, body: { folder: '/data/workspace' } },
     ])
   })
 
+  it('carries the marker version through when the answer has one', async () => {
+    resetCapabilityCache()
+    const fetchLike = makeFetch([{ status: 200, body: { ok: true, value: { present: true, version: 4 } } }])
+    await expect(probeCapability('/data/workspace', fetchLike)).resolves.toBe(4)
+  })
+
   it('a present:false answer, an error shape, and a rejection all map to false', async () => {
     for (const answer of [
-      { status: 200, body: { ok: true, value: { present: false } } },
+      { status: 200, body: { ok: true, value: { present: false, version: 4 } } },
       { status: 200, body: { ok: false, error: { code: 'x' } } },
       { status: 500, body: { ok: false } },
       new Error('network down'),
@@ -69,16 +77,16 @@ describe('probeCapability', () => {
       { status: 200, body: { ok: true, value: { present: true } } },
       { status: 200, body: { ok: true, value: { present: false } } },
     ])
-    await expect(probeCapability('/w', fetchLike, now)).resolves.toBe(true)
+    await expect(probeCapability('/w', fetchLike, now)).resolves.toBe(2)
     clock += 1000 // inside the TTL: cached, no second call
-    await expect(probeCapability('/w', fetchLike, now)).resolves.toBe(true)
+    await expect(probeCapability('/w', fetchLike, now)).resolves.toBe(2)
     expect(fetchLike.calls).toHaveLength(1)
     clock += 10_000 // past the TTL: re-probed (and cached anew)
     await expect(probeCapability('/w', fetchLike, now)).resolves.toBe(false)
     expect(fetchLike.calls).toHaveLength(2)
     // A different folder is probed independently.
     const other = makeFetch([{ status: 200, body: { ok: true, value: { present: true } } }])
-    await expect(probeCapability('/other', other, now)).resolves.toBe(true)
+    await expect(probeCapability('/other', other, now)).resolves.toBe(2)
     expect(other.calls).toHaveLength(1)
   })
 })

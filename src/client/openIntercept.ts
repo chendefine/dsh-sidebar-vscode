@@ -19,7 +19,10 @@
  *   wrapRemoteOpenWorkspacePath below): the current runtime's replacement
  *   funnel (ui-chat's injected openFile is its only production caller),
  *   wrapped through the same gate; exactly one of the two era-specific
- *   openPath wrappers ever installs.
+ *   openPath wrappers ever installs. dsh-better-sidebar ≥ 0.18.0 shadows
+ *   this same method (value-property wrapper, nested inject), so the
+ *   redefinition chains onto BOTH the stock getter mount and the peer's
+ *   value shadow — see redefineGetterMethod.
  *
  * The reroute lands as: `openTab({ type: TAB_ID, path })` — a CONTENT seed,
  * so better-sidebar's own "land in sight" logic expands the hosting panel,
@@ -454,30 +457,45 @@ export function wrapWorkspacesOpenPath(workspaces: WorkspacesLike, deps: OpenInt
 // ---- gateway namespace method redefinition (shared takeover mechanics) ----
 
 /**
- * Redefine one gateway-namespace method with a per-access replacement.
+ * Redefine one gateway-namespace method with an intercepting replacement,
+ * chaining onto WHATEVER property shape is installed.
  *
- * The gateway's client projection mounts Remote namespace methods
- * (`remote.<ns>.<method>`) as configurable, getter-only own properties — no
- * setter, so plain assignment throws — and every getter access returns a
- * FRESH invocation closure resolved against the live mount. This helper
- * redefines the property with its own getter that re-invokes the original
- * getter on every access and hands the yielded closure through
- * `makeInterceptor`, so each caller still resolves a fresh chain against the
- * live mount — exactly the stock semantics.
+ * Two shapes reach this seam, and both must compose:
  *
- * The disposer restores the saved descriptor, but only while OUR getter is
- * still the installed one: the gateway deletes the property when it unmounts
- * the method and re-creates it on remount, and clobbering either state with
- * the saved (stale) descriptor would resurrect a dead mount.
+ * - the gateway's own mount (`remote.<ns>.<method>`): configurable,
+ *   getter-only own properties — no setter, so plain assignment throws —
+ *   where every getter access returns a FRESH invocation closure resolved
+ *   against the live mount. This helper redefines the property with its own
+ *   getter that re-invokes the original getter on every access and hands the
+ *   yielded closure through `makeInterceptor`, so each caller still resolves
+ *   a fresh chain against the live mount — exactly the stock semantics.
+ * - a peer's VALUE-property shadow: dsh-better-sidebar ≥ 0.18.0 wraps the
+ *   same `openWorkspacePath` seam by capturing the current closure and
+ *   redefining the property as `{ writable: true, value: wrapped }` — a
+ *   plain function, no getter. A getter-only redefinition cannot chain onto
+ *   that (the descriptor has no `get`), which fail-softed this plugin's
+ *   takeover into permanent silence while the peer claimed every chat open.
+ *   Here the captured `descriptor.value` plays the original: the interceptor
+ *   wraps it and is installed as a value property again, so whichever plugin
+ *   installs LATER sits outermost and sees each call first. The batch module
+ *   order loads this plugin after the peer (entry 54 vs 46), so the takeover
+ *   wins; a later peer re-apply that displaces us is repaired by the caller's
+ *   one-shot re-assert (see index.tsx).
  *
- * Fail-soft at the seam: a target carrying no such own property, a non-getter
- * descriptor (a plain value method — a foreign runtime shape), or a getter
- * that does not yield a callable installs nothing.
+ * The disposer restores the saved descriptor, but only while OUR replacement
+ * is still the installed one: the gateway deletes the property when it
+ * unmounts the method and re-creates it on remount, and clobbering either
+ * state with the saved (stale) descriptor would resurrect a dead mount.
+ *
+ * Fail-soft at the seam: a target carrying no such own property, a descriptor
+ * whose getter does not yield a callable, or a value that is not a function
+ * installs nothing.
  *
  * @param target - the namespace service object (or any face carrying the method).
  * @param method - the own property name to redefine.
- * @param makeInterceptor - wraps one original closure; invoked once per
- * property access, so the interceptor never holds a stale mount.
+ * @param makeInterceptor - wraps one original closure; on the getter path it
+ * is invoked once per property access (the interceptor never holds a stale
+ * mount), on the value path once at install (the peer's own shadow semantics).
  * @returns the disposer restoring the original descriptor (HMR-safe).
  */
 export function redefineGetterMethod<Original extends (...args: never[]) => unknown>(
@@ -486,30 +504,53 @@ export function redefineGetterMethod<Original extends (...args: never[]) => unkn
   makeInterceptor: (original: Original) => Original,
 ): () => void {
   const descriptor = Object.getOwnPropertyDescriptor(target, method)
-  if (descriptor === undefined || typeof descriptor.get !== 'function') {
+  if (descriptor === undefined) {
     return () => {}
   }
-  // Probe the stock getter once: it must yield the callable invocation
-  // closure callers expect (a getter of any other shape is a foreign runtime).
-  if (typeof descriptor.get.call(target) !== 'function') {
-    return () => {}
-  }
-  const readOriginal = descriptor.get
-  const wrapperGetter = (): Original => {
-    const original = readOriginal.call(target) as Original
-    return makeInterceptor(original)
-  }
-  Object.defineProperty(target, method, {
-    configurable: true,
-    enumerable: descriptor.enumerable,
-    get: wrapperGetter,
-  })
-  return () => {
-    const current = Object.getOwnPropertyDescriptor(target, method)
-    if (current?.get === wrapperGetter) {
-      Object.defineProperty(target, method, descriptor)
+  if (typeof descriptor.get === 'function') {
+    // Probe the stock getter once: it must yield the callable invocation
+    // closure callers expect (a getter of any other shape is a foreign runtime).
+    if (typeof descriptor.get.call(target) !== 'function') {
+      return () => {}
+    }
+    const readOriginal = descriptor.get
+    const wrapperGetter = (): Original => {
+      const original = readOriginal.call(target) as Original
+      return makeInterceptor(original)
+    }
+    Object.defineProperty(target, method, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get: wrapperGetter,
+    })
+    return () => {
+      const current = Object.getOwnPropertyDescriptor(target, method)
+      if (current?.get === wrapperGetter) {
+        Object.defineProperty(target, method, descriptor)
+      }
     }
   }
+  if (typeof descriptor.value === 'function') {
+    // A peer's VALUE-property shadow (dsh-better-sidebar ≥ 0.18.0): chain
+    // onto the captured closure and re-install as a value property, so the
+    // later installer (this plugin, by batch order) becomes the outermost
+    // interceptor. Restore-only-ours keeps the chain safe across disposals.
+    const original = descriptor.value as Original
+    const wrapped = makeInterceptor(original)
+    Object.defineProperty(target, method, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      writable: true,
+      value: wrapped,
+    })
+    return () => {
+      const current = Object.getOwnPropertyDescriptor(target, method)
+      if (current?.value === wrapped) {
+        Object.defineProperty(target, method, descriptor)
+      }
+    }
+  }
+  return () => {}
 }
 
 // ---- remote.session.openWorkspacePath interception (option III — the gateway-era funnel) ----
@@ -547,11 +588,22 @@ export interface RemoteSessionLike {
  * this wrapper is never installed (the namespace service never appears) and
  * the legacy one keeps the takeover.
  *
- * Mechanics (property redefinition, per-access original, restore-only-ours)
- * live in {@link redefineGetterMethod}; fail-soft at the seam like
+ * Mechanics (dual-shape property redefinition, per-access original on the
+ * getter path, captured original on the value path, restore-only-ours) live
+ * in {@link redefineGetterMethod}; fail-soft at the seam like
  * wrapWorkspacesOpenPath: a service carrying no such property (method not
  * mounted, or a runtime whose namespace shape differs) installs nothing and
  * the funnel keeps its stock behavior.
+ *
+ * Peer interop: dsh-better-sidebar ≥ 0.18.0 shadows this SAME method (a
+ * value-property wrapper installed through its own nested inject), so this
+ * wrapper must chain onto a value property, not just the stock getter —
+ * before that support the getter-only probe fail-softed here and the peer's
+ * shadow claimed every chat file open for its built-in editor. The two
+ * wrappers compose in install order (later = outermost = first to see each
+ * call); the batch module order loads this plugin after the peer, so with
+ * the takeover switch on the open lands in the VSCode tab and the peer's
+ * closure stays as the decline-time fallback.
  *
  * @param session - the remote session namespace service to wrap.
  * @param deps - per-call takeover decisions (the same gate as the turn-tail claim's).

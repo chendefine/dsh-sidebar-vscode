@@ -46,6 +46,7 @@ import {
   SIDEBAR_FILES_TAB_TYPE,
   wrapRemoteOpenWorkspacePath,
   wrapWorkspacesOpenPath,
+  type OpenInterceptDeps,
 } from './openIntercept.ts'
 import { adoptTurnTailStyles, registerTurnTailVscode } from './turnTail.tsx'
 import { isBlockedPath, readOpenBlocklist } from './openBlocklist.ts'
@@ -480,17 +481,40 @@ export function apply(ctx: unknown): void {
     //   the returned restore disposer on service withdraw, on plugin
     //   unload, and on HMR re-apply (no manual dispose needed: cordis
     //   parents the fiber to this plugin's own context).
+    //   dsh-better-sidebar ≥ 0.18.0 shadows this same method with a
+    //   value-property wrapper of its own, so the wrap must chain onto a
+    //   value property (redefineGetterMethod handles both shapes) — the
+    //   later installer is the outermost interceptor, and the batch module
+    //   order loads this plugin after the peer, so the takeover claims the
+    //   open. The one-shot re-assert below repairs the remaining window: a
+    //   peer disable/enable (or HMR) that re-runs its shadow AFTER this
+    //   wrap would displace ours (its disposer also restores
+    //   unconditionally, clobbering us) without withdrawing
+    //   'remote.session' — so this fiber would never re-run on its own.
+    //   Re-wrapping once, a few seconds in, restores the outermost slot
+    //   with no polling; an undisplaced wrap just chains a harmless extra
+    //   layer.
     // - the pre-gateway runtime through `workspaces.openPath` (legacy).
     if (client.inject !== undefined) {
       client.inject(['remote.session'], scope => {
         const session = scope.get('remote.session')
         if (session === null || typeof session !== 'object') return undefined
-        return wrapRemoteOpenWorkspacePath(session, {
+        const wrapDeps: OpenInterceptDeps = {
           takeoverEnabled,
           blocked: blockedPath,
           reroute: path => { openInVscode('', path) },
           rerouteBlocked: path => openInFilesTab('', path),
-        })
+        }
+        let disposeWrap = wrapRemoteOpenWorkspacePath(session, wrapDeps)
+        const reassert = (): void => {
+          disposeWrap()
+          disposeWrap = wrapRemoteOpenWorkspacePath(session, wrapDeps)
+        }
+        const timer = setTimeout(reassert, 4000)
+        return () => {
+          clearTimeout(timer)
+          disposeWrap()
+        }
       })
     }
 

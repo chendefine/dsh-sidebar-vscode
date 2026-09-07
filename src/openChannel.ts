@@ -78,6 +78,13 @@ export interface OpenCommandBody {
   nonce: number
   line?: number
   column?: number
+  /**
+   * The boot nonce of the EMBEDDED workbench this open was minted for
+   * (extension cap ≥ 4): the extension consumes a tagged command only on
+   * the host that activated with the same nonce, so a lingering previous
+   * host cannot eat it (see the extension's boot-tag gate).
+   */
+  boot?: string
 }
 
 /** Whether a path is absolute POSIX (the container is Linux — serve-web runs there). */
@@ -101,6 +108,9 @@ export function parseOpenCommand(payload: unknown): OpenCommandBody | null {
   }
   if (typeof record.column === 'number' && Number.isFinite(record.column) && record.column > 0) {
     out.column = Math.floor(record.column)
+  }
+  if (typeof record.boot === 'string' && record.boot !== '') {
+    out.boot = record.boot.slice(0, 128)
   }
   return out
 }
@@ -207,20 +217,40 @@ export async function readCapability(
   maxAgeMs: number = CAPABILITY_MAX_AGE_MS,
   now: () => number = Date.now,
 ): Promise<boolean> {
+  return (await readCapabilityMarker(base, folder, maxAgeMs, now)).present
+}
+
+/**
+ * The capability probe's full answer: `present` (same contract as
+ * {@link readCapability}) plus the marker's build `version` when present
+ * (null otherwise) — the client tags open commands with the workbench's
+ * boot nonce only from version 4 up (the boot-tag-aware build); an older
+ * extension ignores the field, so tagging would be pointless there.
+ */
+export async function readCapabilityMarker(
+  base: string,
+  folder: string,
+  maxAgeMs: number = CAPABILITY_MAX_AGE_MS,
+  now: () => number = Date.now,
+): Promise<{ present: boolean, version: number | null }> {
   try {
     const capFile = join(base, slugOf(folder), 'cap.json')
     const info = await stat(capFile)
-    if (now() - info.mtimeMs >= maxAgeMs) return false
+    if (now() - info.mtimeMs >= maxAgeMs) return { present: false, version: null }
     const raw = await readFile(capFile, 'utf8')
     let parsed: { v?: unknown } | null = null
     try {
       parsed = JSON.parse(raw) as { v?: unknown }
     } catch {
-      return false
+      return { present: false, version: null }
     }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-    return parsed.v === CAPABILITY_MIN_V || (typeof parsed.v === 'number' && parsed.v > CAPABILITY_MIN_V)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { present: false, version: null }
+    }
+    const ok = parsed.v === CAPABILITY_MIN_V || (typeof parsed.v === 'number' && parsed.v > CAPABILITY_MIN_V)
+    if (!ok) return { present: false, version: null }
+    return { present: true, version: typeof parsed.v === 'number' ? parsed.v : CAPABILITY_MIN_V }
   } catch {
-    return false
+    return { present: false, version: null }
   }
 }

@@ -41,7 +41,7 @@ No installation of Visual Studio Code stable was found.
 cd extension
 mkdir -p vsix
 npm_config_cache=/tmp/dsh-vsce-npm-cache npx --yes @vscode/vsce package \
-  --allow-missing-repository --out vsix/dsh-selection-reference-0.1.1.vsix
+  --allow-missing-repository --out vsix/dsh-selection-reference-0.1.3.vsix
 ```
 
 要点：
@@ -62,12 +62,12 @@ serve-web 的扩展根目录 = `--server-data-dir` 下的 `extensions/`：
 
 ```sh
 EXTROOT=/data/workspace/.vscode/extensions
-DEST=$EXTROOT/dsh.selection-reference-0.1.1        # 命名规则: <publisher.name>-<版本>
-unzip -q -o vsix/dsh-selection-reference-0.1.1.vsix 'extension/*' -d /tmp/vsixx
+DEST=$EXTROOT/dsh.selection-reference-0.1.3        # 命名规则: <publisher.name>-<版本>
+unzip -q -o vsix/dsh-selection-reference-0.1.3.vsix 'extension/*' -d /tmp/vsixx
 rm -rf "$DEST" && mkdir -p "$DEST" && cp -a /tmp/vsixx/extension/. "$DEST/"
 # 清掉同扩展的旧版本目录，避免 manifest 与目录不一致
 find "$EXTROOT" -maxdepth 1 -type d -name 'dsh.selection-reference-*' \
-  ! -name 'dsh.selection-reference-0.1.1' -exec rm -rf {} +
+  ! -name 'dsh.selection-reference-0.1.3' -exec rm -rf {} +
 ```
 
 universal 扩展的目录名**不带**平台后缀（对比平台相关的
@@ -82,7 +82,7 @@ universal 扩展的目录名**不带**平台后缀（对比平台相关的
 cp -a "$EXTROOT/extensions.json" "$EXTROOT/extensions.json.bak-dsh"
 node - <<'NODE'
 const fs = require('fs')
-const root = '/data/workspace/.vscode/extensions', folder = 'dsh.selection-reference-0.1.1'
+const root = '/data/workspace/.vscode/extensions', folder = 'dsh.selection-reference-0.1.3'
 const pkg = JSON.parse(fs.readFileSync(`${root}/${folder}/package.json`, 'utf8'))
 const id = `${pkg.publisher}.${pkg.name}`                    // dsh.selection-reference
 const listPath = `${root}/extensions.json`
@@ -142,7 +142,7 @@ curl -sf http://127.0.0.1:8000/vscode/ >/dev/null && echo OK
 浏览器打开 `http://<host>:8000/vscode`（或 DSH 侧边栏的 VSCode 标签页刷新）：
 
 1. **扩展视图**（Ctrl+Shift+X）搜 `@installed dsh` → 应出现
-   *DSH Selection Reference 0.1.1，发布者 dsh，源 VSIX*；
+   *DSH Selection Reference 0.1.3，发布者 dsh，源 VSIX*；
 2. 扩展详情页「功能」标签 → 三条命令
    （`dsh.selectionReference.send` / `.sendFile` / `.sendFolder`）、快捷键
    Ctrl+Alt+C、`editor/context` + `explorer/context` 菜单均已注册；

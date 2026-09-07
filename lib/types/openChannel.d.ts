@@ -28,6 +28,13 @@ export interface OpenCommandBody {
     nonce: number;
     line?: number;
     column?: number;
+    /**
+     * The boot nonce of the EMBEDDED workbench this open was minted for
+     * (extension cap ≥ 4): the extension consumes a tagged command only on
+     * the host that activated with the same nonce, so a lingering previous
+     * host cannot eat it (see the extension's boot-tag gate).
+     */
+    boot?: string;
 }
 /**
  * Structurally validate one `open.request` payload. Returns null for
@@ -77,3 +84,14 @@ export declare function readBootStatus(base: string, folder: string, nonce: stri
  * filesystem or parse error simply answers false (degrade, never throw).
  */
 export declare function readCapability(base: string, folder: string, maxAgeMs?: number, now?: () => number): Promise<boolean>;
+/**
+ * The capability probe's full answer: `present` (same contract as
+ * {@link readCapability}) plus the marker's build `version` when present
+ * (null otherwise) — the client tags open commands with the workbench's
+ * boot nonce only from version 4 up (the boot-tag-aware build); an older
+ * extension ignores the field, so tagging would be pointless there.
+ */
+export declare function readCapabilityMarker(base: string, folder: string, maxAgeMs?: number, now?: () => number): Promise<{
+    present: boolean;
+    version: number | null;
+}>;

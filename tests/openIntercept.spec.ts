@@ -398,14 +398,15 @@ describe('wrapRemoteOpenWorkspacePath (option III — the gateway-era runtime fu
       reroute: () => { throw new Error('must not reroute') },
     })()).not.toThrow()
     expect('openWorkspacePath' in bare).toBe(false)
-    // …a plain value property (a foreign runtime shape)…
-    const valued = { openWorkspacePath: () => Promise.resolve({ ok: true, value: { opened: true } }) } as unknown as RemoteSessionLike
-    const valuedOriginal = valued.openWorkspacePath
+    // …a value property that is NOT a function (a foreign runtime shape — a
+    // FUNCTION-valued property is a peer shadow and chains, see the dedicated
+    // suite below)…
+    const valued = { openWorkspacePath: 42 } as unknown as RemoteSessionLike
     expect(() => wrapRemoteOpenWorkspacePath(valued, {
       takeoverEnabled: () => true,
       reroute: () => { throw new Error('must not reroute') },
     })()).not.toThrow()
-    expect(valued.openWorkspacePath).toBe(valuedOriginal)
+    expect(valued.openWorkspacePath).toBe(42)
     // …and a getter that yields a non-function.
     const odd = { get openWorkspacePath() { return 42 } } as unknown as RemoteSessionLike
     expect(() => wrapRemoteOpenWorkspacePath(odd, {
@@ -426,6 +427,179 @@ describe('wrapRemoteOpenWorkspacePath (option III — the gateway-era runtime fu
     expect(service.openTabs).toEqual([{ type: 'dsh-sidebar-vscode:vscode', path: '/w/a.ts' }])
     expect(service.updates).toHaveLength(1)
     stop()
+  })
+})
+
+/**
+ * dsh-better-sidebar ≥ 0.18.0 shadows the SAME `remote.session
+ * .openWorkspacePath` seam with a VALUE-property wrapper (captured original
+ * closure, `{ writable: true, value: wrapped }`), installed through its own
+ * nested inject BEFORE this plugin's (batch module order), so the funnel the
+ * wrapper meets at install time is that shadow, not the stock getter. These
+ * suites pin the value-path chaining that keeps the takeover outermost.
+ */
+describe('wrapRemoteOpenWorkspacePath on a peer value-property shadow (dsh-better-sidebar ≥ 0.18.0)', () => {
+  /**
+   * A structural twin of the peer's `wrapOpenWorkspacePath`: capture the
+   * current closure, redefine the property as a value. Returns the peer's
+   * own disposer (which — like the real one — restores its SAVED descriptor
+   * unconditionally, clobbering whatever is installed).
+   */
+  function applyPeerShadow(
+    session: RemoteSessionLike,
+    onCall: (request: { readonly path: string }, signal?: AbortSignal) => Promise<RemoteOpenResult>,
+  ): () => void {
+    const saved = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
+    const original = session.openWorkspacePath
+    const wrapped = (request: { readonly path: string }, signal?: AbortSignal): Promise<RemoteOpenResult> => {
+      void original
+      return onCall(request, signal)
+    }
+    Object.defineProperty(session, 'openWorkspacePath', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: wrapped,
+    })
+    return () => {
+      if (saved !== undefined) Object.defineProperty(session, 'openWorkspacePath', saved)
+    }
+  }
+
+  it('chains onto the shadow: the later install is outermost and claims the open', async () => {
+    const session = makeRemoteSession()
+    const peerCalls: Array<{ request: unknown, signal?: AbortSignal }> = []
+    const stopPeer = applyPeerShadow(session, (request, signal) => {
+      peerCalls.push({ request, signal })
+      return Promise.resolve({ ok: true, value: { opened: true } })
+    })
+    const rerouted: string[] = []
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      reroute: path => { rerouted.push(path) },
+    })
+    await expect(session.openWorkspacePath!({ path: '/w/a.ts' }))
+      .resolves.toEqual({ ok: true, value: { opened: true } })
+    expect(rerouted).toEqual(['/w/a.ts'])
+    expect(peerCalls).toEqual([]) // the shadow never claimed — ours is outermost
+    expect(session.calls).toEqual([]) // and neither did the stock Host remote
+    stop()
+    stopPeer()
+  })
+
+  it('a declined call falls to the peer shadow, and further to the stock closure', async () => {
+    const session = makeRemoteSession()
+    const peerCalls: string[] = []
+    const stopPeer = applyPeerShadow(session, request => {
+      peerCalls.push(request.path)
+      return Promise.resolve({ ok: true, value: { opened: true } })
+    })
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => false, // the openAsDefault switch off
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    await session.openWorkspacePath!({ path: '/w/a.ts' })
+    expect(peerCalls).toEqual(['/w/a.ts']) // the peer's takeover takes over
+    expect(session.calls).toEqual([]) // its own gates passed — stock never ran
+    stop()
+    stopPeer()
+    // With the peer gone too, the decline reaches the stock closure.
+    const stopBare = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => false,
+      reroute: () => { throw new Error('must not reroute') },
+    })
+    await session.openWorkspacePath!({ path: '/w/b.ts' })
+    expect(session.calls).toEqual([{ request: { path: '/w/b.ts' }, signal: undefined }])
+    stopBare()
+  })
+
+  it('blocked-path routing keeps its semantics through the value path', async () => {
+    const session = makeRemoteSession()
+    const stopPeer = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
+    const filesOpens: string[] = []
+    const stop = wrapRemoteOpenWorkspacePath(session, {
+      takeoverEnabled: () => true,
+      blocked: path => path.endsWith('.pdf'),
+      reroute: () => { throw new Error('must not reroute') },
+      rerouteBlocked: path => { filesOpens.push(path); return true },
+    })
+    await expect(session.openWorkspacePath!({ path: '/w/report.pdf' }))
+      .resolves.toEqual({ ok: true, value: { opened: true } })
+    expect(filesOpens).toEqual(['/w/report.pdf']) // the built-in Files tab took it
+    stop()
+    stopPeer()
+  })
+
+  it('restore puts back the peer shadow while ours is still installed; a displaced restore no-ops', () => {
+    const session = makeRemoteSession()
+    const stopPeer = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
+    const peerValue = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value
+    const stop = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).not.toBe(peerValue)
+    stop()
+    // Still ours at dispose time → the peer's shadow descriptor is back.
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).toBe(peerValue)
+
+    // A peer re-apply over our wrapper displaces us: our dispose must not
+    // clobber the fresh shadow (restore-only-ours).
+    const stop2 = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    const stopPeer2 = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
+    const freshPeerValue = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value
+    stop2()
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).toBe(freshPeerValue)
+    stopPeer2()
+    stopPeer()
+  })
+
+  it('a one-shot re-wrap after displacement restores the outermost slot (index.tsx re-assert)', async () => {
+    const session = makeRemoteSession()
+    const peer1Calls: string[] = []
+    const stopPeer1 = applyPeerShadow(session, request => {
+      peer1Calls.push(request.path)
+      return Promise.resolve({ ok: true, value: { opened: true } })
+    })
+    let enabled = true
+    const rerouted: string[] = []
+    const deps = {
+      takeoverEnabled: (): boolean => enabled,
+      reroute: (path: string): void => { rerouted.push(path) },
+    }
+    let disposeWrap = wrapRemoteOpenWorkspacePath(session, deps)
+    // The peer's disable/enable cycle re-runs its shadow over ours (its
+    // disposer restores unconditionally), displacing us…
+    const peer2Calls: string[] = []
+    const stopPeer2 = applyPeerShadow(session, request => {
+      peer2Calls.push(request.path)
+      return Promise.resolve({ ok: true, value: { opened: true } })
+    })
+    // …the re-assert unwinds and re-wraps, becoming outermost again.
+    disposeWrap()
+    disposeWrap = wrapRemoteOpenWorkspacePath(session, deps)
+    await session.openWorkspacePath!({ path: '/w/a.ts' })
+    expect(rerouted).toEqual(['/w/a.ts']) // ours claims while enabled
+    expect(peer2Calls).toEqual([]) // the latest shadow never saw it
+    enabled = false // decline now, so the FALL-THROUGH proves the layering
+    await session.openWorkspacePath!({ path: '/w/b.ts' })
+    expect(peer2Calls).toEqual(['/w/b.ts']) // the decline reaches the LATEST shadow, never a stale layer
+    expect(peer1Calls).toEqual([])
+    disposeWrap()
+    stopPeer2()
+    stopPeer1()
+  })
+
+  it('the full boot stack composes and unwinds: stock getter → peer shadow → ours', () => {
+    const session = makeRemoteSession()
+    const stock = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
+    const stopPeer = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
+    const peerValue = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value
+    expect(peerValue).toBeInstanceOf(Function)
+    const stop = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).not.toBe(peerValue)
+    stop()
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).toBe(peerValue)
+    stopPeer()
+    // The peer's unconditional restore brings the stock getter back.
+    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')).toEqual(stock)
   })
 })
 

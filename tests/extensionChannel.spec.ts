@@ -365,9 +365,84 @@ describe('extension command channel (the replay fix)', () => {
       const written = await waitFor(() => existsSync(join(dir, 'cap.json')))
       expect(written).toBe(true)
       const marker = await readJson(join(dir, 'cap.json'))
-      expect(marker.v).toBe(3)
+      expect(marker.v).toBe(5)
     } finally {
       workbench.dispose()
+    }
+  })
+})
+
+describe('boot-tagged commands (the lingering-host fix)', () => {
+  // The regression these pin: serve-web keeps an extension host (and its
+  // 500ms spool poll) alive for a while after the sidebar tab's iframe went
+  // away. The click that re-creates the tab writes its command while the
+  // FRESH host is still booting; the lingering PREVIOUS host's poll would
+  // consume it, showTextDocument into a dying window, and the fresh host's
+  // ledger reconcile would close the file as a ghost — the open silently
+  // lost. A command minted by an embedded boot carries that boot's nonce
+  // (cmd.json {boot}); only the host that activated with the SAME nonce
+  // consumes it — everyone else leaves the file for the rightful host.
+
+  it('a host skips a command tagged with a foreign boot nonce (no open, no delete, no watermark)', async () => {
+    const folder = `/dsh-ext-spec-tag-foreign-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    // This host activated with boot nonce 'boot-A' (the client parked it
+    // in bootreq.json before the iframe loaded)…
+    await plantBootRequest(folder, 'boot-A')
+    // …but the command in the spool was minted for the NEXT boot ('boot-B':
+    // the tab was closed and re-created, the fresh client re-parked).
+    await plantCommand(folder, {
+      folder, path: `${folder}/a.ts`, nonce: 991, ts: Date.now(), boot: 'boot-B',
+    })
+    const workbench = activateWithFolder(folder)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      expect(workbench.opens).toEqual([])          // never opened into this host
+      expect(workbench.warns).toEqual([])
+      expect(workbench.errors).toEqual([])
+      expect(existsSync(join(dir, 'cmd.json'))).toBe(true)  // left for the rightful host
+      expect(existsSync(join(dir, 'last.json'))).toBe(false) // watermark untouched
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('a host consumes a command tagged with its own boot nonce, and untagged commands as before', async () => {
+    const folder = `/dsh-ext-spec-tag-own-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantBootRequest(folder, 'boot-A')
+    await plantCommand(folder, {
+      folder, path: `${folder}/a.ts`, nonce: 992, ts: Date.now(), boot: 'boot-A',
+    })
+    const workbench = activateWithFolder(folder)
+    try {
+      const opened = await waitFor(() => workbench.opens.length > 0)
+      expect(opened).toBe(true)
+      expect(workbench.opens[0]!.uri).toBe(`${folder}/a.ts`)
+      await waitFor(() => !existsSync(join(dir, 'cmd.json')))
+      const last = await readJson(join(dir, 'last.json'))
+      expect(last.nonce).toBe(992)
+    } finally {
+      workbench.dispose()
+    }
+    // Untagged (an older client half, or a standalone window's stock open)
+    // keeps today's behavior: consumed by whoever polls. (The second
+    // activation's reconcile may reopen ledger files first — a.ts below —
+    // so assert b.ts arrives at all, not that it is the first open.)
+    await plantCommand(folder, {
+      folder, path: `${folder}/b.ts`, nonce: 993, ts: Date.now(),
+    })
+    const second = activateWithFolder(folder)
+    try {
+      const opened = await waitFor(() => second.opens.some(record => record.uri === `${folder}/b.ts`))
+      expect(opened).toBe(true)
+      await waitFor(() => !existsSync(join(dir, 'cmd.json')))
+    } finally {
+      second.dispose()
     }
   })
 })
@@ -490,6 +565,157 @@ describe('boot reconcile (the closed-file-ghost fix)', () => {
       })
       const second = await readJson(join(dir, 'editors.json'))
       expect(second.editors).toEqual([`${folder}/b.ts`])
+    } finally {
+      workbench.dispose()
+    }
+  })
+})
+
+describe('ledger fencing + late ghosts (the orphan-host poison fix)', () => {
+  // The regression these pin: serve-web keeps extension hosts alive for a
+  // while after their renderer went away, and such a lingering host kept
+  // writing ITS (invisible) window's tab set into the shared editors.json
+  // — and re-opening ledger files into that window, whose tab events then
+  // re-wrote the ledger again. The poisoned ledger made every later boot
+  // faithfully restore a set the user had never seen (closed files coming
+  // "back"). The client now ROTATES the parked boot nonce when a
+  // still-mounted frame reloads and when the tab unmounts; a host whose
+  // nonce is no longer on disk stands down: no reconcile, no receipt, no
+  // ledger writes, no ghost passes. What no fence can fix — a slow VS
+  // Code restore still landing closed-file ghosts AFTER the reconcile's
+  // settle budget — is swept by the close-only ghost passes.
+
+  it('a host whose boot nonce was rotated away writes NOTHING to the ledger', async () => {
+    const folder = `/dsh-ext-spec-fence-ledger-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantBootRequest(folder, 'boot-old')
+    const workbench = activateWithFolder(folder)
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      // The client rotates the nonce (frame reload / tab unmount): every
+      // lingering host still holding 'boot-old' is fenced from here on.
+      await plantBootRequest(folder, 'boot-new')
+      const frozen = readFileSync(join(dir, 'editors.json'), 'utf8')
+      workbench.tabs.push(
+        { label: 'a', isActive: false, isDirty: false, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/a.ts`, scheme: 'file' } } },
+      )
+      workbench.setActive(`${folder}/a.ts`)
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      // The orphan's window opened a.ts and focused it — and the ledger
+      // did not move: no rewrite, no resurrect on the next boot.
+      expect(readFileSync(join(dir, 'editors.json'), 'utf8')).toBe(frozen)
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('a fenced host runs NO reconcile and writes NO receipt (the rightful host owns the boot)', async () => {
+    const folder = `/dsh-ext-spec-fence-reconcile-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantLedger(folder, [`${folder}/a.ts`], `${folder}/a.ts`)
+    await plantBootRequest(folder, 'boot-old')
+    const planted = readFileSync(join(channelDir(folder), 'editors.json'), 'utf8')
+    const workbench = activateWithFolder(folder, {
+      tabs: [{ fsPath: `${folder}/ghost.ts` }],
+      active: `${folder}/ghost.ts`,
+    })
+    try {
+      // Rotate immediately — the way a real reload rotates at the load
+      // event, ahead of the host's post-settle fence check.
+      await plantBootRequest(folder, 'boot-new')
+      await new Promise(resolve => setTimeout(resolve, 2500))
+      expect(existsSync(join(dir, 'boot.json'))).toBe(false)
+      // The planted ledger survives UNTOUCHED (no arm-time rewrite, no
+      // reconcile reopen recording its own window into it).
+      expect(readFileSync(join(dir, 'editors.json'), 'utf8')).toBe(planted)
+      expect(workbench.closed).toEqual([])
+      expect(workbench.opens).toEqual([])
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('late restore stragglers are swept by the ghost passes (background ghosts closed, active and dirty spared)', async () => {
+    const folder = `/dsh-ext-spec-ghost-pass-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantLedger(folder, [`${folder}/keep.ts`], `${folder}/keep.ts`)
+    await plantBootRequest(folder, 'boot-x')
+    const workbench = activateWithFolder(folder, {
+      tabs: [{ fsPath: `${folder}/keep.ts` }],
+      active: `${folder}/keep.ts`,
+    })
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      // The restore is STILL landing tabs after the reconcile ran: a
+      // background ghost, a dirty ghost, and one that takes the ACTIVE
+      // editor (indistinguishable from a user open — spared).
+      workbench.tabs.push(
+        { label: 'bg', isActive: false, isDirty: false, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/ghost-bg.ts`, scheme: 'file' } } },
+        { label: 'dirty', isActive: false, isDirty: true, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/ghost-dirty.ts`, scheme: 'file' } } },
+        { label: 'act', isActive: false, isDirty: false, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/ghost-active.ts`, scheme: 'file' } } },
+      )
+      workbench.setActive(`${folder}/ghost-active.ts`)
+      const swept = await waitFor(
+        () => workbench.closed.includes(`${folder}/ghost-bg.ts`), 10000)
+      expect(swept).toBe(true)
+      await new Promise(resolve => setTimeout(resolve, 500))
+      expect(workbench.closed).toContain(`${folder}/ghost-bg.ts`)
+      expect(workbench.closed).not.toContain(`${folder}/ghost-dirty.ts`)
+      expect(workbench.closed).not.toContain(`${folder}/ghost-active.ts`)
+      expect(workbench.closed).not.toContain(`${folder}/keep.ts`)
+      expect(workbench.opens).toEqual([])
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('ghost passes stand down behind the fence too', async () => {
+    const folder = `/dsh-ext-spec-ghost-fence-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantLedger(folder, [], null)
+    await plantBootRequest(folder, 'boot-old')
+    const workbench = activateWithFolder(folder)
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      await plantBootRequest(folder, 'boot-new')
+      workbench.tabs.push(
+        { label: 'bg', isActive: false, isDirty: false, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/ghost.ts`, scheme: 'file' } } },
+      )
+      await new Promise(resolve => setTimeout(resolve, 2500))
+      expect(workbench.closed).toEqual([])
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('a boot with NO ledger schedules no ghost passes (stock restore stands)', async () => {
+    const folder = `/dsh-ext-spec-ghost-noledger-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantBootRequest(folder, 'boot-y')
+    const workbench = activateWithFolder(folder, { tabs: [{ fsPath: `${folder}/payload.ts` }] })
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      workbench.tabs.push(
+        { label: 'late', isActive: false, isDirty: false, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/late.ts`, scheme: 'file' } } },
+      )
+      await new Promise(resolve => setTimeout(resolve, 2500))
+      expect(workbench.closed).toEqual([])
     } finally {
       workbench.dispose()
     }

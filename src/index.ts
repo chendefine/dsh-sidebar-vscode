@@ -48,7 +48,7 @@ import {
   OPEN_CHANNEL_BASE,
   parseOpenCommand,
   readBootStatus,
-  readCapability,
+  readCapabilityMarker,
   writeBootRequest,
   writeEmbeddedBoot,
   writeOpenCommand,
@@ -227,8 +227,8 @@ export function apply(ctx: Context): void {
             writeJson(res, 400, { ok: false, error: { code: 'bad-request', message: 'folder must be a non-empty string' } })
             return
           }
-          const present = await readCapability(OPEN_CHANNEL_BASE, record.folder)
-          writeJson(res, 200, { ok: true, value: { present } })
+          const marker = await readCapabilityMarker(OPEN_CHANNEL_BASE, record.folder)
+          writeJson(res, 200, { ok: true, value: { present: marker.present, version: marker.version } })
           return
         }
         if (method === 'open.embedded') {

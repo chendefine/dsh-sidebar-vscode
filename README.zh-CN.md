@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.7
+- 版本：0.2.8
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：451 例全部通过（19 个规格文件）
+- 测试：467 例全部通过（19 个规格文件）
 
 ## 功能简介
 
@@ -63,7 +63,7 @@
 
 - **默认标签**：可选开关让**全新会话**的侧边栏默认打开 VSCode 标签（替换 better-sidebar 硬编码的「文件」种子标签）；已打开过的会话保持各自布局，关闭后只影响之后的新会话。
 
-- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在功能设置增删）的文件不进 VSCode，改道 better-sidebar 自带「文件」标签打开——其文件查看器正是侧边栏渲染图片/PDF/Office 文档的界面（仍走侧边栏接管，不落宿主打开器）。方案 III 的包装器对该路径改调「文件」标签改道并照常返回成功回执（仅当「文件」标签类型在侧边卡片设置里被禁用时才回落宿主 OS 打开器），方案 II 的 chips 走同一改道，改道被拒时降级调渲染站点原生 `openFile`；未命中路径行为不变，每次点击现读设置。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行（优先读引擎 Turn data 的 `deliverables` 记录，nodes 推导作 fallback；匹配值额外携带 owner 的 `openFile` 供命中回退），chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装运行时的对话文件打开漏斗，按运行时版本二选一：gateway 时代的 `remote.session.openWorkspacePath` 宿主 Remote（ui-chat 注入的 `openFile` —— 工具行路径链接与正文引用的唯一生产调用方；命名空间方法是 getter-only 自有属性，包装器以自定义 getter 重定义它且每次访问都重读原方法，经一个嵌套的可选 inject 安装——该子 fiber 会一直等待直到 `remote.session` 服务出现），或旧版 `workspaces.openPath` 客户端服务（ui-conversation 的 apply.ts）——两者恰好只会装上一个。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.2）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。开关关闭 = 完全不启用（chat 行为零变化）。
+- **对话文件点击接管**（同一开关控制，方案 II + III）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，不再打开 better-sidebar 内置的「文件」标签，而是聚焦本 VSCode 标签（面板自动展开）并在内嵌 VS Code 里直接打开该文件——无 workbench 重载。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在功能设置增删）的文件不进 VSCode，改道 better-sidebar 自带「文件」标签打开——其文件查看器正是侧边栏渲染图片/PDF/Office 文档的界面（仍走侧边栏接管，不落宿主打开器）。方案 III 的包装器对该路径改调「文件」标签改道并照常返回成功回执（仅当「文件」标签类型在侧边卡片设置里被禁用时才回落宿主 OS 打开器），方案 II 的 chips 走同一改道，改道被拒时降级调渲染站点原生 `openFile`；未命中路径行为不变，每次点击现读设置。两条接管缝：**方案 II** —— 以 priority -2 注册 `conversation.chat.turnTail` slot（抢在 better-sidebar 自己的 -1 条目之前），用同源推导逻辑认领 produced-files 行（优先读引擎 Turn data 的 `deliverables` 记录，nodes 推导作 fallback；匹配值额外携带 owner 的 `openFile` 供命中回退），chips 渲染为视觉孪生但点击改道本标签；**方案 III** —— 包装运行时的对话文件打开漏斗，按运行时版本二选一：gateway 时代的 `remote.session.openWorkspacePath` 宿主 Remote（ui-chat 注入的 `openFile` —— 工具行路径链接与正文引用的唯一生产调用方；命名空间方法是 getter-only 自有属性，包装器以自定义 getter 重定义它且每次访问都重读原方法，经一个嵌套的可选 inject 安装——该子 fiber 会一直等待直到 `remote.session` 服务出现），或旧版 `workspaces.openPath` 客户端服务（ui-conversation 的 apply.ts）——两者恰好只会装上一个。**与 dsh-better-sidebar ≥ 0.18.0 的互操作**：该插件如今会用「值属性」包装器 shadow 同一个 gateway 时代方法（捕获原始闭包、按批次模块次序先于本插件安装），因此重定义需同时兼容两种形态——宿主 getter 挂载与对方的值属性 shadow——后装者处于最外层、先看到每次调用（本插件晚于对方加载，接管即可认领打开；对方的闭包留作 decline 时的回落）。安装数秒后的一次性重断言，用于修复对方禁用/启用循环把其 shadow 重装到我们之上所留下的窗口。方案 III 同时修复一个 headless 容器坑：better-sidebar 在其内置「文件」标签被禁用时会放弃自己的接管，让打开落到宿主 OS 打开器上（`spawn xdg-open ENOENT`）；本包装让这些打开无论该设置如何都落到 VSCode 标签。点击后的链路：meta 携带 `openRequest` → 本插件 host 半写 `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → 扩展（≥ 0.1.2）500ms 轮询消费 → `showTextDocument`；`cap.json` 活性标记 + 能力探测失败时降级为 URL `payload` 参数整页重载一次。**启动标签投递（扩展 ≥ 0.1.3）**：serve-web 会在标签页 iframe 消失后仍让先前的扩展宿主（连同其 500ms 轮询）存活一段时间,于是「关掉 VSCode 标签后再点文件」的点击会与那个残留宿主竞速——它把命令吃掉、把文件开进垂死窗口,新宿主的账本对账又把这个文件当幽灵关掉(打开无声丢失)。现在客户端会等本次启动的 nonce 落盘后再发送,并把 nonce 作为启动标签写进命令(`cmd.json {boot}`);只有以同一 nonce 启动的宿主才会消费带标签的命令。开关关闭 = 完全不启用（chat 行为零变化）。
 
 - **设置页「打开配置文件」接管**（方案 IV，同一开关）：按钮原本把 `$DSH_HOME/settings.yaml` 交给系统原生打开器——headless 容器上直接失败（`xdg-open` 缺失）；当前运行时上点击走 `remote.settings.openSettingsDocument` 宿主 Remote（SettingsDocumentStore.open 是唯一生产调用方；包装器重定义该命名空间方法的 getter-only 自有属性，经嵌套可选 inject 安装——子 fiber 等到 `remote.settings` 服务出现才运行），gateway 之前的运行时则走旧版 `/api/settings.openDocument` 成员——两者恰好只会拦截到一个。开关开启时，本插件改走自有的受信围栏路由（`POST /sidebar-vscode/api/settings.document` → `prepareDocument()`）取到文档绝对路径，再复用与对话点击完全相同的 `openRequest` 通道改道——配置文件在内嵌 VS Code 里打开（绝对路径无需命中 `pathMap` 规则，`mapPathForOpen` 对未匹配路径原样透传）。改道落地后「设置」弹框也会自动关闭：弹框开启状态是组件本地 state（没有服务暴露关闭方法），关闭走弹框自身挂在 document 上的 Escape 监听（生命周期恰好等于弹框开启期）——合成一次 Escape 键事件即可，视野留给工作台。全程 fail-soft：settings 服务缺失、host 半未重载、任何传输错误都回退到原生打开（弹框不关），按钮不会因本插件而坏。
 
@@ -141,6 +141,8 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 - **编辑器台账（`editors.json`）**——扩展在每次标签变动时把窗口当前打开的文件标签（顺序 + 活动编辑器）**同步**写进 spool，销毁竞态无法弄丢它；下次激活时磁盘上的内容就是上一会话的最终状态。
 - **启动对账**——激活时先等 VS Code 自身的恢复落定，再让窗口对齐台账：台账里没有的恢复标签（关标签前已关闭的文件）被关闭（脏标签保留，数据优先）、恢复丢失的台账文件被补开、活动编辑器复原。**无台账**的启动（工作区首次启动，或降级 URL-payload 打开）完全不动 VS Code 自身行为。
 - **隐藏揭幕（`boot.begin` / `boot.status`）**——挂载 iframe 之前，标签页先在 spool 里停放一枚启动 nonce（`bootreq.json`）；扩展对账完成后在 `boot.json` 回执里回显它，客户端在此之前让 iframe 保持 opacity 0、以加载遮罩示人（超时兜底直接揭幕）。用户看到的**第一帧**就是对账完的编辑器区——绝不会先看见某文件被打开又被关掉。全链路 fail-soft：较旧的 host 半（boot 路由尚未重载）回落到 **DOM 静默观察器**（同源读取 workbench 的编辑器标签条——静默即揭幕），跨源直连 iframe 则不加门控、按原生行为可见启动。
+- **台账归属围栏 + 启动轮换（扩展 ≥ 0.1.3）**——serve-web 在渲染器消失后也会让扩展宿主存活一段时间，而这类残留宿主的台账处理器仍然 armed：它会把自己那个**不可见窗口**的标签集写进共享的 `editors.json`，对账的 reopen 循环还会把台账文件开进该窗口、其标签事件又反过来重写台账——台账就此被可见 workbench 从未展示过的文件毒化，之后每次启动都如实复活（「已关闭的文件又回来了」）。台账现在**归属本次启动**：每次台账写入、对账本身、以及幽灵补刀都会复核停放的启动 nonce 是否仍是本宿主激活时的那枚。客户端在 iframe **原地重载**时（面板收起或切换工作区会把窗格 DOM 摘除、再插回时浏览器视为整帧重载——新渲染器的宿主若沿用旧 nonce 就会错配）以及标签页卸载时轮换该 nonce，把所有仍持旧 nonce 的宿主一并退役。
+- **迟到幽灵补刀（扩展 ≥ 0.1.3）**——VS Code 自身的恢复可能在 对账的 settle 预算耗尽**之后**还在陆续落标签（重工作区的慢启动），而这些迟到者恰恰是没人会再去关的「已关闭文件幽灵」。武装之后会间隔着跑几轮**只关不开**的差分：每轮关掉台账未列出且处于**后台**的标签，豁免脏标签与活动编辑器（重新挂载后数秒内，用户主动打开的文件必然成为活动编辑器，而恢复幽灵落在后台）；任何一轮都不会打开文件。
 
 ## 使用方法
 
@@ -304,7 +306,7 @@ src/client/settings.ts        # pluginSettings 读取 + 截断上限契约（默
 src/client/settingsRows.tsx   # 功能设置面板：开关行 + 黑名单 tag 行 + 文本行（上下布局）+ 数值行（自注入样式）
 src/client/openBlocklist.ts   # 「不由 VSCode 打开」后缀表：默认值 / 归一化 / 基名后缀匹配（24 测试）
 src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：同一开关下包装 settings.openDocument 并关闭设置弹框（17 测试）
-src/client/openIntercept.ts   # 对话打开接管管线：reroute 驱动 + openRequest 载体 + openPath/openWorkspacePath 包装（30 测试）
+src/client/openIntercept.ts   # 对话打开接管管线：reroute 驱动 + openRequest 载体 + openPath/openWorkspacePath 包装（48 测试）
 src/client/openChannelApi.ts  # 打开通道 client 半：围栏 /sidebar-vscode/api 探测与命令（11 测试）
 src/client/defaultTab.ts      # 「默认打开 VSCode」：pristine 种子检测 + 换种护栏 + 监听（22 测试）
 src/client/i18n.ts            # locale 服务挂接 + t()

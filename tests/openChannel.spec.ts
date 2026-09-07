@@ -16,6 +16,7 @@ import {
   parseOpenCommand,
   readBootStatus,
   readCapability,
+  readCapabilityMarker,
   writeBootRequest,
   writeOpenCommand,
 } from '../src/openChannel.ts'
@@ -83,6 +84,20 @@ describe('parseOpenCommand', () => {
   it('accepts a well-formed command and floors optional line/column', () => {
     expect(parseOpenCommand({ folder: '/w', path: '/w/a.ts', nonce: 5, line: 3.9, column: 2.1 }))
       .toEqual({ folder: '/w', path: '/w/a.ts', nonce: 5, line: 3, column: 2 })
+  })
+
+  it('carries the boot tag through and caps it at 128 chars', () => {
+    expect(parseOpenCommand({ folder: '/w', path: '/w/a.ts', nonce: 5, boot: 'boot-A' }))
+      .toEqual({ folder: '/w', path: '/w/a.ts', nonce: 5, boot: 'boot-A' })
+    // A non-string or empty boot is dropped (untagged command), and an
+    // oversized one is truncated to the extension's readBootNonce cap.
+    expect(parseOpenCommand({ folder: '/w', path: '/w/a.ts', nonce: 5, boot: 7 }))
+      .toEqual({ folder: '/w', path: '/w/a.ts', nonce: 5 })
+    expect(parseOpenCommand({ folder: '/w', path: '/w/a.ts', nonce: 5, boot: '' }))
+      .toEqual({ folder: '/w', path: '/w/a.ts', nonce: 5 })
+    const long = 'x'.repeat(300)
+    expect(parseOpenCommand({ folder: '/w', path: '/w/a.ts', nonce: 5, boot: long })?.boot)
+      .toBe(long.slice(0, 128))
   })
 
   it('rejects non-absolute folders/paths, bad nonces, and foreign shapes', () => {
@@ -165,6 +180,26 @@ describe('writeOpenCommand / readCapability', () => {
     expect(await readCapability(base, folder)).toBe(false)
     // A custom window (the route uses the default) is honored too.
     expect(await readCapability(base, folder, CAPABILITY_MAX_AGE_MS + 120_000)).toBe(true)
+  })
+
+  it('readCapabilityMarker exposes the build version (the boot-tag gate)', async () => {
+    const folder = '/versioned-marker'
+    const dir = join(base, slugOf(folder))
+    await mkdir(dir, { recursive: true })
+    const capFile = join(dir, 'cap.json')
+    // Absent → not present, no version.
+    expect(await readCapabilityMarker(base, folder)).toEqual({ present: false, version: null })
+    // The boot-tag-aware build (v4) reports its version; the client tags
+    // open commands with the workbench's boot nonce only from 4 up.
+    await writeFile(capFile, JSON.stringify({ v: 4, at: Date.now() }), 'utf8')
+    expect(await readCapabilityMarker(base, folder)).toEqual({ present: true, version: 4 })
+    // Older trusted builds report their own version (no tagging there).
+    await writeFile(capFile, JSON.stringify({ v: 3, at: Date.now() }), 'utf8')
+    expect(await readCapabilityMarker(base, folder)).toEqual({ present: true, version: 3 })
+    // Stale/untrusted markers stay not-present with no version.
+    const ancient = new Date(Date.now() - CAPABILITY_MAX_AGE_MS - 60_000)
+    await utimes(capFile, ancient, ancient)
+    expect(await readCapabilityMarker(base, folder)).toEqual({ present: false, version: null })
   })
 })
 

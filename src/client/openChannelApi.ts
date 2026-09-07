@@ -36,6 +36,13 @@ export interface OpenCommand {
   nonce: number
   line?: number
   column?: number
+  /**
+   * The boot nonce of the embedded workbench this open was minted for
+   * (extension cap ≥ 4 only): the extension consumes a tagged command
+   * solely on the host that activated with the same nonce, so a lingering
+   * previous host cannot eat it during the fresh boot's reconcile window.
+   */
+  boot?: string
 }
 
 /** POST one JSON body and answer `{ok, value}` structurally; null on any failure. */
@@ -64,16 +71,19 @@ export async function postJson(
  * Whether the extension serving `folder` is alive: its capability marker
  * file must exist and be fresh (the extension refreshes it every poll tick;
  * the node half enforces the age window). Results are cached per folder for
- * a short TTL so a burst of clicks does not hammer the probe.
+ * a short TTL so a burst of clicks does not hammer the probe. The answer is
+ * `false` when absent, else the marker's build VERSION (a truthy number) —
+ * callers gate version-specific channel features on it (the open command's
+ * boot tag exists from 4 up).
  */
 const CAPABILITY_TTL_MS = 5000
-let capabilityCache: { folder: string, at: number, present: boolean } | null = null
+let capabilityCache: { folder: string, at: number, present: false | number } | null = null
 
 export async function probeCapability(
   folder: string,
   fetchLike: FetchLike = defaultFetch,
   now: () => number = Date.now,
-): Promise<boolean> {
+): Promise<false | number> {
   if (
     capabilityCache !== null
     && capabilityCache.folder === folder
@@ -82,10 +92,17 @@ export async function probeCapability(
     return capabilityCache.present
   }
   const parsed = await postJson('open.capability', { folder }, fetchLike)
-  const present = parsed !== null
-    && parsed.value !== null
-    && typeof parsed.value === 'object'
-    && (parsed.value as { present?: unknown }).present === true
+  let present: false | number = false
+  if (parsed !== null && parsed.value !== null && typeof parsed.value === 'object') {
+    const value = parsed.value as { present?: unknown, version?: unknown }
+    if (value.present === true) {
+      // A missing/odd version (an older node half not reloaded yet) means
+      // the minimum trusted build — present, but pre-boot-tag.
+      present = typeof value.version === 'number' && Number.isFinite(value.version) && value.version > 0
+        ? value.version
+        : 2
+    }
+  }
   capabilityCache = { folder, at: now(), present }
   return present
 }
