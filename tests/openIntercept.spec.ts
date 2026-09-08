@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  createChatOpenRoute,
   extractOpenRequest,
   filesTabSeed,
   findTabMeta,
@@ -861,5 +862,59 @@ describe('stripOpenRequest / clearTabOpenRequest (the one-shot retirement)', () 
     // A throwing mutator never breaks the open path.
     const throwing = { update() { throw new Error('store gone') } }
     expect(() => clearTabOpenRequest(throwing, 'vscode')).not.toThrow()
+  })
+})
+
+describe('createChatOpenRoute (the shared decision both chat seams ride)', () => {
+  /** One deps bundle over recorders. */
+  function makeDeps(options: { enabled?: boolean, blocked?: boolean, filesAccepts?: boolean } = {}) {
+    const rerouted: string[] = []
+    const reroutedBlocked: string[] = []
+    return {
+      deps: {
+        takeoverEnabled: () => options.enabled ?? true,
+        blocked: options.blocked === undefined ? undefined : () => options.blocked!,
+        reroute: (path: string) => { rerouted.push(path) },
+        rerouteBlocked: options.filesAccepts === undefined ? undefined : (path: string) => {
+          reroutedBlocked.push(path)
+          return options.filesAccepts!
+        },
+      },
+      rerouted,
+      reroutedBlocked,
+    }
+  }
+
+  it('claims and reroutes an unblocked path while the gate is on', () => {
+    const h = makeDeps()
+    expect(createChatOpenRoute(h.deps)('/w/a.ts')).toBe(true)
+    expect(h.rerouted).toEqual(['/w/a.ts'])
+  })
+
+  it('declines (stock behavior) when the gate is off, the path is empty, or not a string', () => {
+    const h = makeDeps()
+    const route = createChatOpenRoute(h.deps)
+    expect(route('/w/a.ts')).toBe(true)
+    const off = makeDeps({ enabled: false })
+    expect(createChatOpenRoute(off.deps)('/w/a.ts')).toBe(false)
+    expect(route('')).toBe(false)
+    expect(route(undefined)).toBe(false)
+    expect(route(42)).toBe(false)
+    expect(h.rerouted).toEqual(['/w/a.ts'])
+  })
+
+  it('a blocklist hit is claimed only when the Files-tab reroute accepts', () => {
+    const accepted = makeDeps({ blocked: true, filesAccepts: true })
+    expect(createChatOpenRoute(accepted.deps)('/w/a.pdf')).toBe(true)
+    expect(accepted.reroutedBlocked).toEqual(['/w/a.pdf'])
+    expect(accepted.rerouted).toEqual([])
+    const refused = makeDeps({ blocked: true, filesAccepts: false })
+    expect(createChatOpenRoute(refused.deps)('/w/a.pdf')).toBe(false)
+    expect(refused.rerouted).toEqual([])
+  })
+
+  it('a blocklist hit with no blocked-wiring declines to the stock opener', () => {
+    const h = makeDeps({ blocked: true })
+    expect(createChatOpenRoute(h.deps)('/w/a.pdf')).toBe(false)
   })
 })

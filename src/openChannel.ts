@@ -2,14 +2,17 @@
  * Host half of the extension command channel: the /tmp spool the embedded
  * workbench's `dsh.selection-reference` extension (≥ 0.1.1) polls.
  *
- * Layout: `<tmpdir>/dsh-sidebar-vscode/<slug(workspace folder)>/{cap,cmd,editors,bootreq,boot}.json`
+ * Layout: `<tmpdir>/dsh-sidebar-vscode/<slug(workspace folder)>/<file>.json`
  * — one directory per workspace folder, addressed by a filesystem-safe slug
  * BOTH sides derive from the folder path they independently know (the client
  * sends the mapped folder; the extension derives it from its own
- * `workspaceFolders[0]`). `/tmp` is shared by the default same-container
- * topology (serve-web runs beside dsh-runtime — see the plugin README's
- * deployment section); a split deployment simply fails the capability probe
- * and the client falls back to the URL-payload channel.
+ * `workspaceFolders[0]`). The directory name, the file names, the version
+ * bounds, and the slug function all live in the shared protocol plane
+ * (`src/shared/protocol.ts`, mirrored in `extension/lib/protocol.js` and
+ * pinned by `tests/protocolLockstep.spec.ts`). `/tmp` is shared by the
+ * default same-container topology (serve-web runs beside dsh-runtime — see
+ * the plugin README's deployment section); a split deployment simply fails
+ * the capability probe and the client falls back to the URL-payload channel.
  *
  * - `cap.json` — the extension's liveness marker (`{v,at}`, written by
  *   builds ≥ 0.1.2 and refreshed on its poll tick whenever older than a
@@ -27,49 +30,28 @@
  *   fresh extension host reading a leftover cmd.json re-opened the file
  *   the user had just closed.
  *
- * The slug spec is pinned by `tests/openChannel.spec.ts`; the extension's
- * plain-JS mirror (extension/extension.js `slugOf`) must stay in lockstep.
+ * All persistence flows through one {@link SpoolStore}: the atomic
+ * tmp+rename write discipline, the tmp-name sequencing, and the fail-soft
+ * JSON read exist exactly once.
  *
  * @module dsh-sidebar-vscode/openChannel
  */
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import {
+  CAPABILITY_MAX_AGE_MS,
+  CAPABILITY_MIN_V,
+  CHANNEL_FILES,
+  NONCE_MAX_LENGTH,
+  OPEN_CHANNEL_DIR,
+  slugOf,
+} from './shared/protocol.ts'
+
+export { CAPABILITY_MAX_AGE_MS, CAPABILITY_MIN_V, slugOf }
 
 /** The spool root (same base the extension derives from `os.tmpdir()`). */
-export const OPEN_CHANNEL_BASE = join(tmpdir(), 'dsh-sidebar-vscode')
-
-/** How old the capability marker may be before "present" turns false. */
-export const CAPABILITY_MAX_AGE_MS = 120_000
-
-/**
- * The minimum extension build the command channel trusts. The v0.1.1
- * extension CONSUMED commands but never deleted `cmd.json` and persisted no
- * nonce watermark — every workbench reboot (the sidebar tab's iframe
- * teardown/recreate) re-delivered the last opened file, which is exactly
- * the "closed file reopens on next VS Code start" bug. v0.1.2 (CHANNEL_CAP_V
- * in extension/extension.js) deletes consumed commands, skips stale ones,
- * and writes a versioned cap marker; `readCapability` parses that marker,
- * so a deployment still carrying the old build degrades to the URL-payload
- * channel instead of replaying files.
- */
-export const CAPABILITY_MIN_V = 2
-
-/**
- * Filesystem-safe slug of one workspace folder: non [A-Za-z0-9_-] characters
- * collapse to '_', capped at 64, plus a djb2-xor hex digest of the ORIGINAL
- * string so distinct folders sharing a collapsed form cannot collide.
- * Mirrored in extension/extension.js — keep both in lockstep (spec test).
- */
-export function slugOf(folder: string): string {
-  const clean = folder.trim()
-  const safe = clean.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
-  let digest = 5381
-  for (let at = 0; at < clean.length; at += 1) {
-    digest = ((digest * 33) ^ clean.charCodeAt(at)) >>> 0
-  }
-  return `${safe}-${digest.toString(16)}`
-}
+export const OPEN_CHANNEL_BASE = join(tmpdir(), OPEN_CHANNEL_DIR)
 
 /** One validated open command. */
 export interface OpenCommandBody {
@@ -110,13 +92,59 @@ export function parseOpenCommand(payload: unknown): OpenCommandBody | null {
     out.column = Math.floor(record.column)
   }
   if (typeof record.boot === 'string' && record.boot !== '') {
-    out.boot = record.boot.slice(0, 128)
+    out.boot = record.boot.slice(0, NONCE_MAX_LENGTH)
   }
   return out
 }
 
 /** Process-lifetime sequence for tmp names (same-millisecond writes collide otherwise). */
 let tmpSequence = 0
+
+/**
+ * The per-folder JSON spool: one place for the atomic tmp+rename write and
+ * the fail-soft read every channel file shares. A write is never observed
+ * half-formed (the extension polls at any instant); a read of a missing or
+ * corrupt file answers null instead of throwing, so every caller degrades
+ * rather than breaks.
+ */
+export class SpoolStore {
+  /** @param base - the spool root (usually {@link OPEN_CHANNEL_BASE}). */
+  constructor(private readonly base: string) {}
+
+  /** The folder's spool directory (created lazily by {@link write}). */
+  private dirOf(folder: string): string {
+    return join(this.base, slugOf(folder))
+  }
+
+  /** Atomically write one JSON document into the folder's spool. */
+  async write(folder: string, file: string, document: unknown, now: () => number = Date.now): Promise<void> {
+    const dir = this.dirOf(folder)
+    await mkdir(dir, { recursive: true })
+    const target = join(dir, file)
+    const tmp = `${target}.tmp-${process.pid}-${tmpSequence++}-${now()}`
+    await writeFile(tmp, JSON.stringify(document), 'utf8')
+    await rename(tmp, target)
+  }
+
+  /** Read one JSON document; null when absent, unreadable, or corrupt. */
+  async readJson(folder: string, file: string): Promise<unknown> {
+    try {
+      return JSON.parse(await readFile(join(this.dirOf(folder), file), 'utf8')) as unknown
+    } catch {
+      return null
+    }
+  }
+
+  /** File facts for freshness checks; null when the file is absent. */
+  async statFile(folder: string, file: string): Promise<{ mtimeMs: number } | null> {
+    try {
+      const info = await stat(join(this.dirOf(folder), file))
+      return { mtimeMs: info.mtimeMs }
+    } catch {
+      return null
+    }
+  }
+}
 
 /**
  * Write one open command into the folder's spool (atomic tmp+rename, so the
@@ -127,13 +155,7 @@ export async function writeOpenCommand(
   command: OpenCommandBody,
   now: () => number = Date.now,
 ): Promise<void> {
-  const dir = join(base, slugOf(command.folder))
-  await mkdir(dir, { recursive: true })
-  const file = join(dir, 'cmd.json')
-  const tmp = `${file}.tmp-${process.pid}-${tmpSequence++}-${now()}`
-  const document = JSON.stringify({ ...command, ts: now() })
-  await writeFile(tmp, document, 'utf8')
-  await rename(tmp, file)
+  await new SpoolStore(base).write(command.folder, CHANNEL_FILES.cmd, { ...command, ts: now() }, now)
 }
 
 /**
@@ -150,12 +172,7 @@ export async function writeEmbeddedBoot(
   folder: string,
   now: () => number = Date.now,
 ): Promise<void> {
-  const dir = join(base, slugOf(folder))
-  await mkdir(dir, { recursive: true })
-  const file = join(dir, 'embed.json')
-  const tmp = `${file}.tmp-${process.pid}-${tmpSequence++}-${now()}`
-  await writeFile(tmp, JSON.stringify({ ts: now() }), 'utf8')
-  await rename(tmp, file)
+  await new SpoolStore(base).write(folder, CHANNEL_FILES.embed, { ts: now() }, now)
 }
 
 /**
@@ -173,12 +190,26 @@ export async function writeBootRequest(
   folder: string,
   nonce: string,
 ): Promise<void> {
-  const dir = join(base, slugOf(folder))
-  await mkdir(dir, { recursive: true })
-  const file = join(dir, 'bootreq.json')
-  const tmp = `${file}.tmp-${process.pid}-${tmpSequence++}-${Date.now()}`
-  await writeFile(tmp, JSON.stringify({ nonce }), 'utf8')
-  await rename(tmp, file)
+  await new SpoolStore(base).write(folder, CHANNEL_FILES.bootreq, { nonce })
+}
+
+/**
+ * Stamp one user interaction for a boot (`interact.json`, `{nonce, ts}`):
+ * the client writes it when the REVEALED workbench sees its first user
+ * gesture, and the extension's reconcile close loop and ghost passes read
+ * it to stand down — the reveal racer can hand the user an interactive
+ * workbench while the reconcile is still settling against a ledger that
+ * predates their open, and a tab the user opened in that window must
+ * never be closed as a restore ghost. The nonce scoping keeps a stale
+ * stamp from disarming a later boot.
+ */
+export async function writeUserInteract(
+  base: string,
+  folder: string,
+  nonce: string,
+  now: () => number = Date.now,
+): Promise<void> {
+  await new SpoolStore(base).write(folder, CHANNEL_FILES.interact, { nonce, ts: now() }, now)
 }
 
 /**
@@ -193,14 +224,33 @@ export async function readBootStatus(
   folder: string,
   nonce: string,
 ): Promise<boolean> {
-  try {
-    const raw = await readFile(join(base, slugOf(folder), 'boot.json'), 'utf8')
-    const parsed = JSON.parse(raw) as { nonce?: unknown }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-    return parsed.nonce === nonce
-  } catch {
-    return false
-  }
+  const parsed = await new SpoolStore(base).readJson(folder, CHANNEL_FILES.boot)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+  return (parsed as { nonce?: unknown }).nonce === nonce
+}
+
+/**
+ * The boot LEDGER (`editors.json`) as it stands at nonce-park time: the
+ * open-editor set the extension's reconcile will diff the restored window
+ * against (same file, same shape the extension's `readLedger` parses —
+ * `v: 1` with an `editors` array of absolute POSIX paths). Answered
+ * alongside `boot.begin`'s park so the CLIENT's DOM-quiet reveal racer can
+ * tell "the strip is quiet because it is settled" from "the strip is
+ * quiet-but-wrong while the reconcile's close is still in flight" — a
+ * quiet-but-mismatched strip must keep the frame hidden. Null when absent
+ * or malformed: a first-ever boot has no ledger (the reconcile then
+ * touches nothing) and an unreadable one gates nothing.
+ */
+export async function readBootLedger(
+  base: string,
+  folder: string,
+): Promise<string[] | null> {
+  const parsed = await new SpoolStore(base).readJson(folder, CHANNEL_FILES.editors)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const record = parsed as { v?: unknown, editors?: unknown }
+  if (record.v !== 1 || !Array.isArray(record.editors)) return null
+  if (!record.editors.every(entry => typeof entry === 'string' && entry.startsWith('/'))) return null
+  return record.editors as string[]
 }
 
 /**
@@ -233,24 +283,15 @@ export async function readCapabilityMarker(
   maxAgeMs: number = CAPABILITY_MAX_AGE_MS,
   now: () => number = Date.now,
 ): Promise<{ present: boolean, version: number | null }> {
-  try {
-    const capFile = join(base, slugOf(folder), 'cap.json')
-    const info = await stat(capFile)
-    if (now() - info.mtimeMs >= maxAgeMs) return { present: false, version: null }
-    const raw = await readFile(capFile, 'utf8')
-    let parsed: { v?: unknown } | null = null
-    try {
-      parsed = JSON.parse(raw) as { v?: unknown }
-    } catch {
-      return { present: false, version: null }
-    }
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { present: false, version: null }
-    }
-    const ok = parsed.v === CAPABILITY_MIN_V || (typeof parsed.v === 'number' && parsed.v > CAPABILITY_MIN_V)
-    if (!ok) return { present: false, version: null }
-    return { present: true, version: typeof parsed.v === 'number' ? parsed.v : CAPABILITY_MIN_V }
-  } catch {
+  const store = new SpoolStore(base)
+  const info = await store.statFile(folder, CHANNEL_FILES.cap)
+  if (info === null || now() - info.mtimeMs >= maxAgeMs) return { present: false, version: null }
+  const parsed = await store.readJson(folder, CHANNEL_FILES.cap)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { present: false, version: null }
   }
+  const version = (parsed as { v?: unknown }).v
+  const ok = version === CAPABILITY_MIN_V || (typeof version === 'number' && version > CAPABILITY_MIN_V)
+  if (!ok) return { present: false, version: null }
+  return { present: true, version: typeof version === 'number' ? version : CAPABILITY_MIN_V }
 }

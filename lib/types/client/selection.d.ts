@@ -28,8 +28,8 @@
  *
  * @module dsh-sidebar-vscode/client/selection
  */
-/** Envelope marker prefix (must match the VS Code extension's constant). */
-export declare const SELECTION_MARKER = "@@DSH_REF::";
+/** Envelope marker prefix — single-sourced in the shared protocol plane. */
+export { SELECTION_MARKER } from '../shared/protocol.ts';
 /** One selection span: 1-based inclusive line range plus the exact text. */
 export interface SelectionSpan {
     readonly startLine: number;

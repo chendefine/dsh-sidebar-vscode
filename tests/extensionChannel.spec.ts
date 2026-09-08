@@ -168,9 +168,22 @@ function activateWithFolder(
   }
   let extension: { activate(context: unknown): void } | undefined
   try {
-    const extPath = fileURLToPath(new URL('../extension/extension.js', import.meta.url))
+    // The extension decomposes into extension.js + lib/*.js: every module
+    // captures the vscode stub at ITS require time, so a fresh activation
+    // (a fresh extension host) must re-require the whole tree — clear the
+    // cache of the root AND every lib module, or the split modules would
+    // stay cached with the FIRST stub bound (opens landing in a dead
+    // recorder).
+    const extUrl = new URL('../extension/extension.js', import.meta.url)
+    const extPath = fileURLToPath(extUrl)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    delete (nodeRequire as any).cache[extPath]
+    const cache = (nodeRequire as any).cache
+    delete cache[extPath]
+    for (const key of Object.keys(cache) as string[]) {
+      if (key.startsWith(`${fileURLToPath(new URL('../extension/lib/', import.meta.url))}`)) {
+        delete cache[key]
+      }
+    }
     extension = nodeRequire(extPath) as { activate(context: unknown): void }
   } finally {
     Module._load = originalLoad
@@ -714,6 +727,82 @@ describe('ledger fencing + late ghosts (the orphan-host poison fix)', () => {
         { label: 'late', isActive: false, isDirty: false, isPinned: false, isPreview: false,
           input: { uri: { fsPath: `${folder}/late.ts`, scheme: 'file' } } },
       )
+      await new Promise(resolve => setTimeout(resolve, 2500))
+      expect(workbench.closed).toEqual([])
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('the reconcile defers its closes behind THIS boot\'s user-interaction stamp (a file the user opened in the reveal window survives)', async () => {
+    const folder = `/dsh-ext-spec-interact-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    // The exact regression shape: everything was closed (ledger []), the
+    // reveal racer revealed, and the user opened user.ts BEFORE this host
+    // activated — the client stamped interact.json with the boot's nonce.
+    await plantLedger(folder, [], null)
+    await plantBootRequest(folder, 'boot-i1')
+    await writeFile(join(dir, 'interact.json'), JSON.stringify({ nonce: 'boot-i1', ts: Date.now() }), 'utf8')
+    const workbench = activateWithFolder(folder, {
+      tabs: [{ fsPath: `${folder}/user.ts` }, { fsPath: `${folder}/ghost.ts` }],
+    })
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      // NOTHING is closed — the user is present; the receipt says so.
+      expect(workbench.closed).toEqual([])
+      const receipt = await readJson(join(dir, 'boot.json'))
+      expect(receipt.applied).toBe(true)
+      expect(receipt.closed).toBe(0)
+      expect(receipt.deferred).toBe(2)
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('a stale interaction stamp (a foreign nonce) never disarms the reconcile', async () => {
+    const folder = `/dsh-ext-spec-interact-stale-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantLedger(folder, [], null)
+    await plantBootRequest(folder, 'boot-i2')
+    await writeFile(join(dir, 'interact.json'), JSON.stringify({ nonce: 'boot-previous', ts: Date.now() }), 'utf8')
+    const workbench = activateWithFolder(folder, {
+      tabs: [{ fsPath: `${folder}/ghost.ts` }],
+    })
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      expect(workbench.closed).toEqual([`${folder}/ghost.ts`])
+      const receipt = await readJson(join(dir, 'boot.json'))
+      expect(receipt.closed).toBe(1)
+      expect(receipt.deferred).toBe(0)
+    } finally {
+      workbench.dispose()
+    }
+  })
+
+  it('ghost passes defer behind the interaction stamp too (a user-opened BACKGROUND tab survives)', async () => {
+    const folder = `/dsh-ext-spec-interact-pass-${process.pid}`
+    const dir = channelDir(folder)
+    cleanupDirs.push(dir)
+    await rm(dir, { recursive: true, force: true })
+    await plantLedger(folder, [`${folder}/keep.ts`], `${folder}/keep.ts`)
+    await plantBootRequest(folder, 'boot-i3')
+    const workbench = activateWithFolder(folder, {
+      tabs: [{ fsPath: `${folder}/keep.ts` }],
+      active: `${folder}/keep.ts`,
+    })
+    try {
+      await waitFor(() => existsSync(join(dir, 'boot.json')))
+      // The user opens a file (background: another tab stays active) and
+      // the client stamps the interaction AFTER the reconcile ran.
+      workbench.tabs.push(
+        { label: 'user', isActive: false, isDirty: false, isPinned: false, isPreview: false,
+          input: { uri: { fsPath: `${folder}/user-bg.ts`, scheme: 'file' } } },
+      )
+      await writeFile(join(dir, 'interact.json'), JSON.stringify({ nonce: 'boot-i3', ts: Date.now() }), 'utf8')
       await new Promise(resolve => setTimeout(resolve, 2500))
       expect(workbench.closed).toEqual([])
     } finally {

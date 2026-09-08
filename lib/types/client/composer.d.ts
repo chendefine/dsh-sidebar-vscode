@@ -22,48 +22,9 @@
  *
  * @module dsh-sidebar-vscode/client/composer
  */
-import { type InsertOutcome, type OccurrenceLike, type PasteLandingOutcome, type RefRemovalOutcome, type RecoveredPastePart, type ReferenceInsertLike } from './references.ts';
-import { type ClipboardPayload } from './selection.ts';
-/** Options kept fresh by the VSCode tab render (paste fallback path). */
-export interface FallbackOptions {
-    readonly reverseRules?: readonly {
-        from: string;
-        to: string;
-    }[];
-    readonly cwd?: string;
-    readonly maxLines?: number;
-    readonly maxBytes?: number;
-}
-/**
- * Land one decoded payload's reference chips on the addressed session.
- * Implemented by the plugin body (which owns the service context) and handed
- * in through the slot's inject face. The payload can be an editor selection
- * or an explorer file/folder list. `at` is the range the chips replace
- * (usually the composer caret), in the plane the addressed composer's
- * selection speaks — detect coordinates on Lexical hosts, draft coordinates
- * on textarea-era ones; when omitted the implementation resolves the
- * insertion point itself — the displayed composer's caret for the addressed
- * session, else the draft tail.
- */
-export type ReferenceLander = (sessionId: string | undefined, payload: ClipboardPayload, options: FallbackOptions, at?: {
-    readonly start: number;
-    readonly end: number;
-}) => Promise<InsertOutcome>;
-/**
- * Land one parsed mention-carrying paste on the addressed session at the
- * paste selection. Implemented by the plugin body beside the lander.
- */
-export type MentionPaster = (sessionId: string | undefined, parts: readonly RecoveredPastePart[], selection: {
-    start: number;
-    end: number;
-}) => Promise<PasteLandingOutcome>;
-/**
- * Remove every chip citing one reference from the addressed session's
- * draft (the rail's close affordance). Implemented by the plugin body;
- * the outcome tells the dock whether the chip-preserving path worked or
- * the legacy whole-draft splice must run instead.
- */
-export type ReferenceRemover = (sessionId: string | undefined, ref: string) => Promise<RefRemovalOutcome>;
+import { type OccurrenceLike, type ReferenceInsertLike } from './references.ts';
+import { type FallbackOptions, type MentionPaster, type ReferenceLander, type ReferenceRemover } from './referencePipeline.ts';
+export type { FallbackOptions, MentionPaster, ReferenceLander, ReferenceRemover };
 /** Props of the dock component (framework session kit + inject face). */
 interface ComposerDockProps {
     /** The addressed session (the modern session-scoped dock owner prop). */
@@ -84,22 +45,10 @@ interface ComposerDockProps {
     removeRef?: ReferenceRemover;
 }
 /**
- * Idempotently install the rail stylesheet into `document.head`. Tokens and
- * layout variables are host globals, so the stylesheet stands alone.
- * @returns a disposer that removes the element (safe to call twice).
- */
-export declare function adoptRailStyles(): () => void;
-/**
  * The dock entry: renders the reference rail over the live occurrence table
  * and runs the paste fallbacks.
  */
 export declare function ComposerDock(props: ComposerDockProps): React.ReactNode;
-/** Refresh the paste-fallback options (VSCode tab render path). */
-export declare function setFallbackOptions(options: FallbackOptions): void;
-/** Install the module-level lander handle (plugin body). */
-export declare function setReferenceLander(instance: ReferenceLander | undefined): void;
-/** The lander installed by the plugin body (undefined before apply). */
-export declare function getReferenceLander(): ReferenceLander | undefined;
 /**
  * Read the displayed composer's selection — the user's last caret or range,
  * which the surface keeps through focus loss into the VS Code iframe — in

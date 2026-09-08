@@ -225,6 +225,25 @@ export declare function filesTabSeed(absolutePath: string): OpenTabSeed;
  * is the service's own refusal contract (warn + no-op).
  */
 export declare function rerouteFilesOpen(service: InterceptServiceFace, absolutePath: string): void;
+/**
+ * Build the one chat-open decision both era wrappers share: gate → open
+ * blocklist → reroute. The returned route answers whether the open was
+ * CLAIMED — the caller then synthesizes its seam's stock success receipt
+ * (a swallowed open must never surface the Host opener's failure, or the
+ * headless `xdg-open ENOENT`, to the chat UI); a declined call falls
+ * through to the untouched original, whatever its seam shape is.
+ *
+ * - gate off / non-string / empty path → decline (stock behavior);
+ * - a blocklist hit is offered to {@link OpenInterceptDeps.rerouteBlocked}
+ *   (better-sidebar's built-in Files tab — the viewer surface for the
+ *   types the code editor renders poorly): accepted → claimed, refused
+ *   (tab type disabled) → decline back to the stock Host opener;
+ * - otherwise the VSCode reroute runs and the open is claimed.
+ *
+ * @param deps - per-call takeover decisions (the same gate for every seam).
+ * @returns the route: `(path) => claimed`.
+ */
+export declare function createChatOpenRoute(deps: OpenInterceptDeps): (path: unknown) => boolean;
 /** The client workspaces service slice the wrapper replaces (runtime IWorkspaces mirror). */
 export interface WorkspacesLike {
     openPath(path: string): Promise<void>;
@@ -232,6 +251,8 @@ export interface WorkspacesLike {
 /**
  * Wrap `workspaces.openPath` — the client runtime's chat file-open funnel —
  * with the SAME takeover gate and reroute as the turn-tail claim (option II).
+ * The decision body is {@link createChatOpenRoute}; only this seam's result
+ * shape (a `Promise<void>` whose callers ignore the value) lives here.
  *
  * Why this second seam is needed: better-sidebar declines BOTH of its own
  * interceptions whenever its built-in editor tab is disabled in the side

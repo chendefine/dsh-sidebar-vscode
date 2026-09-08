@@ -126,6 +126,18 @@ export async function sendOpenCommand(
 }
 
 /**
+ * One boot-park outcome: whether the nonce landed, plus the boot LEDGER
+ * snapshot the node half answered alongside it (the open-editor set the
+ * extension's reconcile will diff the restored window against — see
+ * `boot.begin`). `editors` is null when the host half predates the field
+ * or no ledger exists; the caller's reveal racer then stays ungated.
+ */
+export interface BootBeginOutcome {
+  readonly began: boolean
+  readonly editors: string[] | null
+}
+
+/**
  * Park one boot nonce with the node half BEFORE the workbench iframe
  * mounts (see `boot.begin`): the extension (≥ 0.1.2) echoes it in its
  * post-reconcile `boot.json` receipt, and {@link pollBootStatus} reports
@@ -134,16 +146,21 @@ export async function sendOpenCommand(
  * Code's own state never visibly opens just to be closed again.
  *
  * Fail-soft like every helper here: a missing route (an older host half
- * not reloaded yet) answers false and the caller skips the gating — the
- * workbench boots visible with stock behavior.
+ * not reloaded yet) answers `{ began: false }` and the caller skips the
+ * gating — the workbench boots visible with stock behavior.
  */
 export async function beginBoot(
   folder: string,
   nonce: string,
   fetchLike: FetchLike = defaultFetch,
-): Promise<boolean> {
+): Promise<BootBeginOutcome> {
   const parsed = await postJson('boot.begin', { folder, nonce }, fetchLike)
-  return parsed !== null
+  if (parsed === null) return { began: false, editors: null }
+  const raw = (parsed.value as { editors?: unknown } | null)?.editors
+  const editors = Array.isArray(raw) && raw.every(entry => typeof entry === 'string')
+    ? raw as string[]
+    : null
+  return { began: true, editors }
 }
 
 /**
@@ -160,6 +177,22 @@ export async function pollBootStatus(
   const parsed = await postJson('boot.status', { folder, nonce }, fetchLike)
   return parsed !== null
     && (parsed.value as { matched?: unknown } | null)?.matched === true
+}
+
+/**
+ * Stamp one user interaction for THIS boot (route `boot.interact`): the
+ * extension's reconcile close loop and ghost passes stand down once the
+ * user is already interacting with the revealed workbench, so a file they
+ * opened inside the reveal-vs-reconcile window is never closed as a
+ * restore ghost. Fail-soft like every helper here.
+ */
+export async function reportUserInteract(
+  folder: string,
+  nonce: string,
+  fetchLike: FetchLike = defaultFetch,
+): Promise<boolean> {
+  const parsed = await postJson('boot.interact', { folder, nonce }, fetchLike)
+  return parsed !== null
 }
 
 /**

@@ -76,27 +76,6 @@ export interface SettingsTakeoverDeps {
      */
     closeDialog?(): void;
 }
-/**
- * Wrap `connection.api.settings.openDocument` with the settings-button
- * takeover.
- *
- * Fail-soft at the SEAM itself, not only per call: `api` may be undefined
- * and the settings member may be absent (a web shell whose connection
- * service carries a different shape — older, newer, or third-party — than
- * this plugin was authored against). The takeover is an optional
- * enhancement, so a missing seam installs nothing and the button keeps its
- * stock behavior; the plugin must never fail activation over it.
- *
- * Chain-safety: the disposer restores the RAW original reference (the same
- * contract as wrapWorkspacesOpenPath), so this wrapper composes with any
- * other patch of the same member in any install/dispose order, and HMR
- * re-apply cannot strand a stale closure.
- *
- * @param api - the client connection's settings API member (mutated in
- * place; undefined or seam-less slices are declined with a no-op).
- * @param deps - per-call takeover decisions (the same gate as the chat seams').
- * @returns the disposer restoring the original method.
- */
 export declare function wrapSettingsOpenDocument(api: {
     settings?: SettingsApiLike | undefined;
 } | undefined, deps: SettingsTakeoverDeps): () => void;

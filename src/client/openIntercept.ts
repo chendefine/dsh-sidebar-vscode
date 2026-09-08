@@ -386,6 +386,40 @@ export function rerouteFilesOpen(service: InterceptServiceFace, absolutePath: st
   service.openTab(filesTabSeed(absolutePath))
 }
 
+// ---- the shared chat-open decision (every chat seam's interceptor core) ----
+
+/**
+ * Build the one chat-open decision both era wrappers share: gate → open
+ * blocklist → reroute. The returned route answers whether the open was
+ * CLAIMED — the caller then synthesizes its seam's stock success receipt
+ * (a swallowed open must never surface the Host opener's failure, or the
+ * headless `xdg-open ENOENT`, to the chat UI); a declined call falls
+ * through to the untouched original, whatever its seam shape is.
+ *
+ * - gate off / non-string / empty path → decline (stock behavior);
+ * - a blocklist hit is offered to {@link OpenInterceptDeps.rerouteBlocked}
+ *   (better-sidebar's built-in Files tab — the viewer surface for the
+ *   types the code editor renders poorly): accepted → claimed, refused
+ *   (tab type disabled) → decline back to the stock Host opener;
+ * - otherwise the VSCode reroute runs and the open is claimed.
+ *
+ * @param deps - per-call takeover decisions (the same gate for every seam).
+ * @returns the route: `(path) => claimed`.
+ */
+export function createChatOpenRoute(deps: OpenInterceptDeps): (path: unknown) => boolean {
+  return (path: unknown): boolean => {
+    if (!deps.takeoverEnabled() || typeof path !== 'string' || path === '') return false
+    if (deps.blocked?.(path) === true) {
+      // A blocklist hit: the built-in Files tab takes it when the wiring
+      // accepts; a refusal (tab type disabled) falls through to the stock
+      // Host opener.
+      return deps.rerouteBlocked?.(path) === true
+    }
+    deps.reroute(path)
+    return true
+  }
+}
+
 // ---- workspaces.openPath interception (option III — the legacy runtime funnel) ----
 
 /** The client workspaces service slice the wrapper replaces (runtime IWorkspaces mirror). */
@@ -396,6 +430,8 @@ export interface WorkspacesLike {
 /**
  * Wrap `workspaces.openPath` — the client runtime's chat file-open funnel —
  * with the SAME takeover gate and reroute as the turn-tail claim (option II).
+ * The decision body is {@link createChatOpenRoute}; only this seam's result
+ * shape (a `Promise<void>` whose callers ignore the value) lives here.
  *
  * Why this second seam is needed: better-sidebar declines BOTH of its own
  * interceptions whenever its built-in editor tab is disabled in the side
@@ -427,26 +463,12 @@ export function wrapWorkspacesOpenPath(workspaces: WorkspacesLike, deps: OpenInt
   if (typeof original !== 'function') {
     return () => {}
   }
+  const route = createChatOpenRoute(deps)
   workspaces.openPath = (path: string): Promise<void> => {
-    if (deps.takeoverEnabled() && typeof path === 'string' && path !== '') {
-      if (deps.blocked?.(path) === true) {
-        // A blocklist hit: the built-in Files tab takes it when the
-        // wiring accepts; a refusal (tab type disabled) falls through to
-        // the stock Host opener below.
-        if (deps.rerouteBlocked?.(path) === true) {
-          // Callers ignore the result; resolving as success mirrors
-          // better-sidebar's own wrapper (a swallowed open must not
-          // surface the host's xdg-open rejection to the chat UI).
-          return Promise.resolve()
-        }
-      } else {
-        deps.reroute(path)
-        // Callers ignore the result; resolving as success mirrors
-        // better-sidebar's own wrapper (a swallowed open must not surface
-        // the host's xdg-open rejection to the chat UI).
-        return Promise.resolve()
-      }
-    }
+    // Callers ignore the result; resolving as success mirrors
+    // better-sidebar's own wrapper (a swallowed open must not surface the
+    // host's xdg-open rejection to the chat UI).
+    if (route(path)) return Promise.resolve()
     return original.call(workspaces, path)
   }
   return () => {
@@ -610,33 +632,18 @@ export interface RemoteSessionLike {
  * @returns the disposer restoring the original property descriptor (HMR-safe).
  */
 export function wrapRemoteOpenWorkspacePath(session: RemoteSessionLike, deps: OpenInterceptDeps): () => void {
+  const route = createChatOpenRoute(deps)
   return redefineGetterMethod<NonNullable<RemoteSessionLike['openWorkspacePath']>>(
     session, 'openWorkspacePath',
     original => (request: unknown, signal?: AbortSignal): Promise<RemoteOpenResult> => {
       const path = request !== null && typeof request === 'object'
         ? (request as { path?: unknown }).path
         : undefined
-      if (deps.takeoverEnabled() && typeof path === 'string' && path !== '') {
-        if (deps.blocked?.(path) === true) {
-          // A blocklist hit: the built-in Files tab takes it when the
-          // wiring accepts; a refusal (tab type disabled) falls through
-          // to the stock closure below.
-          if (deps.rerouteBlocked?.(path) === true) {
-            // Callers check `result.ok`; an intercepted open reports the
-            // same success the native receipt would (a rerouted open must
-            // not surface the Host opener's failure — or the headless
-            // `xdg-open ENOENT` — to the chat UI).
-            return Promise.resolve({ ok: true, value: { opened: true } })
-          }
-        } else {
-          deps.reroute(path)
-          // Callers check `result.ok`; an intercepted open reports the
-          // same success the native receipt would (a rerouted open must
-          // not surface the Host opener's failure — or the headless
-          // `xdg-open ENOENT` — to the chat UI).
-          return Promise.resolve({ ok: true, value: { opened: true } })
-        }
-      }
+      // Callers check `result.ok`; an intercepted open reports the same
+      // success the native receipt would (a rerouted open must not surface
+      // the Host opener's failure — or the headless `xdg-open ENOENT` — to
+      // the chat UI).
+      if (route(path)) return Promise.resolve({ ok: true, value: { opened: true } })
       return original(request as { readonly path: string }, signal)
     },
   )

@@ -32,8 +32,6 @@
  */
 import type { ReactNode } from 'react';
 import { type TurnTailMatch } from './producedFiles.ts';
-/** Idempotently install the row stylesheet into `document.head`. */
-export declare function adoptTurnTailStyles(): () => void;
 /** The intercepted produced-files row (visual twin of the deliverables chips). */
 export declare function TurnTailProducedFiles(props: {
     matched: TurnTailMatch;

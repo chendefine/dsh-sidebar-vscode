@@ -15,6 +15,7 @@ export declare const zh: {
     readonly settingServerUrlPlaceholder: "留空 = http://127.0.0.1:8000；或 http://127.0.0.1:8000/vscode/?tkn=…";
     readonly loading: "正在打开 VSCode …";
     readonly loadHint: "长时间空白？请检查「功能设置」里的服务地址是否可达，或用「在新窗口打开」排查";
+    readonly bootQueue: "正在等待其他窗口的编辑器完成启动（避免同时启动互相卡死），马上就好 …";
     readonly reload: "刷新";
     readonly openNewWindow: "在新窗口打开";
     readonly workspace: "工作区";

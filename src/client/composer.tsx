@@ -28,14 +28,17 @@ import {
   groupRailTags,
   parseRecoveredPaste,
   removeRefRanges,
-  type InsertOutcome,
   type OccurrenceLike,
-  type PasteLandingOutcome,
-  type RefRemovalOutcome,
-  type RecoveredPastePart,
   type ReferenceInsertLike,
 } from './references.ts'
-import { parseClipboardEnvelope, type ClipboardPayload } from './selection.ts'
+import { parseClipboardEnvelope } from './selection.ts'
+import {
+  getFallbackOptions,
+  type FallbackOptions,
+  type MentionPaster,
+  type ReferenceLander,
+  type ReferenceRemover,
+} from './referencePipeline.ts'
 import {
   readComposerSelectionDetect,
   restoreComposerCaretDetect,
@@ -43,52 +46,9 @@ import {
 import { t } from './i18n.ts'
 import { FileRefIcon, FolderRefIcon, XIcon } from './icons.tsx'
 
-/** Options kept fresh by the VSCode tab render (paste fallback path). */
-export interface FallbackOptions {
-  readonly reverseRules?: readonly { from: string, to: string }[]
-  readonly cwd?: string
-  readonly maxLines?: number
-  readonly maxBytes?: number
-}
-
-/**
- * Land one decoded payload's reference chips on the addressed session.
- * Implemented by the plugin body (which owns the service context) and handed
- * in through the slot's inject face. The payload can be an editor selection
- * or an explorer file/folder list. `at` is the range the chips replace
- * (usually the composer caret), in the plane the addressed composer's
- * selection speaks — detect coordinates on Lexical hosts, draft coordinates
- * on textarea-era ones; when omitted the implementation resolves the
- * insertion point itself — the displayed composer's caret for the addressed
- * session, else the draft tail.
- */
-export type ReferenceLander = (
-  sessionId: string | undefined,
-  payload: ClipboardPayload,
-  options: FallbackOptions,
-  at?: { readonly start: number, readonly end: number },
-) => Promise<InsertOutcome>
-
-/**
- * Land one parsed mention-carrying paste on the addressed session at the
- * paste selection. Implemented by the plugin body beside the lander.
- */
-export type MentionPaster = (
-  sessionId: string | undefined,
-  parts: readonly RecoveredPastePart[],
-  selection: { start: number, end: number },
-) => Promise<PasteLandingOutcome>
-
-/**
- * Remove every chip citing one reference from the addressed session's
- * draft (the rail's close affordance). Implemented by the plugin body;
- * the outcome tells the dock whether the chip-preserving path worked or
- * the legacy whole-draft splice must run instead.
- */
-export type ReferenceRemover = (
-  sessionId: string | undefined,
-  ref: string,
-) => Promise<RefRemovalOutcome>
+// The pipeline handle types are re-exported for the plugin body and the
+// tab (they live in referencePipeline.ts now — one typed home).
+export type { FallbackOptions, MentionPaster, ReferenceLander, ReferenceRemover }
 
 /** Props of the dock component (framework session kit + inject face). */
 interface ComposerDockProps {
@@ -104,118 +64,6 @@ interface ComposerDockProps {
   lander: ReferenceLander
   pasteMentions: MentionPaster
   removeRef?: ReferenceRemover
-}
-
-// ---- rail stylesheet ----
-
-/** Idempotency id of the injected rail <style> element. */
-const RAIL_STYLE_ID = 'dsh-sidebar-vscode-composer-css'
-
-/**
- * The rail's stylesheet. Class names carry the `dsh_vscodeRef_` prefix; the
- * rules follow the composer's reference-chip geometry (rail layout, 28px
- * pill rows, 13px labels, 20px round remove button) using the host's
- * `--dsw-alias-*` design tokens and `--dsh-composer-*` layout variables.
- * The two extra rules (`[data-invalid='true']`) render this plugin's
- * lost-owner state.
- */
-const RAIL_CSS = `
-.dsh_vscodeRef_rail {
-  box-sizing: border-box;
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  gap: 6px;
-  width: calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance));
-  max-width: var(--dsh-composer-card-max-width);
-  min-width: 0;
-  margin: 0 auto;
-}
-.dsh_vscodeRef_row {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  max-width: 100%;
-  height: 28px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 14px;
-  background: var(--dsw-alias-bg-layer-1);
-}
-.dsh_vscodeRef_row[data-invalid='true'] {
-  opacity: 0.55;
-}
-.dsh_vscodeRef_row[data-invalid='true'] .dsh_vscodeRef_path {
-  text-decoration: line-through;
-}
-.dsh_vscodeRef_path {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  max-width: 360px;
-  height: 100%;
-  padding: 0 6px 0 10px;
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 13px;
-  line-height: 18px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh_vscodeRef_icon {
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-.dsh_vscodeRef_text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.dsh_vscodeRef_remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 20px;
-  height: 20px;
-  margin-right: 4px;
-  border: 0;
-  border-radius: 10px;
-  background: none;
-  color: var(--dsw-alias-label-dimmed);
-  cursor: pointer;
-}
-.dsh_vscodeRef_remove svg {
-  width: 12px;
-  height: 12px;
-}
-.dsh_vscodeRef_remove:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-`
-
-/**
- * Idempotently install the rail stylesheet into `document.head`. Tokens and
- * layout variables are host globals, so the stylesheet stands alone.
- * @returns a disposer that removes the element (safe to call twice).
- */
-export function adoptRailStyles(): () => void {
-  const existing = document.getElementById(RAIL_STYLE_ID)
-  if (existing !== null) {
-    const node = existing
-    return () => { node.remove() }
-  }
-  const style = document.createElement('style')
-  style.id = RAIL_STYLE_ID
-  style.dataset.plugin = 'dsh-sidebar-vscode'
-  style.dataset.pluginCss = RAIL_STYLE_ID
-  style.textContent = RAIL_CSS
-  document.head.appendChild(style)
-  return () => { style.remove() }
 }
 
 /**
@@ -278,7 +126,7 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
         swallow()
         const el = textarea
         void (async () => {
-          const outcome = await lander(sessionId, payload, fallbackOptions, selection)
+          const outcome = await lander(sessionId, payload, getFallbackOptions(), selection)
           if (outcome.caret !== undefined) {
             const caret = outcome.caret
             // One frame out: the editor's own value settles first.
@@ -301,7 +149,7 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
       swallow()
       const el = textarea
       void (async () => {
-        const outcome: PasteLandingOutcome = await pasteMentions(sessionId, recovered.parts, selection)
+        const outcome = await pasteMentions(sessionId, recovered.parts, selection)
         if (outcome.caret !== undefined) {
           const caret = outcome.caret
           // One frame out: the editor's own value settles first.
@@ -368,27 +216,6 @@ export function ComposerDock(props: ComposerDockProps): React.ReactNode {
       ))}
     </div>
   )
-}
-
-/** Module-level paste-fallback options (set by the plugin body / tab render). */
-let fallbackOptions: FallbackOptions = {}
-
-/** Refresh the paste-fallback options (VSCode tab render path). */
-export function setFallbackOptions(options: FallbackOptions): void {
-  fallbackOptions = options
-}
-
-/** Module-level lander handle (set by the plugin body; cleared on dispose). */
-let lander: ReferenceLander | undefined
-
-/** Install the module-level lander handle (plugin body). */
-export function setReferenceLander(instance: ReferenceLander | undefined): void {
-  lander = instance
-}
-
-/** The lander installed by the plugin body (undefined before apply). */
-export function getReferenceLander(): ReferenceLander | undefined {
-  return lander
 }
 
 // ---- the displayed composer's caret (the bridge path's insertion point) ----

@@ -1,32 +1,47 @@
 /**
- * The VSCode tab component: resolves the session's authoritative working
- * directory, maps it into the embedded VS Code server's filesystem view
- * (pass-through when no `pathMap` rules are configured — the default),
- * and embeds the VS Code workbench in a same-origin iframe
- * (`<base>/?folder=<mapped cwd>`).
+ * The VSCode tab component: a composition layer over the workbench
+ * lifecycle controllers. Each orthogonal concern of embedding the VS Code
+ * web workbench lives in its own unit-testable module, and this component
+ * only wires them to the tab's props and renders their state:
  *
- * Design notes:
+ * - the iframe BASE resolution (same-origin mount vs direct URL, with
+ *   self-healing graduation) — `workbenchBase.ts`;
+ * - the session cwd resolution (scope fast path, `/sidebar/api` authoritative);
+ * - the BOOT GATE (park a nonce before the frame mounts, await the
+ *   extension's post-reconcile receipt OR the rendered editor strip —
+ *   whichever settles first — rotate on in-place reloads) —
+ *   `bootGate.ts` (`BootGateController`);
+ * - the BOOT LOCK (hold a cross-tab Web Lock while the workbench boots,
+ *   release once it has painted — two same-origin tabs racing to create
+ *   VS Code's IndexedDB storage deadlock for minutes) — `bootLock.ts`
+ *   (`WorkbenchBootLock`);
+ * - the FOCUS FENCE (bounce uninvited focus grabs out of the frame) —
+ *   `focusFence.ts` (`FocusFenceController`) over the pure rules in
+ *   `focusGuard.ts`;
+ * - the OPEN REQUESTS (one-shot meta stamps: retire stale, defer until
+ *   the gate settles, decline foreign sessions) — `openRequests.ts`
+ *   (`OpenRequestConsumer`) driving the two-channel opener in
+ *   `workbenchLink.ts` (extension spool first, URL payload degraded);
+ * - the CLIPBOARD BRIDGE (same-origin envelope interception) —
+ *   `clipboardBridge.ts`;
+ * - the paste-fallback options feed — `referencePipeline.ts`.
+ *
+ * Design notes that belong to the view itself:
  * - The iframe is NOT sandboxed and NOT keyed away on `visible === false`:
  *   the workbench is served same-origin (through the host half's built-in
  *   `/sidebar/vscode` proxy, or the deployment's gateway subpath — cookies
  *   flow, the WebSocket terminal works) and the VS Code session should
  *   survive tab switches inside the sidebar. The FIRST load is deferred,
- *   though, until the tab has been visible once (see the focus guards
- *   below): a workbench booted inside a hidden iframe steals the caret
- *   from the composer via its Getting Started page, so the boot waits
- *   for an audience — and a focus fence keeps both a hidden frame AND a
- *   freshly-booted one from grabbing focus the user never aimed at the
- *   workbench (VS Code focuses a restored editor on boot too, which a
- *   workspace switch-back's iframe re-insertion used to unleash on the
- *   composer).
+ *   though, until the tab has been visible once (a workbench booted
+ *   inside a hidden iframe steals the caret from the composer via its
+ *   Getting Started page, so the boot waits for an audience).
  * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
- * (`session.cwd`); the scope's optional cwd is used as a fast path.
+ *   (`session.cwd`); the scope's optional cwd is used as a fast path.
  * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
- *   snapshot each render, so edits apply on the next render (`serverUrl`
- *   through the gear popup; `pathMap` is settings-document-only — no
- *   panel row, honored when present).
+ *   snapshot each render, so edits apply on the next render.
  * - All chrome follows the DSH appearance (light / dark / system) through
- *   the host's `--dsw-alias-*` tokens — see `adoptTabStyles` below.
+ *   the host's `--dsw-alias-*` tokens (the tab stylesheet lives in
+ *   styles.ts, adopted by the plugin body with the tab registration).
  *
  * @module dsh-sidebar-vscode/client/VscodeView
  */
@@ -39,18 +54,21 @@ import {
   DEFAULT_SERVER_URL,
   isFullServerUrl,
   mapPath,
-  mapPathForOpen,
   normalizeBaseUrl,
   parsePathMap,
   PROXY_MOUNT,
 } from './paths.ts'
 import { installClipboardBridge } from './clipboardBridge.ts'
-import { BOOT_WINDOW_MS, fenceShouldBounce, FocusRestoreBudget } from './focusGuard.ts'
+import { BootGateController, type BootGateStatus } from './bootGate.ts'
+import { FocusFenceController } from './focusFence.ts'
+import { useWorkbenchBase } from './workbenchBase.ts'
+import { WorkbenchBootLock, acquireWebLock, type BootLockStatus } from './bootLock.ts'
+import { OpenRequestConsumer, pageLoadedAt } from './openRequests.ts'
+import { createWorkbenchOpener, type PendingOpen, type WorkbenchOpener } from './workbenchLink.ts'
 import type { ClipboardPayload } from './selection.ts'
-import { getReferenceLander, setFallbackOptions } from './composer.tsx'
-import { extractOpenRequest, requestAddressedTo, clearTabOpenRequest, type OpenRequest } from './openIntercept.ts'
-import { beginBoot, pollBootStatus, probeCapability, sendOpenCommand } from './openChannelApi.ts'
-import { watchBootQuiet } from './bootGate.ts'
+import { getReferenceLander, setFallbackOptions } from './referencePipeline.ts'
+import { extractOpenRequest, clearTabOpenRequest, type OpenRequest } from './openIntercept.ts'
+import { beginBoot, pollBootStatus, probeCapability, reportUserInteract, sendOpenCommand } from './openChannelApi.ts'
 import { t } from './i18n.ts'
 
 /** What `/sidebar/api/session.cwd` answers on success (`parsed.value`). */
@@ -60,173 +78,42 @@ interface CwdResult {
   parent: string | null
 }
 
-/**
- * Page-load timestamp: openRequest nonces are wall-clock minted
- * (`nextNonce`), so a request with a nonce below this floor was persisted by
- * a PREVIOUS page and must not replay when the tab component mounts.
- */
-const PAGE_LOAD_AT = Date.now()
+/** One client-randomness boot nonce (printable, bounded). */
+function mintBootNonce(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
 
-/**
- * The highest openRequest nonce any tab instance of this page has executed.
- * Module level on purpose: it survives tab close/reopen remounts (whose
- * mount-baseline uses it, so an already-executed request never re-opens) and
- * resets only on reload.
- */
-let lastExecutedNonceAtPage = Number.NEGATIVE_INFINITY
+/** Presentational: the toolbar strip (workspace path + reload + pop-out). */
+function Toolbar(props: {
+  mapped: string | null | undefined
+  target: string
+  onReload: () => void
+}): React.ReactNode {
+  const { mapped, target, onReload } = props
+  return (
+    <div className="dsh_vscodeTab_strip">
+      <span className="dsh_vscodeTab_title">{t('title')}</span>
+      <span className="dsh_vscodeTab_path" title={mapped ?? undefined}>
+        {t('workspace')}: {mapped ?? '…'}
+      </span>
+      <span className="dsh_vscodeTab_spacer" />
+      <button type="button" className="dsh_vscodeTab_reload" onClick={onReload}>
+        ↻ {t('reload')}
+      </button>
+      <a className="dsh_vscodeTab_open" href={target} target="_blank" rel="noreferrer">
+        ⧉ {t('openNewWindow')}
+      </a>
+    </div>
+  )
+}
 
-// ---- tab stylesheet ----
-
-/** Idempotency id of the injected tab <style> element. */
-const TAB_STYLE_ID = 'dsh-sidebar-vscode-tab-css'
-
-/**
- * The tab's stylesheet. Every surface follows the host appearance (light /
- * dark / system) through the shell's `--dsw-alias-*` design tokens — the
- * same palette better-sidebar's own panels, strips, and banners use — so
- * the toolbar reads as native chrome instead of a hard-coded dark bar:
- * the strip sits on `bg-layer-1` with an `border-l1` hairline, labels use
- * the label ramp, the workbench well uses `bg-base` (what better-sidebar
- * paints behind its own iframes), and notices reuse the warn banner pair
- * (`state-warn-label` on `state-warn-tertiary`).
- */
-const TAB_CSS = `
-.dsh_vscodeTab_root {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  background: var(--dsw-alias-bg-layer-1);
-}
-.dsh_vscodeTab_strip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  min-width: 0;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
-  font: var(--dsw-font-xxs-12);
-  color: var(--dsw-alias-label-secondary);
-}
-.dsh_vscodeTab_title {
-  flex: none;
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-  white-space: nowrap;
-}
-.dsh_vscodeTab_path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--dsw-alias-label-tertiary);
-}
-.dsh_vscodeTab_spacer {
-  flex: 1;
-}
-.dsh_vscodeTab_reload {
-  flex: none;
-  height: 22px;
-  padding: 0 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font: var(--dsw-font-xxxs-11);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.12s, color 0.12s;
-}
-.dsh_vscodeTab_reload:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-.dsh_vscodeTab_open {
-  flex: none;
-  padding: 3px 2px;
-  color: var(--dsw-alias-label-secondary);
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color 0.12s;
-}
-.dsh_vscodeTab_open:hover {
-  color: var(--dsw-alias-label-primary);
-}
-.dsh_vscodeTab_notice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  min-width: 0;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
-  font: var(--dsw-font-xxxs-11);
-  color: var(--dsw-alias-state-warn-label);
-  background: var(--dsw-alias-state-warn-tertiary);
-}
-.dsh_vscodeTab_noticeText {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh_vscodeTab_surface {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  background: var(--dsw-alias-bg-base);
-}
-.dsh_vscodeTab_frame {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
-}
-.dsh_vscodeTab_loading {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 24px;
-  text-align: center;
-  font: var(--dsw-font-xs-13);
-  color: var(--dsw-alias-label-tertiary);
-  pointer-events: none;
-}
-.dsh_vscodeTab_loadingHint {
-  font: var(--dsw-font-xxs-12);
-  color: var(--dsw-alias-label-tertiary);
-  opacity: 0.8;
-  max-width: 420px;
-}
-`
-
-/**
- * Idempotently install the tab stylesheet into `document.head`. The tokens
- * are host globals maintained by the theme presenter (they flip with the
- * appearance preference, `system` included), so the stylesheet needs no
- * theme awareness of its own.
- * @returns a disposer that removes the element (safe to call twice).
- */
-export function adoptTabStyles(): () => void {
-  const existing = document.getElementById(TAB_STYLE_ID)
-  if (existing !== null) {
-    const node = existing
-    return () => { node.remove() }
-  }
-  const style = document.createElement('style')
-  style.id = TAB_STYLE_ID
-  style.dataset.plugin = 'dsh-sidebar-vscode'
-  style.dataset.pluginCss = TAB_STYLE_ID
-  style.textContent = TAB_CSS
-  document.head.appendChild(style)
-  return () => { style.remove() }
+/** Presentational: one amber degradation notice row. */
+function NoticeRow(props: { text: string }): React.ReactNode {
+  return (
+    <div className="dsh_vscodeTab_notice">
+      <span className="dsh_vscodeTab_noticeText">{props.text}</span>
+    </div>
+  )
 }
 
 /**
@@ -236,143 +123,29 @@ export function adoptTabStyles(): () => void {
 export function VscodeView(props: TabComponentProps): React.ReactNode {
   const { scope, store, visible } = props
 
-  // Shared settings (read each render; the gear popup writes the prefs doc).
-  //
-  // Iframe-base rule: the prefix is decided by PROXY REACHABILITY ALONE —
-  // whenever the host's built-in proxy is serving, the workbench opens at
-  // the same-origin mount `/sidebar/vscode`, whatever `serverUrl` holds.
-  // `serverUrl` only names the UPSTREAM (and the fallback base):
-  //
-  // - unset → DEFAULT_SERVER_URL (`http://127.0.0.1:8000`, a bare local
-  //   `code serve-web`), pushed to the host like any full URL;
-  // - a full URL (base path and `?tkn=` token included) → pushed via
-  //   POST /sidebar-vscode/api/proxy.config; reachable → mount, otherwise
-  //   the direct cross-origin iframe plus a notice (old host half,
-  //   unreachable-from-host address);
-  // - an explicit relative subpath → never pushed; the host's own
-  //   (env-default) proxy state decides via POST /sidebar-vscode/api/
-  //   proxy.status: serving → mount, else the subpath itself (gateway
-  //   semantics — the only shape that still reaches the gateway).
+  // ── Shared settings (read each render; the gear popup writes the doc) ──
   const rawServerUrl = readSetting(store, 'serverUrl')
   const effectiveServerUrl = rawServerUrl.trim() === '' ? DEFAULT_SERVER_URL : normalizeBaseUrl(rawServerUrl)
   const fullUrl = isFullServerUrl(effectiveServerUrl)
-  const [baseState, setBaseState] = useState<'resolving' | 'mount' | 'direct'>('resolving')
-  const pushedUrl = useRef<string | null>(null)
-  useEffect(() => {
-    let cancelled = false
-    setBaseState('resolving')
-    // Once a handshake lands on 'direct', keep watching the host: its own
-    // probe loop keeps retrying the adopted/env upstream (a serve-web that
-    // booted slower than `dsh web` — e.g. both restarted together — answers
-    // late), and the workbench must graduate to the mount when it starts
-    // serving. Cheap loopback POST, stopped by unmount / setting change.
-    let graduate: (() => void) | null = null
-    const watchServing = (): void => {
-      const timer = window.setInterval(() => {
-        if (cancelled) return
-        void (async () => {
-          try {
-            const response = await fetch('/sidebar-vscode/api/proxy.status', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: '{}',
-            })
-            const parsed: { ok?: boolean, value?: { serving?: boolean } } | null = await response.json().catch(() => null)
-            if (cancelled) return
-            if (response.ok && parsed?.ok === true && parsed.value?.serving === true) {
-              setBaseState('mount')
-              graduate?.()
-            }
-          } catch {
-            // keep watching — the host half may itself be restarting
-          }
-        })()
-      }, 5000)
-      graduate = () => { window.clearInterval(timer) }
-    }
-    if (!fullUrl) {
-      // An explicit subpath cannot name an upstream: release any previously
-      // pushed one (the host returns to its env/default) and let the host's
-      // own proxy state pick the winner. The reset is awaited so the status
-      // ask right behind it cannot observe the released upstream.
-      const previous = pushedUrl.current
-      pushedUrl.current = null
-      void (async () => {
-        if (previous !== null) {
-          await fetch('/sidebar-vscode/api/proxy.config', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ reset: true }),
-          }).catch(() => {})
-        }
-        try {
-          const response = await fetch('/sidebar-vscode/api/proxy.status', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: '{}',
-          })
-          const parsed: { ok?: boolean, value?: { serving?: boolean } } | null = await response.json().catch(() => null)
-          if (cancelled) return
-          if (response.ok && parsed?.ok === true && parsed.value?.serving === true) {
-            setBaseState('mount')
-            return
-          }
-          setBaseState('direct')
-          watchServing()
-        } catch {
-          if (!cancelled) {
-            setBaseState('direct')
-            watchServing()
-          }
-        }
-      })()
-      return () => { cancelled = true; graduate?.() }
-    }
-    void (async () => {
-      try {
-        const response = await fetch('/sidebar-vscode/api/proxy.config', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ url: effectiveServerUrl }),
-        })
-        const parsed: { ok?: boolean, value?: { reachable?: boolean } } | null = await response.json().catch(() => null)
-        if (cancelled) return
-        if (response.ok && parsed?.ok === true) {
-          // Adopted either way (the host keeps probing an unreachable
-          // one, claiming the mount with honest 502s): remember the push
-          // NOW, so a later switch to a relative subpath resets it.
-          pushedUrl.current = effectiveServerUrl
-          if (parsed.value?.reachable === true) {
-            setBaseState('mount')
-            return
-          }
-        }
-        // Unreachable NOW (serve-web may still be warming up): the host
-        // adopted the config and keeps probing — fall back to the direct
-        // iframe but keep watching for it to start serving.
-        setBaseState('direct')
-        setFlash(t('proxyFallback'))
-        watchServing()
-      } catch {
-        if (!cancelled) {
-          setBaseState('direct')
-          setFlash(t('proxyFallback'))
-          watchServing()
-        }
-      }
-    })()
-    return () => { cancelled = true; graduate?.() }
-  }, [effectiveServerUrl, fullUrl])
-  // The iframe base resolution must settle before the first load (a flip
-  // afterwards would reload the workbench once).
-  const resolvingBase = baseState === 'resolving'
-  const serverUrl = baseState === 'mount' ? PROXY_MOUNT : effectiveServerUrl
   const pathMap = parsePathMap(readSetting(store, 'pathMap'))
 
-  // Session cwd resolution: fast path via scope, authoritative via the API.
+  // Degradation notices only (unmapped opens / injection failures / text
+  // fallback / proxy fallback); success is silent.
+  const [flash, setFlash] = useState<string | null>(null)
+  useEffect(() => {
+    if (flash === null) return
+    const timer = window.setTimeout(() => { setFlash(null) }, 3000)
+    return () => { window.clearTimeout(timer) }
+  }, [flash])
+
+  // ── The iframe base (mount vs direct), resolved by the controller ──────
+  const baseState = useWorkbenchBase(effectiveServerUrl, fullUrl, () => { setFlash(t('proxyFallback')) })
+  const resolvingBase = baseState === 'resolving'
+  const serverUrl = baseState === 'mount' ? PROXY_MOUNT : effectiveServerUrl
+
+  // ── Session cwd resolution: fast path via scope, authoritative via API ─
   const [cwd, setCwd] = useState<string | undefined>(scope.cwd)
   const [cwdFailed, setCwdFailed] = useState(false)
-
   useEffect(() => {
     if (scope.cwd !== undefined && scope.cwd !== '') {
       setCwd(scope.cwd)
@@ -413,167 +186,138 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     }
   }, [scope.sessionId, scope.cwd])
 
-  // Path translation + iframe target. With no rules (the unset default)
-  // mapPath passes the raw cwd through; `unmapped` degenerates to its
-  // null-only case, so the notice only fires for a non-absolute cwd (the
-  // workbench then opens its default view — folder === null below).
+  // Path translation. With no rules (the unset default) mapPath passes the
+  // raw cwd through; `unmapped` degenerates to its null-only case, so the
+  // notice only fires for a non-absolute cwd.
   const mapped = cwd === undefined ? undefined : mapPath(cwd, pathMap)
   const unmapped = cwd !== undefined && mapped === null
 
-  // ---- Chat-open requests (the intercepted produced-file chips / path
-  // links): the tab's meta carries `{ openRequest: { nonce, path } }` and is
-  // consumed here. The nonce baseline at mount treats a request already in
-  // the meta as seen WITHOUT opening — a page reload (persisted meta) or a
-  // same-page tab remount must not replay the last open — EXCEPT a request
-  // minted by THIS page after load: the click that opened the tab lands as
-  // one synchronous store mutation (`openTab` + `updateTab` batch into the
-  // very render that mounts this component), and that click must execute.
-  // See PAGE_LOAD_AT / lastExecutedNonceAtPage below for the two floors.
-  //
-  // Two retirements harden that vehicle (both land in openIntercept.ts):
-  // a consumed (or declined) request is STRIPPED from the persisted meta —
-  // the layout outlives the click, and a leftover stamp is what a much
-  // later remount or another window re-executed against a different
-  // workspace, poisoning that workbench's spool; and every request is
-  // stamped with the session it addresses — a consumer in another
-  // session's tab declines it instead of opening a foreign file.
-  const openRequest = extractOpenRequest((props.tab as { meta?: unknown } | undefined)?.meta)
-  const lastNonce = useRef(Number.NEGATIVE_INFINITY)
-  const nonceInitialized = useRef(false)
-  const [pendingOpen, setPendingOpen] = useState<{ basis: string, url: string } | null>(null)
-  // Degradation notices only (unmapped opens / injection failures / text
-  // fallback); success is silent — declared here so the open path below can
-  // reference it (the same state the clipboard bridge reports through).
-  const [flash, setFlash] = useState<string | null>(null)
-  // Latest values for the async open path (avoids stale closures).
-  const openInputs = useRef({ serverUrl, pathMap, cwd })
-  openInputs.current = { serverUrl, pathMap, cwd }
-
-  // ---- Boot gate state (declared early: the open effect below reads the
-  // phase; the gate itself is computed further down, once `loadKey` exists).
-  // 'pending' = this load's boot nonce is not parked yet — the frame is NOT
-  // mounted at all, and an open request arriving then DEFERS (see the open
-  // effect) so its command can carry the nonce; 'rotating' = a still-mounted
-  // frame RELOADED in place (pane detach/reattach) and a fresh nonce is being
-  // parked for it — the frame stays mounted but hidden until the new receipt;
-  // 'hidden' = parked and the receipt is being awaited (the nonce is
-  // taggable); 'dom'/'off' = no exact handshake (stock open, no tag).
-  type BootGatePhase = 'pending' | 'rotating' | 'hidden' | 'dom' | 'off'
-  type BootGateState = { key: string, phase: BootGatePhase, nonce: string, workspace: string }
-  const [gateState, setGateState] = useState<BootGateState>(
-    { key: '', phase: 'pending', nonce: '', workspace: '' })
-  const [revealState, setRevealState] = useState<{ key: string, revealed: boolean }>({ key: '', revealed: false })
-  const bootGateRef = useRef<BootGateState>({ key: '', phase: 'pending', nonce: '', workspace: '' })
-
-  const executeOpen = useCallback(async (request: OpenRequest): Promise<void> => {
-    const { serverUrl: base, pathMap: rules, cwd: workdir } = openInputs.current
-    const workspace = workdir !== undefined ? mapPath(workdir, rules) : undefined
-    // Unmapped ≠ unopenable: a path no rule matches passes through as-is
-    // (same-container deployment — the workbench sees the very same file),
-    // and the open channel decides existence (extension stat / VS Code's
-    // own not-found error). null only for non-absolute garbage.
-    const file = mapPathForOpen(request.path, rules)
-    if (file === null) {
-      setFlash(`${t('openUnmapped')}: ${request.path}`)
-      return
-    }
-    // Primary channel: the upgraded dsh.selection-reference extension polls
-    // a spool dir in the container; the node half writes the command. Only
-    // tried when a workspace folder is known (it addresses the extension).
-    // mapPath never returns null for a resolved cwd (pass-through), so the
-    // extension channel is now available in the no-rules default too.
-    if (workspace != null) {
-      const capable = await probeCapability(workspace)
-      if (capable) {
-        // Boot tag (extension cap ≥ 4): the command names THIS workbench
-        // boot's nonce, so only the host that activated with it consumes
-        // the open. Without the tag, a LINGERING previous host (serve-web
-        // keeps it — and its 500ms spool poll — alive for a while after
-        // the tab's iframe went away) eats the command during the fresh
-        // boot's window: it opens into a dying window and the fresh
-        // host's ledger reconcile closes the file as a ghost — the open
-        // silently lost (the closed-tab-then-click hole).
-        const gate = bootGateRef.current
-        const boot = gate.phase === 'hidden' ? gate.nonce : undefined
-        const sent = await sendOpenCommand({
-          folder: workspace,
-          path: file,
-          nonce: request.nonce,
-          line: request.line,
-          column: request.column,
-          ...(boot !== undefined && capable >= 4 ? { boot } : {}),
-        })
-        if (sent) return
-      }
-    }
-    // Degraded channel (no extension / route failure / no workspace): reload
-    // the workbench once with VS Code web's native payload parameter. The
-    // pending URL is stamped with the basis it was computed from and ignored
-    // once that basis changes (cwd flip / settings edit) so a stale payload
-    // can never hijack a later navigation.
-    let authority = window.location.host
-    try { authority = new URL(base, window.location.href).host || authority } catch { /* keep page host */ }
-    setPendingOpen({
-      basis: `${base}#${workspace ?? ''}`,
-      url: buildVscodeUrl(base, workspace ?? null, {
-        file,
-        authority,
-        line: request.line,
-        column: request.column,
-      }),
-    })
+  // Latest values for the async paths (avoids stale closures): the gate's
+  // workspace provider, the opener's inputs, and the bridge all read this.
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const inputsRef = useRef({ serverUrl, pathMap, cwd })
+  inputsRef.current = { serverUrl, pathMap, cwd }
+  const workspaceOf = useCallback((): string | null => {
+    const { pathMap: rules, cwd: workdir } = inputsRef.current
+    return workdir !== undefined ? mapPath(workdir, rules) : null
   }, [])
 
+  // ── The boot gate controller (nonce handshake + rotation + reveal) ─────
+  const gateRef = useRef<BootGateController | null>(null)
+  if (gateRef.current === null) {
+    gateRef.current = new BootGateController({
+      workspace: workspaceOf,
+      beginBoot,
+      pollBootStatus,
+      domSample: (): string | null => {
+        try {
+          const doc = iframeRef.current?.contentDocument ?? null
+          if (doc === null) return null
+          if (doc.querySelector('.monaco-workbench') === null) return ''
+          const tabs = Array.from(doc.querySelectorAll('.editor-group-container .tab'))
+          if (tabs.length === 0) return '(none)'
+          return tabs.map(tab => {
+            const label = tab.querySelector('.tab-label')
+            return `${label !== null ? label.textContent ?? '' : ''}${tab.classList.contains('active') ? '*' : ''}`
+          }).join('|')
+        } catch {
+          return null
+        }
+      },
+      domPaths: (): string[] | null => {
+        // The ledger-aware reveal gate's strip sample: one entry per file
+        // tab, the `data-resource-name` basename the tab DOM exposes (VS
+        // Code bakes no full path into the strip — the hover tooltip is a
+        // custom widget). Non-file tabs carry no resource name and answer
+        // their label text instead, which then mismatches the ledger's
+        // basenames — the conservative direction (keep waiting).
+        try {
+          const doc = iframeRef.current?.contentDocument ?? null
+          if (doc === null) return null
+          if (doc.querySelector('.monaco-workbench') === null) return null
+          return Array.from(
+            doc.querySelectorAll('.editor-group-container .tab'),
+            tab => (tab.getAttribute('data-resource-name')
+              ?? tab.querySelector('.tab-label')?.textContent ?? '').trim(),
+          )
+        } catch {
+          return null
+        }
+      },
+      mintNonce: mintBootNonce,
+      schedule: (callback, ms) => { window.setTimeout(callback, ms) },
+      now: () => Date.now(),
+    })
+  }
+  const gate = gateRef.current
+  const [gateState, setGateState] = useState<BootGateStatus>(gate.getSnapshot())
+  useEffect(() => gate.subscribe(() => { setGateState(gate.getSnapshot()) }), [gate])
+  useEffect(() => () => { gate.dispose() }, [gate])
+
+  // ── The cross-tab boot lock (serialize first paints across tabs) ───────
+  // Two same-origin DSH pages booting the workbench concurrently race to
+  // CREATE VS Code's IndexedDB (`vscode-web-db`) and one can then hang for
+  // minutes inside its own boot (`willOpenDatabase`) — see bootLock.ts.
+  // The frame may mount only behind this lock, which releases as soon as
+  // the workbench has painted (the race is over by then).
+  const bootLockRef = useRef<WorkbenchBootLock | null>(null)
+  if (bootLockRef.current === null) {
+    bootLockRef.current = new WorkbenchBootLock({
+      acquire: () => acquireWebLock(),
+      rendered: () => {
+        try {
+          return iframeRef.current?.contentDocument?.querySelector('.monaco-workbench') != null
+        } catch {
+          return false
+        }
+      },
+      schedule: (callback, ms) => { window.setTimeout(callback, ms) },
+      now: () => Date.now(),
+    })
+  }
+  const bootLock = bootLockRef.current
+  const [lockSnap, setLockSnap] = useState<BootLockStatus>(bootLock.getSnapshot())
+  useEffect(() => bootLock.subscribe(() => { setLockSnap(bootLock.getSnapshot()) }), [bootLock])
+  useEffect(() => () => { bootLock.dispose() }, [bootLock])
+
+  // ── The workbench opener (extension spool first, URL payload degraded) ─
+  const [pendingOpen, setPendingOpen] = useState<PendingOpen | null>(null)
+  const openerRef = useRef<WorkbenchOpener | null>(null)
+  if (openerRef.current === null) {
+    openerRef.current = createWorkbenchOpener({
+      inputs: () => ({
+        serverUrl: inputsRef.current.serverUrl,
+        pathMap: inputsRef.current.pathMap,
+        cwd: inputsRef.current.cwd,
+      }),
+      taggableNonce: () => gateRef.current?.taggableNonce(),
+      onNotice: message => { setFlash(message) },
+      onPendingChange: pending => { setPendingOpen(pending) },
+      probeCapability,
+      sendOpenCommand,
+      pageHref: () => window.location.href,
+      pageHost: () => window.location.host,
+    })
+  }
+  const opener = openerRef.current
+
+  // ── The open-request consumer (one-shot meta stamps) ───────────────────
+  const consumerRef = useRef<OpenRequestConsumer | null>(null)
+  if (consumerRef.current === null) {
+    consumerRef.current = new OpenRequestConsumer({
+      retire: () => {
+        const tabId = (props.tab as { id?: unknown } | undefined)?.id
+        if (typeof tabId === 'string') clearTabOpenRequest(store, tabId)
+      },
+      execute: (request: OpenRequest) => openerRef.current?.open(request),
+      gateSettled: () => gateRef.current !== null && gateRef.current.settled(),
+      pageLoadedAt,
+    })
+  }
+  const openRequest = extractOpenRequest((props.tab as { meta?: unknown } | undefined)?.meta)
   useEffect(() => {
-    const tabId = (props.tab as { id?: unknown } | undefined)?.id
-    const retire = (): void => {
-      if (typeof tabId === 'string') clearTabOpenRequest(store, tabId)
-    }
-    if (!nonceInitialized.current) {
-      nonceInitialized.current = true
-      // A request that predates this page load was persisted (or already
-      // executed before a remount): mark it seen and skip. A request minted
-      // by THIS page (nonce ≥ PAGE_LOAD_AT) that no instance has executed
-      // yet is the mount-batch click — fall through so it runs.
-      if (openRequest === null || openRequest.nonce < PAGE_LOAD_AT) {
-        lastNonce.current = openRequest?.nonce ?? Number.NEGATIVE_INFINITY
-        // Retire a stale persisted request: the layout outlives the click,
-        // and a leftover stamp is what a much-later remount (or another
-        // window) mistook for a fresh open — poisoning a foreign
-        // workspace's spool with it.
-        retire()
-        return
-      }
-      lastNonce.current = lastExecutedNonceAtPage
-    }
-    if (openRequest === null) return
-    if (openRequest.nonce <= lastNonce.current) {
-      // Seen before (this instance's baseline or a previous execution):
-      // spent — retire it so it can never fire again anywhere.
-      retire()
-      return
-    }
-    // Defer while THIS load's boot nonce is not parked yet (gate 'pending',
-    // or 'rotating' — a reloaded frame whose fresh nonce is in flight): the
-    // click that re-creates the tab lands in the very render that mounts
-    // the iframe, and its open command must carry the boot nonce
-    // (executeOpen) — which beginBoot parks only milliseconds later. The
-    // effect re-runs when the gate settles ('hidden'/'dom'/'off'); nothing
-    // is advanced or retired here, so the deferred request still executes.
-    if (bootGateRef.current.phase === 'pending' || bootGateRef.current.phase === 'rotating') return
-    lastNonce.current = openRequest.nonce
-    lastExecutedNonceAtPage = openRequest.nonce
-    // An openRequest is a ONE-SHOT command, not durable tab state: retire
-    // it the moment it is consumed here, whoever executes it below.
-    retire()
-    // Session addressing: a request stamped for ANOTHER session's
-    // workbench (a different workspace folder — another window showing a
-    // different conversation, a synced layout landing here) must be
-    // declined, or the open delivers a foreign file into THIS workspace's
-    // spool. Unstamped requests (the settings takeover) stay wildcards.
-    if (!requestAddressedTo(openRequest, scope.sessionId)) return
-    void executeOpen(openRequest)
-  }, [openRequest?.nonce, executeOpen, store, scope.sessionId, gateState.phase])
+    consumerRef.current?.update(openRequest, scope.sessionId)
+  }, [openRequest?.nonce, scope.sessionId, gateState.phase, store])
 
   // The iframe target: the pending payload URL while one is valid for the
   // current basis, else the plain folder URL.
@@ -583,33 +327,13 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     ? effectivePending.url
     : buildVscodeUrl(serverUrl, mapped ?? null)
 
-  // ---- Focus guards ─────────────────────────────────────────────────────
-  //
-  // The embedded workbench must never take focus the user did not AIM
-  // at it. When VS Code boots it programmatically focuses its own
-  // content — the Getting Started page when it renders, a restored
-  // workspace's editor — roughly 0.5–4s after the iframe loads, with no
-  // user interaction at all. When that boot lands at a moment the user
-  // was heading somewhere else, the grab rips the caret out from under
-  // them: a new conversation's default tab behind a collapsed panel
-  // loses the caret invisibly (two blinks), and switching back to a
-  // session in another WORKSPACE re-boots the workbench (the pane is
-  // keep-alive at the React level, but its iframe is torn out of the
-  // document on the way out and re-inserted on the way back, which the
-  // browser reloads) and lands focus in the restored file right after
-  // the composer was autofocused. Two guards, one per phase of the
-  // frame's life:
-  //
-  // 1. DEFERRED FIRST LOAD: hold the iframe back until this tab has been
-  //    visible at least once (active tab AND open panel). The openAsDefault
-  //    swap lands this tab as a brand-new session's default while the panel
-  //    is usually collapsed — a hidden boot buys nothing the user can see,
-  //    and deferring it moves any boot-time focus grab to the first real
-  //    expansion, where the user is looking AT the workbench. Once shown,
-  //    the frame is never keyed away again (the keep-alive contract in the
-  //    module header stands). `visible === undefined` (a better-sidebar
-  //    peer too old to pass the flag) fails OPEN — load as before, never
-  //    defer on a guess.
+  // ── Focus guards: deferred first load ───────────────────────────────────
+  // Hold the iframe back until this tab has been visible at least once
+  // (active tab AND open panel): the openAsDefault swap lands this tab as
+  // a brand-new session's default while the panel is usually collapsed —
+  // a hidden boot buys nothing the user can see and only invites the
+  // focus grab. `visible === undefined` (a better-sidebar peer too old to
+  // pass the flag) fails OPEN — load as before, never defer on a guess.
   const [everVisible, setEverVisible] = useState(visible !== false)
   useEffect(() => {
     if (visible !== false) setEverVisible(true)
@@ -617,99 +341,87 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
 
   // Hold the iframe until the cwd resolves (avoids loading the default
   // workspace first and flipping to ?folder= a moment later), until the
-  // iframe base settles (proxy.config handshake, or the proxy.status ask
-  // for an unset serverUrl) — a flip after the first load would reload the
+  // iframe base settles — a flip after the first load would reload the
   // workbench once for nothing — and until the tab has been shown once.
   const ready = (cwd !== undefined || cwdFailed) && !resolvingBase && everVisible
 
   // Load state: the overlay hides on the iframe's load event; a src change
-  // or a manual reload re-shows it. Cross-origin load failures can't be
-  // observed from here — the persistent hint row covers that case.
+  // or a manual reload re-shows it.
   const [loaded, setLoaded] = useState(false)
   const [nonce, setNonce] = useState(0)
   useEffect(() => {
     setLoaded(false)
   }, [target])
-
-  // ---- Boot gate: hide the workbench until its editors are reconciled ──
-  //
-  // The iframe teardown that closes the tab skips VS Code's unload flush,
-  // so its own editor-state restore can replay files the user closed
-  // seconds earlier. The dsh.selection-reference extension (≥ 0.1.2)
-  // reconciles the restored editor area against its `editors.json` ledger
-  // (close the ghosts, reopen the ledger set) and reports through a
-  // `boot.json` receipt — echoing a nonce this side parks in the spool
-  // BEFORE the iframe ever loads. Until that echo lands (or the bounded
-  // timeout gives up), the frame sits at opacity 0 behind the loading
-  // overlay: the FIRST visible frame already shows the reconciled editor
-  // area, so nothing ever visibly opens just to be closed again. The gate
-  // is fail-soft in every direction: no route (an older host half not
-  // reloaded yet), no workspace, a dead extension — the workbench boots
-  // visible with stock behavior.
   const loadKey = `${target}#${nonce}`
+
   // Keyed reads: a changed loadKey starts its gate at 'pending' in the
   // very render that remounts the iframe — no stale phase can leak across
   // loads, and the frame never mounts before its boot nonce is parked.
   const bootGate = gateState.key === loadKey
     ? gateState
-    : { key: loadKey, phase: 'pending' as const, nonce: '', workspace: '' }
-  const revealed = revealState.key === loadKey && revealState.revealed
+    : { key: loadKey, phase: 'pending' as const, nonce: '', workspace: '', ledger: null as string[] | null, revealed: false }
+  const revealed = bootGate.revealed
   const bootHidden = (bootGate.phase === 'hidden' || bootGate.phase === 'dom' || bootGate.phase === 'rotating') && !revealed
-  bootGateRef.current = bootGate
-  const loadKeyRef = useRef(loadKey)
-  loadKeyRef.current = loadKey
-  const revealStopRef = useRef<(() => void) | null>(null)
-  // How many times the CURRENT loadKey's iframe has fired load: 1 = the
-  // mount load (the gate parked its nonce before it), 2+ = the SAME frame
-  // reloaded in place — the pane DOM was detached (panel collapse,
-  // workspace switch) and re-inserted, which the browser treats as a
-  // reload. Those reloads need a fresh nonce (see the rotation below).
-  const loadCountRef = useRef(0)
-  const workspaceOf = useCallback((): string | null => {
-    const { pathMap: rules, cwd: workdir } = openInputs.current
-    return workdir !== undefined ? mapPath(workdir, rules) : null
-  }, [])
-  const mintBootNonce = (): string => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+
+  // Keyed lock reads, same discipline: a changed loadKey re-arms the boot
+  // lock before the frame may remount (a stale 'held' from the previous
+  // load must not leak across loads), and 'queued' past the grace drives
+  // the overlay's waiting hint.
+  const bootLockHeld = lockSnap.key === loadKey && lockSnap.state === 'held'
+  const lockQueued = lockSnap.key === loadKey && lockSnap.state === 'queued'
+
+  // The lock lifecycle: acquire per load key (first mounts AND reloads —
+  // every boot re-opens the database), release when that key goes away.
   useEffect(() => {
     if (!ready) return
-    let cancelled = false
-    loadCountRef.current = 0
-    setGateState({ key: loadKey, phase: 'pending', nonce: '', workspace: '' })
-    setRevealState({ key: loadKey, revealed: false })
-    const workspace = workspaceOf()
-    if (workspace === null) {
-      setGateState({ key: loadKey, phase: 'off', nonce: '', workspace: '' })
-      return () => { cancelled = true }
-    }
-    const bootNonce = mintBootNonce()
-    void (async () => {
-      const began = await beginBoot(workspace, bootNonce)
-      if (cancelled) return
-      // 'hidden' = the nonce handshake is live: hold the frame until the
-      // extension's receipt echoes the nonce (exact). 'dom' = the route
-      // is missing (an older host half not reloaded yet): fall back to
-      // the DOM-quiet watcher (see handleFrameLoad) — still no visible
-      // open-then-close, at heuristic precision.
-      setGateState(began
-        ? { key: loadKey, phase: 'hidden', nonce: bootNonce, workspace }
-        : { key: loadKey, phase: 'dom', nonce: '', workspace: '' })
-    })()
-    return () => {
-      cancelled = true
-      // Fence the dying boot on the way out (a loadKey change remounts the
-      // frame and parks its own nonce milliseconds later; a true unmount
-      // leaves this one standing): rotating the parked nonce retires any
-      // lingering extension host still bound to this boot — it must stop
-      // writing the ledger before its invisible window poisons it.
-      const fenceWorkspace = workspaceOf()
-      if (fenceWorkspace !== null) void beginBoot(fenceWorkspace, mintBootNonce())
-    }
-  }, [ready, loadKey, workspaceOf])
-  useEffect(() => () => { revealStopRef.current?.() }, [])
+    bootLock.begin(loadKey)
+    return () => { bootLock.end() }
+  }, [ready, loadKey, bootLock])
 
-  // ---- Selection bridge: intercept envelope-carrying clipboard writes the
-  // embedded workbench makes (same-origin privilege) and land them in the
-  // DSH composer as atomic reference chips. Always on — no switch gates it.
+  // The gate lifecycle: a new load key parks a fresh nonce before the
+  // frame may mount — behind the boot lock, so the nonce is minted close
+  // to the mount it gates rather than while queued behind another tab;
+  // the going-away fence rotates the parked nonce once more (retiring
+  // every lingering extension host still bound to the old boot before
+  // its invisible window poisons the shared editor ledger).
+  useEffect(() => {
+    if (!ready || !bootLockHeld) return
+    gate.begin(loadKey)
+    return () => { gate.fence() }
+  }, [ready, bootLockHeld, loadKey, gate])
+
+  // ── The user-interaction stamp (post-reveal deference signal) ───────────
+  // The reveal racer can reveal the frame before the extension's
+  // reconcile runs, and the reconcile diffs against a ledger that predates
+  // anything the user opens in that window — their tab would be closed as
+  // a restore ghost. The FIRST user gesture inside the revealed frame
+  // therefore stamps `interact.json` for THIS boot (nonce-scoped, see
+  // `boot.interact`), and the extension's close loop and ghost passes
+  // stand down for a boot whose user is already interacting.
+  useEffect(() => {
+    if (!revealed || bootGate.phase !== 'hidden' || bootGate.nonce === '') return
+    const doc = iframeRef.current?.contentDocument ?? null
+    if (doc === null) return
+    const options: AddEventListenerOptions = { capture: true }
+    let done = false
+    const cleanup = (): void => {
+      if (done) return
+      done = true
+      doc.removeEventListener('pointerdown', gesture, options)
+      doc.removeEventListener('keydown', gesture, options)
+    }
+    const gesture = (): void => {
+      cleanup()
+      const { pathMap: rules, cwd: workdir } = inputsRef.current
+      const workspace = workdir !== undefined ? mapPath(workdir, rules) : null
+      if (workspace !== null) void reportUserInteract(workspace, bootGate.nonce)
+    }
+    doc.addEventListener('pointerdown', gesture, options)
+    doc.addEventListener('keydown', gesture, options)
+    return cleanup
+  }, [revealed, bootGate.phase, bootGate.nonce, loadKey])
+
+  // ── Capture caps + the paste-fallback options feed ─────────────────────
   const maxLinesSetting = readSettingValue(store, 'maxLines')
   const maxLines = typeof maxLinesSetting === 'number' && Number.isFinite(maxLinesSetting) && maxLinesSetting > 0
     ? Math.floor(maxLinesSetting)
@@ -718,36 +430,29 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   const maxBytes = typeof maxBytesSetting === 'number' && Number.isFinite(maxBytesSetting) && maxBytesSetting > 0
     ? Math.floor(maxBytesSetting)
     : undefined
-  const iframeRef = useRef<HTMLIFrameElement | null>(null)
-  const bridgeDisposer = useRef<(() => void) | null>(null)
-  // Latest values for the async bridge callback (avoids stale closures).
-  const bridgeInputs = useRef({ pathMap, maxLines, maxBytes, cwd, sessionId: scope.sessionId })
-  bridgeInputs.current = { pathMap, maxLines, maxBytes, cwd, sessionId: scope.sessionId }
-  // Keep the paste fallback's options fresh (same live values).
-  setFallbackOptions({ reverseRules: pathMap, cwd, maxLines, maxBytes })
+  // Kept fresh in an effect (never mid-render): the dock's paste fallback
+  // reads the latest values at paste time.
   useEffect(() => {
-    if (flash === null) return
-    const timer = window.setTimeout(() => { setFlash(null) }, 3000)
-    return () => { window.clearTimeout(timer) }
-  }, [flash])
+    setFallbackOptions({ reverseRules: pathMap, cwd, maxLines, maxBytes })
+  })
 
-  // Reports delivery back to the clipboard bridge: on success the bridge
-  // swallows the write, so the user's clipboard is never clobbered; only a
-  // failed landing lets the envelope's readable fallback reach the
-  // clipboard for a manual paste.
+  // ── The clipboard bridge (same-origin envelope interception) ────────────
+  // Always on — no switch gates it. Reports delivery back: on success the
+  // bridge swallows the write (the user's clipboard keeps whatever it
+  // held); only a failed landing lets the envelope's readable fallback
+  // reach the clipboard for a manual paste.
   const handlePayload = useCallback((payload: ClipboardPayload): Promise<boolean> => {
-    const { pathMap: rules, maxLines: lines, maxBytes: bytes, cwd: workdir, sessionId } = bridgeInputs.current
     return (async () => {
       const lander = getReferenceLander()
       if (lander === undefined) {
         setFlash(t('injectFailed'))
         return false
       }
-      const outcome = await lander(sessionId, payload, {
-        reverseRules: rules,
-        cwd: workdir,
-        maxLines: lines,
-        maxBytes: bytes,
+      const outcome = await lander(scope.sessionId, payload, {
+        reverseRules: inputsRef.current.pathMap,
+        cwd: inputsRef.current.cwd,
+        maxLines,
+        maxBytes,
       })
       if (outcome.failed) {
         setFlash(t('injectFailed'))
@@ -756,8 +461,9 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
       if (outcome.textFallback > 0) setFlash(t('injectedAsText'))
       return true
     })()
-  }, [])
+  }, [scope.sessionId, maxLines, maxBytes])
 
+  const bridgeDisposer = useRef<(() => void) | null>(null)
   const installBridge = useCallback(() => {
     bridgeDisposer.current?.()
     bridgeDisposer.current = null
@@ -773,294 +479,60 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     if (loaded) installBridge()
   }, [loaded, installBridge])
 
-  // 2. FOCUS FENCE: after the workbench HAS loaded (the keep-alive frame
-  //    survives a panel collapse or an in-panel tab switch), VS Code can
-  //    still grab document focus on its own — a restored editor, an
-  //    extension command, a late boot step. The fence hands focus back
-  //    to the element that held it last outside the frame, bounded by a
-  //    FocusRestoreBudget so a re-grabbing workbench cannot livelock
-  //    the focus chain, in exactly two armed situations (the shared
-  //    decision logic lives in focusGuard.ts):
-  //
-  //    - HIDDEN (`visible === false`): the frame cannot receive user
-  //      clicks, so every focus entry into it is a steal. Armed only on
-  //      an EXPLICIT false — an old better-sidebar peer passing no flag
-  //      must never have its user clicks fought (fail open).
-  //    - BOOT: for BOOT_WINDOW_MS after EVERY load of the frame. Every
-  //      load is a workbench boot, and every boot self-focuses; the
-  //      loads that matter are the ones the user never asked for — this
-  //      instance survives workspace switches at the React level, but
-  //      its iframe is torn out of the document on the way out and
-  //      re-inserted on the way back, which the browser reloads: a
-  //      switch-back boots a workbench that restores its editor and
-  //      focuses it right after the composer was autofocused, and a
-  //      page reload does the same. Entries during the window bounce
-  //      UNLESS the user gestured inside the frame (same-origin
-  //      pointerdown/keydown trackers, re-attached on every load) or a
-  //      parent Tab keypress handed focus over. The one sanctioned boot
-  //      is the deferred first load of a component that mounted hidden
-  //      — the user revealed the tab to release it. A cross-origin
-  //      frame cannot report gestures: the boot fence stands down
-  //      rather than bounce the user's real clicks.
-  //
-  //    Detection rides FOCUSOUT, not focusin: a focus crossing INTO the
-  //    iframe fires focusout in the parent document but never focusin —
-  //    the focusin lands inside the frame's own document (same-origin
-  //    privilege verified live; matches the observed steal sequence).
-  //    After each focusout the settled activeElement is checked against
-  //    the frame on the next macrotask; on a match the remembered
-  //    outside surface is re-focused.
-  const visibleRef = useRef(visible)
-  visibleRef.current = visible
-  const bornVisibleRef = useRef(visible !== false)
-  const firstLoadRef = useRef(true)
-  const fenceRef = useRef({
-    budget: new FocusRestoreBudget(),
-    lastOutside: null as HTMLElement | null,
-    bootArmed: false,
-    bootUntil: 0,
-    gestureAt: 0,
-    parentTabAt: 0,
-  })
+  // ── The focus fence controller (hidden + boot windows) ──────────────────
+  const fenceRef = useRef<FocusFenceController | null>(null)
+  if (fenceRef.current === null) {
+    fenceRef.current = new FocusFenceController(
+      {
+        getFrame: () => iframeRef.current,
+        now: () => Date.now(),
+        setTimeout: (callback, ms) => { window.setTimeout(callback, ms) },
+      },
+      { bornVisible: visible !== false },
+    )
+  }
+  const fence = fenceRef.current
+  useEffect(() => { fence.setVisible(visible) }, [fence, visible])
+  useEffect(() => fence.attach(), [fence])
 
-  // Boot reveal watch — two paths, one goal: keep the frame invisible
-  // until the extension's post-reconcile state is on screen, so a
-  // restored-but-closed ghost file never visibly opens.
-  //  - 'hidden': the exact nonce handshake. The extension echoes this
-  //    load's boot nonce in its boot.json receipt after the editor
-  //    reconcile (pollBootStatus); a bounded timeout reveals as-is so a
-  //    dead or mid-upgrade extension cannot blank the tab for good.
-  //  - 'dom': the fallback for an older host half without the boot
-  //    routes — watch the workbench's editor tab strip (same-origin
-  //    privilege) until it holds still, bounded the same way.
-  // The watch is per-load: starting one stops the previous loop.
-  const startRevealWatch = useCallback((gate: BootGateState, key: string): void => {
-    revealStopRef.current?.()
-    revealStopRef.current = null
-    const reveal = (): void => { setRevealState({ key, revealed: true }) }
-    if (gate.key === key && gate.phase === 'hidden') {
-      const startedAt = Date.now()
-      let stopped = false
-      revealStopRef.current = () => { stopped = true }
-      const tick = async (): Promise<void> => {
-        if (stopped) return
-        let matched = false
-        try { matched = await pollBootStatus(gate.workspace, gate.nonce) } catch { matched = false }
-        if (stopped) return
-        if (matched || Date.now() - startedAt > 8000) {
-          reveal()
-          return
-        }
-        window.setTimeout(() => { void tick() }, 300)
-      }
-      void tick()
-    } else if (gate.key === key && gate.phase === 'dom') {
-      const frame = iframeRef.current
-      if (frame !== null) {
-        revealStopRef.current = watchBootQuiet({
-          sample: () => {
-            try {
-              const doc = frame.contentDocument
-              if (doc === null) return null
-              if (doc.querySelector('.monaco-workbench') === null) return ''
-              const tabs = Array.from(doc.querySelectorAll('.editor-group-container .tab'))
-              if (tabs.length === 0) return '(none)'
-              return tabs.map(tab => {
-                const label = tab.querySelector('.tab-label')
-                return `${label !== null ? label.textContent ?? '' : ''}${tab.classList.contains('active') ? '*' : ''}`
-              }).join('|')
-            } catch {
-              return null
-            }
-          },
-        }, reveal)
-      } else {
-        reveal()
-      }
-    } else {
-      reveal()
-    }
-  }, [])
-
-  // Boot ROTATION: the pane DOM is detached on a panel collapse or a
-  // workspace switch and re-inserted later, which the browser treats as a
-  // RELOAD of the still-mounted iframe — a fresh renderer whose extension
-  // host activates against a bootreq.json that still names the PREVIOUS
-  // boot. The hosts of that previous boot may be lingering (serve-web
-  // keeps them alive): still holding the old nonce, still armed to write
-  // the shared editors.json ledger from their invisible windows, and (per
-  // the extension's fence) trusted exactly as long as the parked nonce
-  // says so. Rotating the nonce here re-attributes the channel to the
-  // reloaded frame: the fresh host adopts the new nonce at activation
-  // (the rotation completes within milliseconds of the load event, well
-  // ahead of it), every old host stands down, and the gate re-arms its
-  // hidden reveal against the new receipt.
-  const rotateBoot = useCallback(async (key: string): Promise<void> => {
-    const workspace = workspaceOf()
-    if (workspace === null) {
-      startRevealWatch(bootGateRef.current, key)
-      return
-    }
-    const fresh = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-    setGateState({ key, phase: 'rotating', nonce: '', workspace: '' })
-    setRevealState({ key, revealed: false })
-    const began = await beginBoot(workspace, fresh)
-    const next: BootGateState = began
-      ? { key, phase: 'hidden', nonce: fresh, workspace }
-      : { key, phase: 'dom', nonce: '', workspace: '' }
-    setGateState(next)
-    bootGateRef.current = next
-    startRevealWatch(next, key)
-  }, [workspaceOf, startRevealWatch])
-
-  // Frame load completion: bridge install + boot-fence arming. The
-  // gesture trackers are re-attached on EVERY load — the document they
-  // must live in is whichever the frame shows now, and an intermediate
-  // about:blank would otherwise leave them aimed at a dead document.
+  // Frame load completion: bridge install + gate driving + fence arming.
   const handleFrameLoad = useCallback(() => {
     setLoaded(true)
     installBridge()
-    loadCountRef.current += 1
-    const key = loadKeyRef.current
-    const gate = bootGateRef.current
-    if (loadCountRef.current > 1 && (gate.phase === 'hidden' || gate.phase === 'rotating')) {
-      // A reload of the still-mounted frame (not the mount load): rotate
-      // the boot nonce for it and reveal against the new receipt.
-      void rotateBoot(key)
-    } else {
-      startRevealWatch(gate, key)
-    }
-    const frame = iframeRef.current
-    if (frame === null) return
-    const fence = fenceRef.current
-    fence.gestureAt = 0
-    let gesturesVisible = true
-    try {
-      const doc = frame.contentDocument
-      if (doc === null) {
-        // Cross-origin (the direct-iframe fallback): no gesture
-        // visibility — fail open rather than bounce the user's clicks.
-        gesturesVisible = false
-      } else {
-        const mark = (): void => { fence.gestureAt = Date.now() }
-        doc.addEventListener('pointerdown', mark, true)
-        doc.addEventListener('keydown', mark, true)
-      }
-    } catch {
-      gesturesVisible = false
-    }
-    // EVERY load is a workbench boot, and every boot reaches for focus
-    // on its own (the Getting Started page, a restored editor) — so
-    // every load re-arms the boot fence with a fresh window. This
-    // component instance SURVIVES workspace switches (the pane is
-    // keep-alive at the React level), but its iframe is torn out of the
-    // document on the way out and re-inserted on the way back, which
-    // the browser treats as a reload: a fresh boot about a second
-    // before the composer is autofocused. The ONE sanctioned boot is
-    // the deferred first load of a component that mounted hidden — that
-    // load was released by the user revealing the tab, so its focus
-    // grab is welcome (and the gesture trackers make every other armed
-    // window harmless for a user who is actually clicking inside).
-    const firstLoad = firstLoadRef.current
-    firstLoadRef.current = false
-    const sanctionedReveal = firstLoad && !bornVisibleRef.current
-    fence.bootArmed = gesturesVisible && !sanctionedReveal
-    fence.bootUntil = Date.now() + BOOT_WINDOW_MS
-  }, [installBridge, rotateBoot, startRevealWatch])
-
-  // Parent-side listeners live for the component's whole life (both
-  // fence situations share them); everything they need is in refs, so
-  // the effect never re-runs.
-  useEffect(() => {
-    const fence = fenceRef.current
-    const track = (target: EventTarget | null): void => {
-      if (target instanceof HTMLElement && target !== iframeRef.current) fence.lastOutside = target
-    }
-    const checkSteal = (): void => {
-      const frame = iframeRef.current
-      if (frame === null || document.activeElement !== frame) return
-      const bounce = fenceShouldBounce({
-        hidden: visibleRef.current === false,
-        bootArmed: fence.bootArmed,
-        bootUntil: fence.bootUntil,
-        gestureAt: fence.gestureAt,
-        parentTabAt: fence.parentTabAt,
-      }, Date.now())
-      if (!bounce) return
-      if (!fence.budget.take(Date.now())) return
-      if (fence.lastOutside !== null && fence.lastOutside.isConnected) fence.lastOutside.focus()
-    }
-    const onFocusOut = (event: FocusEvent): void => {
-      track(event.target)
-      window.setTimeout(checkSteal, 0)
-    }
-    const onFocusIn = (event: FocusEvent): void => { track(event.target) }
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Tab') fence.parentTabAt = Date.now()
-    }
-    document.addEventListener('focusout', onFocusOut, true)
-    document.addEventListener('focusin', onFocusIn, true)
-    document.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      document.removeEventListener('focusout', onFocusOut, true)
-      document.removeEventListener('focusin', onFocusIn, true)
-      document.removeEventListener('keydown', onKeyDown, true)
-    }
-  }, [])
+    gate.frameLoaded()
+    fence.onFrameLoad()
+  }, [installBridge, gate, fence])
 
   return (
     <div className="dsh_vscodeTab_root">
-      {/* Toolbar: workspace path + reload + open-in-new-window */}
-      <div className="dsh_vscodeTab_strip">
-        <span className="dsh_vscodeTab_title">{t('title')}</span>
-        <span className="dsh_vscodeTab_path" title={mapped ?? undefined}>
-          {t('workspace')}: {mapped ?? '…'}
-        </span>
-        <span className="dsh_vscodeTab_spacer" />
-        <button
-          type="button"
-          className="dsh_vscodeTab_reload"
-          onClick={() => {
-            // A manual reload drops any pending degraded-channel payload:
-            // VS Code consumes `payload` only at workbench startup, so a
-            // reload at the stale payload URL would bounce the workbench
-            // back to that old file. Clearing flips `target` to the plain
-            // folder URL in the same click that remounts the iframe anyway.
-            setPendingOpen(null)
-            setLoaded(false)
-            setNonce(nonce + 1)
-          }}
-        >
-          ↻ {t('reload')}
-        </button>
-        <a className="dsh_vscodeTab_open" href={target} target="_blank" rel="noreferrer">
-          ⧉ {t('openNewWindow')}
-        </a>
-      </div>
+      <Toolbar
+        mapped={mapped}
+        target={target}
+        onReload={() => {
+          // A manual reload drops any pending degraded-channel payload:
+          // VS Code consumes `payload` only at workbench startup, so a
+          // reload at the stale payload URL would bounce the workbench
+          // back to that old file. Clearing flips `target` to the plain
+          // folder URL in the same click that remounts the iframe anyway.
+          opener.clearPending()
+          setLoaded(false)
+          setNonce(nonce + 1)
+        }}
+      />
 
-      {/* Notices: unmappable workspace / cwd resolution failure / injection feedback */}
+      {/* Notices: unmappable workspace / cwd failure / degradations */}
       {(unmapped || cwdFailed) && (
-        <div className="dsh_vscodeTab_notice">
-          <span className="dsh_vscodeTab_noticeText">
-            {cwdFailed ? t('cwdFailed') : t('unmapped')}
-          </span>
-        </div>
+        <NoticeRow text={cwdFailed ? t('cwdFailed') : t('unmapped')} />
       )}
-      {flash !== null && (
-        <div className="dsh_vscodeTab_notice">
-          <span className="dsh_vscodeTab_noticeText">
-            {flash}
-          </span>
-        </div>
-      )}
+      {flash !== null && <NoticeRow text={flash} />}
 
       {/* Workbench surface */}
       <div className="dsh_vscodeTab_surface">
-        {ready && bootGate.phase !== 'pending'
+        {ready && bootLockHeld && bootGate.phase !== 'pending'
           ? (
             <iframe
               ref={iframeRef}
-              key={`${target}#${nonce}`}
+              key={loadKey}
               src={target}
               title="VSCode"
               onLoad={handleFrameLoad}
@@ -1073,7 +545,7 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
           ? (
             <div className="dsh_vscodeTab_loading">
               <div>{t('loading')}</div>
-              <div className="dsh_vscodeTab_loadingHint">{t('loadHint')}</div>
+              <div className="dsh_vscodeTab_loadingHint">{lockQueued ? t('bootQueue') : t('loadHint')}</div>
             </div>
           )
           : null}

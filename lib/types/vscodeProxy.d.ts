@@ -70,8 +70,12 @@ export declare const UPSTREAM_ENV = "DSH_SIDEBAR_VSCODE_UPSTREAM";
  * their real base-path URL instead.
  */
 export declare const DEFAULT_UPSTREAM = "http://127.0.0.1:8000";
-/** The subpath this proxy owns on the webserver (the browser-facing mount). */
-export declare const PROXY_MOUNT = "/sidebar/vscode";
+/**
+ * The subpath this proxy owns on the webserver (the browser-facing mount) —
+ * single-sourced in the shared protocol plane (`src/shared/protocol.ts`),
+ * which the browser half's `paths.ts` re-exports from the same table.
+ */
+export { PROXY_MOUNT } from './shared/protocol.ts';
 /** One parsed upstream: what `code serve-web` printed, structurally. */
 export interface UpstreamConfig {
     /** `scheme://host[:port]` — the request target origin. */

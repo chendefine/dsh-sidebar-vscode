@@ -79,8 +79,13 @@ export const UPSTREAM_ENV = 'DSH_SIDEBAR_VSCODE_UPSTREAM'
  */
 export const DEFAULT_UPSTREAM = 'http://127.0.0.1:8000'
 
-/** The subpath this proxy owns on the webserver (the browser-facing mount). */
-export const PROXY_MOUNT = '/sidebar/vscode'
+/**
+ * The subpath this proxy owns on the webserver (the browser-facing mount) —
+ * single-sourced in the shared protocol plane (`src/shared/protocol.ts`),
+ * which the browser half's `paths.ts` re-exports from the same table.
+ */
+export { PROXY_MOUNT } from './shared/protocol.ts'
+import { PROXY_MOUNT } from './shared/protocol.ts'
 
 /** Probe cadence while the upstream has not answered yet. */
 const PROBE_INTERVAL_MS = 10_000

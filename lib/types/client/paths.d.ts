@@ -40,10 +40,11 @@ export interface PathMapRule {
 export declare const DEFAULT_SERVER_URL = "http://127.0.0.1:8000";
 /**
  * The browser-facing mount of the host half's built-in reverse proxy.
- * Must stay in sync with `PROXY_MOUNT` in `src/vscodeProxy.ts` (duplicated
- * here because the client bundle must not import the node-http module).
+ * Single-sourced in the shared protocol plane (`src/shared/protocol.ts`,
+ * mirrored in `extension/lib/protocol.js`): the client bundle may not
+ * import the node-http module, but the pure constant table it CAN share.
  */
-export declare const PROXY_MOUNT = "/sidebar/vscode";
+export { PROXY_MOUNT } from '../shared/protocol.ts';
 /** Whether a raw `serverUrl` value is a full URL (vs a same-origin subpath). */
 export declare function isFullServerUrl(raw: string | undefined): boolean;
 /**

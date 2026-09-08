@@ -1,26 +1,7 @@
+import { CAPABILITY_MAX_AGE_MS, CAPABILITY_MIN_V, slugOf } from './shared/protocol.ts';
+export { CAPABILITY_MAX_AGE_MS, CAPABILITY_MIN_V, slugOf };
 /** The spool root (same base the extension derives from `os.tmpdir()`). */
 export declare const OPEN_CHANNEL_BASE: string;
-/** How old the capability marker may be before "present" turns false. */
-export declare const CAPABILITY_MAX_AGE_MS = 120000;
-/**
- * The minimum extension build the command channel trusts. The v0.1.1
- * extension CONSUMED commands but never deleted `cmd.json` and persisted no
- * nonce watermark — every workbench reboot (the sidebar tab's iframe
- * teardown/recreate) re-delivered the last opened file, which is exactly
- * the "closed file reopens on next VS Code start" bug. v0.1.2 (CHANNEL_CAP_V
- * in extension/extension.js) deletes consumed commands, skips stale ones,
- * and writes a versioned cap marker; `readCapability` parses that marker,
- * so a deployment still carrying the old build degrades to the URL-payload
- * channel instead of replaying files.
- */
-export declare const CAPABILITY_MIN_V = 2;
-/**
- * Filesystem-safe slug of one workspace folder: non [A-Za-z0-9_-] characters
- * collapse to '_', capped at 64, plus a djb2-xor hex digest of the ORIGINAL
- * string so distinct folders sharing a collapsed form cannot collide.
- * Mirrored in extension/extension.js — keep both in lockstep (spec test).
- */
-export declare function slugOf(folder: string): string;
 /** One validated open command. */
 export interface OpenCommandBody {
     folder: string;
@@ -41,6 +22,28 @@ export interface OpenCommandBody {
  * anything malformed — foreign shapes must never reach the filesystem.
  */
 export declare function parseOpenCommand(payload: unknown): OpenCommandBody | null;
+/**
+ * The per-folder JSON spool: one place for the atomic tmp+rename write and
+ * the fail-soft read every channel file shares. A write is never observed
+ * half-formed (the extension polls at any instant); a read of a missing or
+ * corrupt file answers null instead of throwing, so every caller degrades
+ * rather than breaks.
+ */
+export declare class SpoolStore {
+    private readonly base;
+    /** @param base - the spool root (usually {@link OPEN_CHANNEL_BASE}). */
+    constructor(base: string);
+    /** The folder's spool directory (created lazily by {@link write}). */
+    private dirOf;
+    /** Atomically write one JSON document into the folder's spool. */
+    write(folder: string, file: string, document: unknown, now?: () => number): Promise<void>;
+    /** Read one JSON document; null when absent, unreadable, or corrupt. */
+    readJson(folder: string, file: string): Promise<unknown>;
+    /** File facts for freshness checks; null when the file is absent. */
+    statFile(folder: string, file: string): Promise<{
+        mtimeMs: number;
+    } | null>;
+}
 /**
  * Write one open command into the folder's spool (atomic tmp+rename, so the
  * extension never observes a partial JSON document).
@@ -68,6 +71,17 @@ export declare function writeEmbeddedBoot(base: string, folder: string, now?: ()
  */
 export declare function writeBootRequest(base: string, folder: string, nonce: string): Promise<void>;
 /**
+ * Stamp one user interaction for a boot (`interact.json`, `{nonce, ts}`):
+ * the client writes it when the REVEALED workbench sees its first user
+ * gesture, and the extension's reconcile close loop and ghost passes read
+ * it to stand down — the reveal racer can hand the user an interactive
+ * workbench while the reconcile is still settling against a ledger that
+ * predates their open, and a tab the user opened in that window must
+ * never be closed as a restore ghost. The nonce scoping keeps a stale
+ * stamp from disarming a later boot.
+ */
+export declare function writeUserInteract(base: string, folder: string, nonce: string, now?: () => number): Promise<void>;
+/**
  * Whether the extension's `boot.json` receipt for `folder` echoes exactly
  * this boot's nonce — i.e. the editor reconcile already ran for the
  * workbench the client is keeping invisible. Any missing file, parse
@@ -75,6 +89,19 @@ export declare function writeBootRequest(base: string, folder: string, nonce: st
  * timeout reveals regardless).
  */
 export declare function readBootStatus(base: string, folder: string, nonce: string): Promise<boolean>;
+/**
+ * The boot LEDGER (`editors.json`) as it stands at nonce-park time: the
+ * open-editor set the extension's reconcile will diff the restored window
+ * against (same file, same shape the extension's `readLedger` parses —
+ * `v: 1` with an `editors` array of absolute POSIX paths). Answered
+ * alongside `boot.begin`'s park so the CLIENT's DOM-quiet reveal racer can
+ * tell "the strip is quiet because it is settled" from "the strip is
+ * quiet-but-wrong while the reconcile's close is still in flight" — a
+ * quiet-but-mismatched strip must keep the frame hidden. Null when absent
+ * or malformed: a first-ever boot has no ledger (the reconcile then
+ * touches nothing) and an unreadable one gates nothing.
+ */
+export declare function readBootLedger(base: string, folder: string): Promise<string[] | null>;
 /**
  * Whether the extension serving `folder` is alive AND new enough to trust:
  * its capability marker must exist, be younger than

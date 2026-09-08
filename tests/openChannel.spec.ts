@@ -5,21 +5,25 @@
  * @module dsh-sidebar-vscode/tests/openChannel.spec
  */
 
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   CAPABILITY_MAX_AGE_MS,
+  SpoolStore,
   slugOf,
   parseOpenCommand,
   readBootStatus,
+  readBootLedger,
   readCapability,
   readCapabilityMarker,
   writeBootRequest,
+  writeUserInteract,
   writeOpenCommand,
 } from '../src/openChannel.ts'
+import { CHANNEL_FILES } from '../src/shared/protocol.ts'
 
 let base: string
 
@@ -59,13 +63,15 @@ describe('slugOf (the cross-process spec)', () => {
   it('stays in lockstep with the extension\'s plain-JS mirror', async () => {
     // Extract the extension's slugOf source and evaluate it in isolation
     // (its module requires vscode, so it cannot be imported directly).
+    // Since the extension decomposed into lib/, the mirror lives in
+    // extension/lib/protocol.js — the shared-protocol plane's CJS twin.
     const source = await readFile(
-      fileURLToPath(new URL('../extension/extension.js', import.meta.url)),
+      fileURLToPath(new URL('../extension/lib/protocol.js', import.meta.url)),
       'utf8',
     )
-    const match = source.match(/^function slugOf \(folder\) \{[\s\S]*?^\}/m)
+    const match = source.match(/slugOf: function \(folder\) \{[\s\S]*?\n  \}/)
     expect(match).not.toBeNull()
-    const extensionSlugOf = new Function(`return (${match![0]})`)() as (folder: string) => string
+    const extensionSlugOf = new Function(`return (${match![0].replace(/^slugOf: /, '')})`)() as (folder: string) => string
     for (const folder of [
       '/data/workspace',
       '/opt',
@@ -228,11 +234,70 @@ describe('writeBootRequest / readBootStatus (the boot-reveal handshake)', () => 
     expect(await readBootStatus(base, folder, 'n1')).toBe(true)
   })
 
+  it('writeUserInteract stamps {nonce, ts} for the boot (the deference signal)', async () => {
+    const folder = '/boot-interact'
+    await writeUserInteract(base, folder, 'boot-9')
+    const raw = JSON.parse(
+      await readFile(join(base, slugOf(folder), 'interact.json'), 'utf8'),
+    ) as { nonce?: unknown, ts?: unknown }
+    expect(raw.nonce).toBe('boot-9')
+    expect(typeof raw.ts).toBe('number')
+  })
+
   it('a corrupt boot.json never counts as matched', async () => {
     const folder = '/boot-corrupt'
     const dir = join(base, slugOf(folder))
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, 'boot.json'), 'not json', 'utf8')
     expect(await readBootStatus(base, folder, 'n1')).toBe(false)
+  })
+
+  it('readBootLedger answers the editors array of a well-formed ledger', async () => {
+    const folder = '/boot-ledger'
+    const dir = join(base, slugOf(folder))
+    await mkdir(dir, { recursive: true })
+    // Absent → null (a first-ever boot has no ledger).
+    expect(await readBootLedger(base, folder)).toBeNull()
+    // The extension's shape (v:1, editors of absolute paths, active) → the set.
+    await writeFile(join(dir, CHANNEL_FILES.editors), JSON.stringify({
+      v: 1, ts: 5, editors: ['/w/a.ts', '/w/sub/b.ts'], active: '/w/a.ts',
+    }), 'utf8')
+    expect(await readBootLedger(base, folder)).toEqual(['/w/a.ts', '/w/sub/b.ts'])
+    // The empty ledger the "everything closed" boot parks → [] (not null):
+    // the reconcile's keep-set is empty, so ANY open tab is a ghost.
+    await writeFile(join(dir, CHANNEL_FILES.editors), JSON.stringify({ v: 1, ts: 6, editors: [], active: null }), 'utf8')
+    expect(await readBootLedger(base, folder)).toEqual([])
+    // Wrong version, non-array, or relative entries never gate → null.
+    for (const bad of [
+      { v: 2, editors: ['/a.ts'] },
+      { v: 1, editors: 'nope' },
+      { v: 1, editors: ['/ok.ts', 'relative.ts'] },
+      'not json at all',
+    ]) {
+      await writeFile(join(dir, CHANNEL_FILES.editors), typeof bad === 'string' ? bad : JSON.stringify(bad), 'utf8')
+      expect(await readBootLedger(base, folder)).toBeNull()
+    }
+  })
+})
+
+describe('SpoolStore (the one atomic-write / fail-soft-read home)', () => {
+  it('writes readable JSON atomically and leaves no tmp files behind', async () => {
+    const store = new SpoolStore(base)
+    await store.write('/spool', CHANNEL_FILES.cmd, { a: 1 })
+    const dir = join(base, slugOf('/spool'))
+    const files = await readdir(dir)
+    expect(files).toEqual(['cmd.json'])
+    expect(await store.readJson('/spool', 'cmd.json')).toEqual({ a: 1 })
+  })
+
+  it('reads null for a missing or corrupt file, stats null for a missing file', async () => {
+    const store = new SpoolStore(base)
+    expect(await store.readJson('/spool-missing', 'cmd.json')).toBeNull()
+    expect(await store.statFile('/spool-missing', 'cmd.json')).toBeNull()
+    const dir = join(base, slugOf('/spool-corrupt'))
+    await mkdir(dir, { recursive: true })
+    await writeFile(join(dir, 'cmd.json'), 'not json', 'utf8')
+    expect(await store.readJson('/spool-corrupt', 'cmd.json')).toBeNull()
+    expect((await store.statFile('/spool-corrupt', 'cmd.json'))).toBeInstanceOf(Object)
   })
 })

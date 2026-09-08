@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   OPEN_CHANNEL_API,
   beginBoot,
+  reportUserInteract,
   fetchSettingsDocumentPath,
   pollBootStatus,
   probeCapability,
@@ -122,23 +123,40 @@ describe('sendOpenCommand', () => {
 })
 
 describe('beginBoot / pollBootStatus (the boot-reveal handshake)', () => {
-  it('beginBoot POSTs folder+nonce and maps a 200 {ok:true} to true', async () => {
-    const fetchLike = makeFetch([{ status: 200, body: { ok: true } }])
-    await expect(beginBoot('/data/workspace', 'boot-7', fetchLike)).resolves.toBe(true)
+  it('beginBoot POSTs folder+nonce and maps a 200 {ok:true} to {began, editors}', async () => {
+    const fetchLike = makeFetch([{ status: 200, body: { ok: true, value: { editors: ['/w/a.ts'] } } }])
+    await expect(beginBoot('/data/workspace', 'boot-7', fetchLike)).resolves.toEqual({ began: true, editors: ['/w/a.ts'] })
     expect(fetchLike.calls).toEqual([
       { url: `${OPEN_CHANNEL_API}/boot.begin`, body: { folder: '/data/workspace', nonce: 'boot-7' } },
     ])
+    // An older host half answers {ok:true} with no value: parked, ledger
+    // unknown — the reveal racer then gates on quiet alone.
+    const legacy = makeFetch([{ status: 200, body: { ok: true } }])
+    await expect(beginBoot('/w', 'n2', legacy)).resolves.toEqual({ began: true, editors: null })
+    // A malformed editors field (not an array of strings) degrades to null.
+    const malformed = makeFetch([{ status: 200, body: { ok: true, value: { editors: ['/ok.ts', 7] } } }])
+    await expect(beginBoot('/w', 'n3', malformed)).resolves.toEqual({ began: true, editors: null })
   })
 
-  it('a missing route (older host half) and errors map beginBoot to false — no gating', async () => {
+  it('a missing route (older host half) and errors map beginBoot to {began:false} — no gating', async () => {
     for (const answer of [
       { status: 404, body: { ok: false, error: { code: 'not-found' } } },
       { status: 500, body: null },
       new Error('network down'),
     ]) {
       const fetchLike = makeFetch([answer])
-      await expect(beginBoot('/w', 'n', fetchLike)).resolves.toBe(false)
+      await expect(beginBoot('/w', 'n', fetchLike)).resolves.toEqual({ began: false, editors: null })
     }
+  })
+
+  it('reportUserInteract POSTs folder+nonce and maps {ok:true} to true', async () => {
+    const fetchLike = makeFetch([{ status: 200, body: { ok: true } }])
+    await expect(reportUserInteract('/w', 'boot-9', fetchLike)).resolves.toBe(true)
+    expect(fetchLike.calls).toEqual([
+      { url: `${OPEN_CHANNEL_API}/boot.interact`, body: { folder: '/w', nonce: 'boot-9' } },
+    ])
+    const failing = makeFetch([new Error('network down')])
+    await expect(reportUserInteract('/w', 'n', failing)).resolves.toBe(false)
   })
 
   it('pollBootStatus maps {ok, value:{matched:true}} to true; everything else to false', async () => {

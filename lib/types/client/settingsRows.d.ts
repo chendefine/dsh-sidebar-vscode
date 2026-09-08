@@ -51,11 +51,6 @@ export interface CapSettingsPanelProps {
     service?: DefaultTabServiceFace;
 }
 /**
- * Idempotently install the panel stylesheet into `document.head`.
- * @returns a disposer that removes the element (safe to call twice).
- */
-export declare function adoptSettingsStyles(): () => void;
-/**
  * The settings panel body: the default-tab switch, the open-blocklist tag
  * row (it qualifies the switch above it — which files that takeover must
  * NOT claim), the serverUrl text row, then one {@link CapRow} per declared

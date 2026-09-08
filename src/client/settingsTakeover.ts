@@ -100,6 +100,43 @@ export interface SettingsTakeoverDeps {
  * @param deps - per-call takeover decisions (the same gate as the chat seams').
  * @returns the disposer restoring the original method.
  */
+// ---- the shared settings-open decision (both era wrappers' core) ----
+
+/**
+ * The settings-open takeover body both era wrappers share: gate → resolve
+ * the document through this plugin's fenced node-half route → reroute
+ * into the VSCode tab (+ close the dialog) → answer with the seam's
+ * synthesized success. Every decline (gate off, provider absent, route
+ * missing, transport error) falls back to the untouched original — the
+ * stock behavior is always the correct fallback, so the button never
+ * breaks because of this plugin.
+ *
+ * Type-parameterized by the seam's answer shape: the legacy member
+ * resolves a `SettingsOpenResponse`, the gateway-era remote a
+ * `RemoteSettingsOpenResult`; `fallthrough` invokes the seam's own
+ * original, `success` builds its receipt (both production callers read
+ * `result.ok` alone to clear the button's busy state; the workbench open
+ * itself is asynchronous by design — extension polling / one payload
+ * reload — and a synthesized acknowledgment must not wait for, or
+ * surface, its outcome).
+ */
+async function settingsOpenRoute<T>(
+  deps: SettingsTakeoverDeps,
+  fallthrough: () => Promise<T>,
+  success: () => T,
+): Promise<T> {
+  if (!deps.takeoverEnabled()) return await fallthrough()
+  const path = await deps.resolvePath()
+  if (path === null || path === '') {
+    // Could not locate the document (provider absent / route missing /
+    // transport error) — the stock behavior is the correct fallback.
+    return await fallthrough()
+  }
+  deps.reroute(path)
+  deps.closeDialog?.()
+  return success()
+}
+
 export function wrapSettingsOpenDocument(
   api: { settings?: SettingsApiLike | undefined } | undefined,
   deps: SettingsTakeoverDeps,
@@ -109,26 +146,12 @@ export function wrapSettingsOpenDocument(
     return () => {}
   }
   const original = settings.openDocument
-  settings.openDocument = (payload: unknown, signal?: AbortSignal): Promise<SettingsOpenResponse> => {
-    if (!deps.takeoverEnabled()) {
-      return original.call(settings, payload, signal)
-    }
-    return (async () => {
-      const path = await deps.resolvePath()
-      if (path === null || path === '') {
-        // Could not locate the document (provider absent / route missing /
-        // transport error) — the stock behavior is the correct fallback.
-        return original.call(settings, payload, signal)
-      }
-      deps.reroute(path)
-      deps.closeDialog?.()
-      // The only production caller reads `result.ok` alone to clear the
-      // button's busy state; the workbench open itself is asynchronous by
-      // design (extension polling / one payload reload), and a synthesized
-      // acknowledgment must not wait for — or surface — its outcome.
-      return { rpcId: '', result: { ok: true, value: { opened: true as const } } }
-    })()
-  }
+  settings.openDocument = (payload: unknown, signal?: AbortSignal): Promise<SettingsOpenResponse> =>
+    settingsOpenRoute(
+      deps,
+      () => original.call(settings, payload, signal),
+      () => ({ rpcId: '', result: { ok: true, value: { opened: true as const } } }),
+    )
   return () => {
     settings.openDocument = original
   }
@@ -186,26 +209,13 @@ export function wrapRemoteOpenSettingsDocument(
 ): () => void {
   return redefineGetterMethod<NonNullable<RemoteSettingsLike['openSettingsDocument']>>(
     settings, 'openSettingsDocument',
-    original => (signal?: AbortSignal): Promise<RemoteSettingsOpenResult> => {
-      if (!deps.takeoverEnabled()) {
-        return original(signal)
-      }
-      return (async () => {
-        const path = await deps.resolvePath()
-        if (path === null || path === '') {
-          // Could not locate the document (provider absent / route missing /
-          // transport error) — the stock behavior is the correct fallback.
-          return original(signal)
-        }
-        deps.reroute(path)
-        deps.closeDialog?.()
-        // The store reads `result.ok` alone to clear the button's busy
-        // state; the workbench open itself is asynchronous by design
-        // (extension polling / one payload reload), and a synthesized
-        // acknowledgment must not wait for — or surface — its outcome.
-        return { ok: true, value: { opened: true as const } }
-      })()
-    },
+    original => (signal?: AbortSignal): Promise<RemoteSettingsOpenResult> =>
+      settingsOpenRoute(
+        deps,
+        () => original(signal),
+        // The store reads `result.ok` alone to clear the button's busy state.
+        () => ({ ok: true, value: { opened: true as const } }),
+      ),
   )
 }
 

@@ -25,10 +25,10 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.2.8
+- Version: 0.2.9
 - License: MIT
 - Platform: web (the DSH Web GUI)
-- Tests: 467 passing (19 spec files)
+- Tests: 511 passing (24 spec files)
 
 ## Features
 
@@ -64,7 +64,7 @@ editor selection                    explorer
 
 - **Default tab**: an optional switch makes **brand-new sessions** open the VSCode tab by default (replacing better-sidebar's hardcoded seeded Files tab); used sessions keep their own layouts, and turning it off only affects future sessions.
 
-- **Chat file-click takeover** (gated by the same switch; research options II + III): clicking **produced-file chips** (the per-turn changed-files row), tool-row path links, or prose file mentions in the conversation no longer opens better-sidebar's built-in Files tab — it focuses this VSCode tab (the panel auto-expands) and opens the file inside the embedded VS Code, with no workbench reload. **File-type blocklist (`openBlocklist`)**: a file whose extension is on the list (by default pdf/docx/xlsx/pptx/png/jpeg/jpg; editable in the gear settings) is NOT taken over into VS Code — it opens in better-sidebar's built-in Files tab instead (its file viewers are the sidebar's own surface for images, PDFs, and Office documents; the type is still routed through the sidebar takeover, never the Host opener). Option III's wrapper reroutes that path into the Files tab and resolves the stock success receipt (the Host opener only takes it when the Files tab type is disabled in the side card settings); option II's chips follow the same reroute, degrading to the render site's stock `openFile` when it refuses; non-listed paths behave exactly as before, and settings are read per click. Two takeover seams: **option II** — register the `conversation.chat.turnTail` slot at priority -2 (before better-sidebar's own -1 entry), claim the produced-files row with the same derivation (reading the engine Turn data's `deliverables` record first, the node replica as fallback; the matched value also carries the owner's `openFile` for the blocklist fallback), and render its chips as a visual twin whose clicks reroute here; **option III** — wrap the runtime's chat file-open funnel, whichever era provides it: the gateway-era `remote.session.openWorkspacePath` Host Remote (ui-chat's injected `openFile` — the tool-row path links and prose mentions — is its only production caller; the namespace method is a getter-only own property, so the wrapper redefines it with a getter that re-reads the stock method per access, installed through a nested optional inject that parks until the `remote.session` service exists), or the legacy `workspaces.openPath` client service (ui-conversation's apply.ts) — exactly one of the two ever installs. **Interop with dsh-better-sidebar ≥ 0.18.0**: the peer now shadows the SAME gateway-era method with a value-property wrapper of its own (captured original closure, installed before this plugin by batch module order), so the redefinition chains onto BOTH shapes — the stock getter mount and the peer's value shadow — with the later install sitting outermost and seeing each call first (this plugin loads after the peer, so the takeover claims the open; the peer's closure stays as the decline-time fallback). A one-shot re-assert a few seconds after install repairs the remaining window where a peer disable/enable cycle re-runs its shadow above ours. Option III also repairs a headless-container hole: better-sidebar declines its own takeover whenever its built-in Files tab is disabled, letting opens fall through to the Host OS opener (`spawn xdg-open ENOENT`); this wrapper keeps them landing in the VSCode tab regardless of that setting. After the click: the tab's meta carries an `openRequest` → this plugin's host half writes `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → the extension (≥ 0.1.2) polls every 500ms and consumes it via `showTextDocument`; a `cap.json` liveness marker plus a capability probe gate the channel, and any miss degrades to a one-shot URL-`payload` workbench reload. **Boot-tagged delivery (extension ≥ 0.1.3)**: serve-web keeps a previous extension host (and its 500ms spool poll) alive for a while after the tab's iframe went away, so the click that re-creates a closed tab raced that lingering host — it consumed the command, opened into a dying window, and the fresh host's ledger reconcile closed the file as a ghost (the open silently lost). The client now defers the send until this boot's nonce is parked and tags the command with it (`cmd.json {boot}`); only the host that activated with the same nonce consumes a tagged command. Switch off = the feature is entirely disabled (chat behavior unchanged).
+- **Chat file-click takeover** (gated by the same switch; research options II + III): clicking **produced-file chips** (the per-turn changed-files row), tool-row path links, or prose file mentions in the conversation no longer opens better-sidebar's built-in Files tab — it focuses this VSCode tab (the panel auto-expands) and opens the file inside the embedded VS Code, with no workbench reload. **File-type blocklist (`openBlocklist`)**: a file whose extension is on the list (by default pdf/docx/xlsx/pptx/png/jpeg/jpg; editable in the gear settings) is NOT taken over into VS Code — it opens in better-sidebar's built-in Files tab instead (its file viewers are the sidebar's own surface for images, PDFs, and Office documents; the type is still routed through the sidebar takeover, never the Host opener). Option III's wrapper reroutes that path into the Files tab and resolves the stock success receipt (the Host opener only takes it when the Files tab type is disabled in the side card settings); option II's chips follow the same reroute, degrading to the render site's stock `openFile` when it refuses; non-listed paths behave exactly as before, and settings are read per click. Two takeover seams: **option II** — register the `conversation.chat.turnTail` slot at priority -2 (before better-sidebar's own -1 entry), claim the produced-files row with the same derivation (reading the engine Turn data's `deliverables` record first, the node replica as fallback; the matched value also carries the owner's `openFile` for the blocklist fallback), and render its chips as a visual twin whose clicks reroute here; **option III** — wrap the runtime's chat file-open funnel, whichever era provides it: the gateway-era `remote.session.openWorkspacePath` Host Remote (ui-chat's injected `openFile` — the tool-row path links and prose mentions — is its only production caller; the namespace method is a getter-only own property, so the wrapper redefines it with a getter that re-reads the stock method per access, installed through a nested optional inject that parks until the `remote.session` service exists), or the legacy `workspaces.openPath` client service (ui-conversation's apply.ts) — exactly one of the two ever installs. **Interop with dsh-better-sidebar ≥ 0.18.0**: the peer now shadows the SAME gateway-era method with a value-property wrapper of its own (captured original closure, installed before this plugin by batch module order), so the redefinition chains onto BOTH shapes — the stock getter mount and the peer's value shadow — with the later install sitting outermost and seeing each call first (this plugin loads after the peer, so the takeover claims the open; the peer's closure stays as the decline-time fallback). A one-shot re-assert a few seconds after install repairs the remaining window where a peer disable/enable cycle re-runs its shadow above ours. Option III also repairs a headless-container hole: better-sidebar declines its own takeover whenever its built-in Files tab is disabled, letting opens fall through to the Host OS opener (`spawn xdg-open ENOENT`); this wrapper keeps them landing in the VSCode tab regardless of that setting. After the click: the tab's meta carries an `openRequest` → this plugin's host half writes `/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json` → the extension (≥ 0.1.2) polls every 500ms and consumes it via `showTextDocument`; a `cap.json` liveness marker plus a capability probe gate the channel, and any miss degrades to a one-shot URL-`payload` workbench reload. **Boot-tagged delivery (extension ≥ 0.1.3; the current 0.2.0 ships the lib/ decomposition — same channel, cap v5)**: serve-web keeps a previous extension host (and its 500ms spool poll) alive for a while after the tab's iframe went away, so the click that re-creates a closed tab raced that lingering host — it consumed the command, opened into a dying window, and the fresh host's ledger reconcile closed the file as a ghost (the open silently lost). The client now defers the send until this boot's nonce is parked and tags the command with it (`cmd.json {boot}`); only the host that activated with the same nonce consumes a tagged command. Switch off = the feature is entirely disabled (chat behavior unchanged).
 
 - **Settings "open configuration file" takeover** (option IV, same switch): the settings page's「打开配置文件」button stock-behavior hands `$DSH_HOME/settings.yaml` to the Host OS opener — dead on headless containers (`xdg-open` missing); on the current runtime the click drives the `remote.settings.openSettingsDocument` Host Remote (SettingsDocumentStore.open is its only production caller; the wrapper redefines the namespace method's getter-only own property, installed through a nested optional inject that parks until the `remote.settings` service exists), and on pre-gateway runtimes the legacy `/api/settings.openDocument` member — exactly one of the two ever intercepts. With the switch on, this plugin instead resolves the document path through its own fenced node-half route (`POST /sidebar-vscode/api/settings.document` → `prepareDocument()`), then reroutes it through the very same `openRequest` channel as the chat clicks — the file opens inside the embedded VS Code (the absolute path needs no `pathMap` rule since `mapPathForOpen` passes unmatched paths through). A landed reroute also closes the settings dialog itself: its open state is component-local (no service exposes a close), so the close rides the panel's own document-level Escape listener — mounted exactly while the dialog is open — via one synthetic Escape keydown, leaving the workbench in view. Fail-soft: an absent settings provider, an un-reloaded host half, or any transport error falls back to the stock open (dialog stays open), so the button never breaks.
 
@@ -125,7 +125,7 @@ pnpm -C <profile-dir> add link:<repo-checkout>
 
 ### The VS Code extension
 
-The send commands and the **chat file-click polling channel** come from the `dsh.selection-reference` extension (sources in `extension/`), which must be installed into the serve-web instance. **The file-open channel needs ≥ 0.1.2** (0.1.1 replays consumed commands on every workbench reboot — see the replay guards below; its capability marker fails the version probe, so open clicks safely degrade to the URL-payload reload):
+The send commands and the **chat file-click polling channel** come from the `dsh.selection-reference` extension (sources in `extension/` — decomposed into `extension.js` + `lib/{protocol,fsutil,envelope,channel,boot}.js` along the same seams as the host/client halves), which must be installed into the serve-web instance. **The file-open channel needs ≥ 0.1.2** (0.1.1 replays consumed commands on every workbench reboot — see the replay guards below; its capability marker fails the version probe, so open clicks safely degrade to the URL-payload reload):
 
 ```sh
 scripts/install-extension.sh                  # package VSIX → install → register manifest → restart → health-check
@@ -141,7 +141,8 @@ The local `code` binary is the standalone CLI (no desktop install), so `code --i
 
 - **Editor ledger (`editors.json`)** — the extension records the window's open file-tabs (order + active editor) into the spool synchronously on every tab change, so the teardown race cannot lose it; whatever is on disk at the next activation is the previous session's final state.
 - **Boot reconcile** — at activation the extension waits for VS Code's own restore to settle, then makes the window match the ledger: restored tabs the ledger does not list (files closed before the teardown) are closed — dirty tabs survive, data wins —, ledger files the restore lost are reopened, and the active editor is restored. A boot with **no ledger** (first ever boot in a workspace, or a degraded URL-payload open) keeps VS Code's own behavior untouched.
-- **Hidden reveal (`boot.begin` / `boot.status`)** — before mounting the iframe the tab parks a boot nonce (`bootreq.json`); the extension echoes it in its post-reconcile `boot.json` receipt, and the client keeps the frame at opacity 0 behind the loading overlay until the echo lands (or a bounded timeout gives up). The first *visible* frame already shows the reconciled editor area — nothing ever visibly opens just to be closed again. Fail-soft everywhere: on an older host half (boot routes not reloaded yet) the gate falls back to a **DOM-quiet watcher** (same-origin peek at the workbench's editor tab strip — reveal when it holds still), and a cross-origin direct iframe boots ungated with stock behavior.
+- **Hidden reveal (`boot.begin` / `boot.status`)** — before mounting the iframe the tab parks a boot nonce (`bootreq.json`); the extension echoes it in its post-reconcile `boot.json` receipt, and the client keeps the frame at opacity 0 behind the loading overlay until the echo lands. The first *visible* frame already shows the reconciled editor area — nothing ever visibly opens just to be closed again. The reveal is a **race**, not a single wait: the receipt poll runs concurrently with the **DOM-quiet watcher** (same-origin peek at the workbench's editor tab strip) and whichever settles first wins — a reloaded frame's extension host may never re-activate (its receipt then never lands), and a workbench that has painted is proof enough that the staging is done. Quiet alone is not that proof, though: during a ghost boot the strip is *quiet-but-wrong* for the whole reconcile settle window (quietness is the precondition of the close that follows it, never evidence the close happened), so the racer is **ledger-aware** — `boot.begin` answers with the parked boot ledger's desired open-editor set, and the quiet reveal (plus the expired 4s poll budget) additionally requires the sampled strip to match it as a basename multiset (the tab DOM exposes no full paths); a matched receipt still reveals unconditionally, an absent ledger (first-ever boot / older host half) gates on quiet alone, and a strip the ledger mismatches keeps the frame hidden until the reconcile's close lands or the watcher's own 8s ceiling fires. Revealing early has a second hazard the handshake alone cannot see: a file the user opens in the reveal-vs-reconcile window postdates the ledger the reconcile diffs against and would be closed as a ghost — so the first user gesture inside the revealed frame stamps `interact.json` (nonce-scoped, route `boot.interact`), and both the reconcile's close loop and the ghost passes stand down for a boot whose user is already interacting (the receipt reports the deferrals; a stale stamp never disarms a later boot). Fail-soft everywhere: on an older host half (boot routes not reloaded yet) the DOM-quiet watcher alone decides, and a cross-origin direct iframe boots ungated with stock behavior.
+- **Cross-tab boot lock** — two same-origin DSH pages booting the workbench concurrently race to *create* VS Code's IndexedDB storage (`vscode-web-db`), and one of them can then hang for minutes inside its own boot (measured: a 294s database open; two fresh profiles stalled until the *other* tab closed). Before a frame may mount, the tab therefore holds the Web Lock `dsh-sidebar-vscode:workbench-boot` and releases it once the workbench has painted (the race is over by then); a contended wait past half a second is named in the loading overlay. Fail-open by design: no Web Locks API, a wedged holder (60s wait cap), or an unreadable frame (30s hold cap) all proceed rather than block.
 - **Ledger ownership fence + boot rotation (extension ≥ 0.1.3)** — serve-web also keeps extension hosts alive for a while after their renderer went away, and such a lingering host keeps its armed ledger handlers: it writes **its own (invisible) window's** tab set into the shared `editors.json`, and the reconcile's reopen loop re-opens ledger files into that window, whose tab events then re-write the ledger again — poisoning it with files the visible workbench never showed, which every later boot faithfully restores (closed files coming "back"). The ledger is now *owned by the boot*: every ledger write, the reconcile itself, and the ghost passes re-check that the parked boot nonce is still the one the host activated with. The client rotates that nonce whenever the frame **reloads in place** (the pane DOM is detached on a panel collapse or a workspace switch and re-inserted later, which the browser treats as a reload — a fresh renderer whose host would otherwise activate against the previous boot's nonce) and as the tab unmounts, retiring every host that still holds the old nonce.
 - **Late-ghost passes (extension ≥ 0.1.3)** — VS Code's own restore can still be landing tabs *after* the reconcile's settle budget ran out (a slow first boot of a heavy workspace), and those late arrivals are exactly the closed-file ghosts nobody else will close. A few close-only diff passes run after the arming, spaced across the restore tail: each closes **background** tabs the boot ledger does not list, sparing dirty tabs and the ACTIVE editor (seconds after a remount the only deliberate opens are user ones, and a user open becomes the active editor). No pass ever opens anything.
 
@@ -209,6 +210,12 @@ Settings live under "side card → VSCode → 功能设置" (the tab card's gear
 A DSH plugin has a host (node) half and a browser half; this plugin's split:
 
 ```
+┌─ shared protocol plane ────────────────────────────────────────┐
+│ src/shared/protocol.ts  every constant that crosses a process   │
+│                         boundary, single-sourced once — the      │
+│                         extension's CJS mirror is lockstep-      │
+│                         pinned by tests/protocolLockstep.spec   │
+└────────────────────────────────────────────────────────────────┘
 ┌─ host half (node) ─────────────────────────────────────────────┐
 │ src/index.ts    agent/created → mount agent/pre-step per agent │
 │ src/mention.ts  the boundary core: parse/rewrite, dedup,       │
@@ -216,7 +223,9 @@ A DSH plugin has a host (node) half and a browser half; this plugin's split:
 └────────────────────────────────────────────────────────────────┘
 ┌─ browser half (web) ───────────────────────────────────────────┐
 │ src/client/index.tsx        register tab + dock + @ source     │
-│ src/client/VscodeView.tsx   cwd → path mapping → iframe+bridge │
+│ src/client/VscodeView.tsx   the view: wires the controllers     │
+│ src/client/*Controller.ts   boot gate / focus fence / base /    │
+│                             open requests / opener (unit-tested)│
 │ src/client/references.ts    payload→chips, insert, rail, paste │
 │ src/client/composer.tsx     the dock: reference rail + pastes  │
 │ … (full listing under Repository layout below)                 │
@@ -293,44 +302,64 @@ The DSH session and the embedded workbench see **the same filesystem under the s
 
 ### Repository layout
 
+The codebase is layered by domain — a **shared protocol plane** every runtime sources its cross-process constants from, a host half of services, a browser half of controllers + views, and a decomposed extension — so a change to any contract lands in exactly one place:
+
 ```
-src/index.ts                  # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes (inject: agents, webServer, webRuntime)
-src/vscodeProxy.ts            # host half: same-origin /sidebar/vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel + trust fence) (41 tests)
-src/mention.ts                # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (38 tests)
-src/mentionCodec.ts           # shared pure logic: canonical URI codecs (2 schemes)/truncation/hashing (42 tests)
-src/openChannel.ts            # host half: /tmp command-channel spool the workbench extension polls (slug spec, capability freshness, atomic writes) (11 tests)
-src/trust-fence.ts            # host half: browser-trust fence for this plugin's routes (loopback/trustedHosts + same-origin markers)
-src/client/index.tsx          # browser-half entry: tab + dock + @ source + dicts (ctx.effect, HMR-safe)
-src/client/VscodeView.tsx     # tab component: cwd → path mapping → iframe + toolbar/notices + bridge + focus guards
-src/client/focusGuard.ts     # hidden-frame focus fence: sliding-window restore budget
-src/client/clipboardBridge.ts # same-origin iframe navigator.clipboard.writeText signal patch (10 tests; no-ops on the cross-origin SecurityError throw)
-src/client/composer.tsx       # dock component: reference rail (self-adopted styles) + paste fallbacks
-src/client/composerDom.ts     # detect-projection walk over the Lexical composer DOM (DOM selection ⇄ detect offsets) (11 tests)
-src/client/references.ts      # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (69 tests)
-src/client/selection.ts       # clipboard envelope codecs (selection + resource payloads) (16 tests)
-src/client/paths.ts           # pathMap parse/map/reverse-map, URL building (34 tests)
-src/client/settings.ts        # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
-src/client/settingsRows.tsx   # settings panel: switch row + blocklist tag row + stacked text rows + cap rows (self-adopted styles)
-src/client/settingsTakeover.ts # settings「open configuration file」takeover: wraps settings.openDocument + dialog close behind the same switch (17 tests)
-src/client/openIntercept.ts   # chat-open takeover plumbing: reroute driver + openRequest vehicle + the openPath/openWorkspacePath wrappers (48 tests)
-src/client/openBlocklist.ts   # "never open in VS Code" extension list: defaults / normalization / base-name suffix matching (24 tests)
-src/client/openChannelApi.ts  # client half of the open channel: fenced /sidebar-vscode/api probes and commands (11 tests)
-src/client/defaultTab.ts      # "open VSCode by default": pristine-seed detection + swap rails + watcher (22 tests)
-src/client/i18n.ts            # locale service wiring + t()
-src/client/locales.ts         # zh/en dictionaries
-src/client/icons.tsx          # VS Code mark + chip file/folder/close icons (currentColor SVG)
-extension/                    # the VS Code extension dsh.selection-reference (commands + menus + keybinding + nls + the file-open polling channel)
- ├ extension.js / harness.js / package.json / package.nls*.json / .vscodeignore / vsix/*.vsix
-scripts/install-extension.sh  # one-command extension install (vsce package → files → manifest → restart → health)
-scripts/install-extension.md  # step-by-step install doc + troubleshooting (Chinese)
-README.md / README.zh-CN.md   # this doc (English) / the Chinese doc
-screenshot.png                # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts               # vitest specs — 380 tests / 15 files (per-file counts noted above)
-cordis.patch.yml              # the bundle channel's host-half insert row (mount declaration)
-tsdown.config.ts              # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
-vitest.config.ts              # test-time dsh-llm alias (harness checkout preferred, installed package fallback)
-lib/                          # build outputs (committed: the link: deployment serves lib/client.js directly)
-.github/workflows/ci.yml      # CI: typecheck / test / build / package verification on Node 22 & 24
+src/shared/protocol.ts         # THE protocol plane: every constant that crosses a process boundary (envelope marker, proxy mount, spool file names, capability versions, TTLs, the workspace slug) — pure, host+client import it verbatim
+src/index.ts                   # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes behind one METHOD TABLE (inject: agents, webServer, webRuntime)
+src/vscodeProxy.ts             # host half: same-origin /sidebar/vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel + trust fence) (41 tests)
+src/mention.ts                 # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (38 tests)
+src/mentionCodec.ts            # shared pure logic: canonical URI codecs (2 schemes)/truncation/hashing (42 tests)
+src/openChannel.ts             # host half: /tmp command-channel spool — all persistence through one SpoolStore (atomic writes, fail-soft reads) (13 tests)
+src/trust-fence.ts             # host half: browser-trust fence for this plugin's routes (loopback/trustedHosts + same-origin markers)
+src/client/index.tsx           # browser-half entry: a thin composition root (tab + dock + @ source + takeovers) over the modules below
+src/client/VscodeView.tsx      # the tab VIEW: wires the five lifecycle controllers together and renders (toolbar/notices/surface)
+src/client/bootGate.ts         # BootGateController: nonce park → receipt × DOM-quiet reveal race → in-place-reload rotation; + the DOM-quiet watcher (13+5 tests)
+src/client/bootLock.ts         # WorkbenchBootLock: cross-tab Web Lock serializing first paints (the vscode-web-db creation race) + acquireWebLock (11 tests)
+src/client/focusFence.ts       # FocusFenceController: per-load gesture trackers + document listeners around focusGuard's pure rules
+src/client/focusGuard.ts       # the pure fence decision + sliding-window restore budget (7 tests)
+src/client/workbenchBase.ts    # WorkbenchBaseController + useWorkbenchBase: mount-vs-direct resolution, upstream push/reset, graduation poll (6 tests)
+src/client/openRequests.ts     # OpenRequestConsumer: one-shot meta stamps — page floors, spent-nonce retirement, gate deferral, session addressing (8 tests)
+src/client/workbenchLink.ts    # createWorkbenchOpener: extension spool first (boot-tagged from cap v4), URL-payload reload degraded (8 tests)
+src/client/clipboardBridge.ts  # same-origin iframe navigator.clipboard.writeText signal patch (10 tests; no-ops on the cross-origin SecurityError throw)
+src/client/composer.tsx        # dock component: reference rail + paste fallbacks (styles via styles.ts)
+src/client/composerDom.ts      # detect-projection walk over the Lexical composer DOM (DOM selection ⇄ detect offsets) (11 tests)
+src/client/references.ts       # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (69 tests)
+src/client/referencePipeline.ts # the lander/options handle table the plugin body, the tab, and the dock share
+src/client/selection.ts        # clipboard envelope codecs (selection + resource payloads) (16 tests)
+src/client/paths.ts            # pathMap parse/map/reverse-map, URL building (34 tests)
+src/client/settings.ts         # pluginSettings reads + capture-cap contract (defaults/bounds/commit) (14 tests)
+src/client/settingsRows.tsx    # settings panel: switch row + blocklist tag row + stacked text rows + cap rows (styles via styles.ts)
+src/client/settingsTakeover.ts # settings「打开配置文件」takeover: one shared decision core behind both era wrappers + dialog close (17 tests)
+src/client/openIntercept.ts    # chat-open takeover plumbing: createChatOpenRoute (THE shared decision) + reroute driver + openRequest vehicle + era wrappers (52 tests)
+src/client/takeovers.ts        # the takeover family's installation: one gate + one decision table wired to every seam (turn-tail, both chat funnels, both settings funnels)
+src/client/turnTail.tsx        # the produced-files row claim (priority -2) + its visual-twin chips (styles via styles.ts)
+src/client/producedFiles.ts    # pure produced-files derivation from Turn data / conversation nodes (13 tests)
+src/client/openBlocklist.ts    # "never open in VS Code" extension list: defaults / normalization / base-name suffix matching (24 tests)
+src/client/openChannelApi.ts   # client half of the open channel: fenced /sidebar-vscode/api probes and commands (11 tests)
+src/client/defaultTab.ts       # "open VSCode by default": pristine-seed detection + swap rails + watcher (22 tests)
+src/client/styles.ts           # the stylesheet registry: every injected CSS block + one idempotent adopter
+src/client/i18n.ts             # locale service wiring + t()
+src/client/locales.ts          # zh/en dictionaries
+src/client/icons.tsx           # VS Code mark + chip file/folder/close icons (currentColor SVG)
+extension/                     # the VS Code extension dsh.selection-reference, decomposed along the same seams:
+  ├ extension.js               #   the ~90-line activation root (commands → ledger read → reconcile → arm → poll → ghost passes)
+  ├ lib/protocol.js            #   the shared protocol plane's CJS mirror — lockstep-pinned against src/shared/protocol.ts by tests/protocolLockstep.spec.ts
+  ├ lib/fsutil.js              #   atomic marker write + spool directory
+  ├ lib/envelope.js            #   the three send commands + the clipboard envelope they ride
+  ├ lib/channel.js             #   the spool poll: capability marker + one-shot command consumption (TTL/nonce/boot-tag guards)
+  ├ lib/boot.js                #   the editor ledger + boot reconcile + late-ghost passes + the nonce fence that owns them
+  ├ harness.js / package.json / package.nls*.json / .vscodeignore / vsix/*.vsix
+scripts/install-extension.sh   # one-command extension install (vsce package → files → manifest → restart → health)
+scripts/install-extension.md   # step-by-step install doc + troubleshooting (Chinese)
+README.md / README.zh-CN.md    # this doc (English) / the Chinese doc
+screenshot.png                 # product usage screenshot (see [Screenshot](#screenshot))
+tests/*.spec.ts                # vitest specs — 511 tests / 24 files (per-module counts noted above)
+cordis.patch.yml               # the bundle channel's host-half insert row (mount declaration)
+tsdown.config.ts               # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
+vitest.config.ts               # test-time dsh-llm alias (harness checkout preferred, installed package fallback)
+lib/                           # build outputs (committed: the link: deployment serves lib/client.js directly)
+.github/workflows/ci.yml       # CI: typecheck / test / build / package verification on Node 22 & 24
 ```
 
 Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays external, resolved by the DSH host loader); the browser half is a `window.__ModuleLoader__.load({ id, factory })` registration bundle (the official external client-plugin delivery format) with React / cordis external and a **purity gate** that rejects Node builtins and `@deepseek-ai/*` value imports.
@@ -343,7 +372,7 @@ Build outputs: the host half is a plain ESM bundle (`@deepseek-ai/dsh-llm` stays
 git clone https://github.com/chendefine/dsh-sidebar-vscode && cd dsh-sidebar-vscode
 pnpm build        # tsc declarations + tsdown dual bundle → lib/
 pnpm typecheck    # tsc --noEmit
-pnpm test         # vitest run (380 tests)
+pnpm test         # vitest run (511 tests)
 ```
 
 Rebuild, then hard-refresh the browser (the link: dependency plus content-rev query params bust caches); host-half changes need a `dsh web` restart.
