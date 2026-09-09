@@ -10,7 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { createWorkbenchOpener, type WorkbenchOpenerDeps } from '../src/client/workbenchLink.ts'
-import type { OpenRequest } from '../src/client/openIntercept.ts'
+import type { OpenRequest } from '../src/client/openRequests.ts'
 
 /** One opener over fakes. */
 function makeOpener(options: {

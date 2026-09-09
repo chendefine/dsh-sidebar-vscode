@@ -1,48 +1,61 @@
 /**
- * This tab's settings panel (`settings.render` of the tab descriptor),
- * owning every row end-to-end instead of the better-sidebar declarative
- * `pluginToggles` rows:
+ * The plugin's configuration card inside the official settings page:
+ * 设置 → 插件 → 插件配置 → VSCode 侧边栏.
  *
- * - the serverUrl TEXT row: the declarative row always lays its control
- *   out to the RIGHT of the title/description (a fixed left-right split
- *   with a 200px input), which cramps this long free-form value; here it
- *   renders stacked — title/description on top, the input alone on its
- *   own full-width line below. (`pathMap` deliberately has NO row: the
- *   rare split-container rewrite lives in the settings document only —
- *   the read side still honors it when present;)
+ * The card registers into the `settings.plugin.item` seat keyed by the
+ * `vscode-sidebar` namespace — the same namespace the Host half serves
+ * (`src/settingsSection.ts`) — so the configurable-plugins tab pairs the
+ * two and dispatches this card under that key. Reads and writes ride the
+ * official settings scope (`ctx.settingsScope.bind`): every row commits
+ * per action through `scope.set(field, value)`, and the footer's
+ * 「恢复默认」 clears the user layer field by field (`scope.unset`) so
+ * each reverts to the composition base.
+ *
+ * The chrome follows the official PluginCard disclosure (the built-in
+ * plugin cards and `dsh-web-search-aggregation`'s copy of it): a `<li>`
+ * whose header is one full-width button — name over description, a
+ * 「已自定义」 chip while any user-layer field is set, a chevron that
+ * rotates — disclosing the rows in place. COLLAPSED by default, like
+ * every other card on that page: the card is one entry among many, and
+ * which card a user opens is a reading gesture this card keeps to itself
+ * (`useState`, no persistence).
+ *
+ * The disclosed rows are the panel this plugin has always owned, carried
+ * over end-to-end:
+ *
+ * - the openAsDefault SWITCH row (the two file-open takeovers' gate);
  * - the openBlocklist TAG row (openBlocklist.ts's contract): extensions
  *   the chat-open takeover must not claim, rendered as removable tag
  *   chips plus one inline free-form input with a suggestion dropdown —
  *   each add/remove persists the whole next array (commit-per-action);
- *   unset displays the code default, an emptied list stores [] = block
- *   nothing;
- * - the maxLines / maxBytes NUMBER rows, which the declarative row
- *   cannot express anyway:
- *   - pre-filled defaults: an unset field shows the effective code
- *     default (200 lines / 20000 bytes) as its value, and merely
- *     focusing and blurring it writes nothing (the declarative row
- *     committed '' → 0 → clamped to the MINIMUM, silently storing
- *     1 / 1000);
- *   - input-time range enforcement: an edit below the declared minimum
- *     or above the maximum is flagged the moment it is typed (red field
- *     plus an inline hint; the native min/max bound the spinners and
- *     arrow stepping) and snaps to the nearest bound, visibly, when it
- *     commits (blur / Enter) — what the field shows at rest is exactly
- *     what is stored, so a saved value can never resurface changed on
- *     reopen.
+ * - the serverUrl TEXT row, stacked — description on top, the input
+ *   alone on its own full-width line below (`pathMap` deliberately has
+ *   NO row: the rare split-container rewrite lives in the settings
+ *   document only — the read side still honors it when present);
+ * - the maxLines / maxBytes NUMBER rows: pre-filled defaults (an unset
+ *   field shows the effective default, and merely focusing and blurring
+ *   it writes nothing) and input-time range enforcement (an edit below
+ *   the declared minimum or above the maximum is flagged the moment it
+ *   is typed and snaps to the nearest bound when it commits).
  *
- * The draft is local state that is null at rest (the input mirrors the
- * effective value) and the raw text only while editing, so external
- * store updates never clobber a mid-edit draft and an unchanged draft
- * never produces a write.
+ * A read-only scope (memory mode — a remote browser process-local
+ * connection) disables every control and says so; the rows still render
+ * the effective values.
  *
- * @module dsh-sidebar-vscode/client/settingsRows
+ * @module dsh-sidebar-vscode/client/settingsCard
  */
 
 import { useState } from 'react'
 import { t } from './i18n.ts'
-import { CAP_SPECS, commitCap, displayCap, type CapSpec } from './settings.ts'
-import { applyDefaultTab, OPEN_AS_DEFAULT_KEY, type DefaultTabServiceFace } from './defaultTab.ts'
+import {
+  CAP_SPECS,
+  commitCap,
+  displayCap,
+  readUserLayer,
+  useSettingsSnapshot,
+  type CapSpec,
+  type SettingsScopeFace,
+} from './settings.ts'
 import {
   blocklistSuggestions,
   normalizeExtension,
@@ -50,6 +63,13 @@ import {
   OPEN_BLOCKLIST_KEY,
 } from './openBlocklist.ts'
 import type { CopyKey } from './locales.ts'
+import { VSCODE_SIDEBAR_SETTINGS_BASE, type VscodeSidebarSettings } from '../shared/settings.ts'
+
+/** The card's own props: the injected settings scope (root-scope seat). */
+export interface VscodeSettingsCardProps {
+  /** The bound `vscode-sidebar` settings scope (this plugin's inject). */
+  scope: SettingsScopeFace | undefined
+}
 
 /** Copy of one cap row, resolved through t() at render time. */
 const CAP_COPY: Record<CapSpec['key'], { title: CopyKey, desc: CopyKey }> = {
@@ -57,9 +77,9 @@ const CAP_COPY: Record<CapSpec['key'], { title: CopyKey, desc: CopyKey }> = {
   maxBytes: { title: 'settingMaxBytes', desc: 'settingMaxBytesDesc' },
 }
 
-/** One stacked text row of the panel (a free-form pluginSettings string). */
+/** One stacked text row of the card (a free-form settings string). */
 interface TextSpec {
-  /** The pluginSettings key the value persists under. */
+  /** The settings field the value persists under. */
   readonly key: 'serverUrl'
   /** Row title copy key. */
   readonly title: CopyKey
@@ -69,8 +89,7 @@ interface TextSpec {
   readonly placeholder: CopyKey
 }
 
-/** The stacked text rows, in panel order (above the cap rows — the same
- * order the declarative rows used when they preceded the render panel). */
+/** The stacked text rows, in card order (above the cap rows). */
 const TEXT_SPECS: readonly TextSpec[] = [
   {
     key: 'serverUrl',
@@ -80,30 +99,20 @@ const TEXT_SPECS: readonly TextSpec[] = [
   },
 ]
 
-/** What the render panel needs from better-sidebar's render props. The
- * service is optional: without it (unit tests) the switch still persists,
- * it just cannot offer the immediate swap to the active session. */
-export interface CapSettingsPanelProps {
-  /** This descriptor's own persisted settings blob. */
-  pluginSettings: Record<string, unknown>
-  /** Persist one plugin-owned setting of this descriptor. */
-  updatePluginSetting(key: string, value: unknown): void
-  /** The sidebar service (better-sidebar's render props carry it). */
-  service?: DefaultTabServiceFace
-}
-
+/** Every field the card may clear on「恢复默认」. */
+const RESETTABLE_FIELDS: readonly string[] = [
+  'openAsDefault', OPEN_BLOCKLIST_KEY, 'serverUrl', 'pathMap', 'maxLines', 'maxBytes',
+]
 
 /**
- * One switch row (the panel's boolean settings): title/description left,
- * the popup-standard switch right. Flipping ON persists the value AND (when
- * the service is available) offers the default-tab swap to the active
- * session immediately — see defaultTab.ts; flipping OFF only affects
- * future sessions and never touches any open layout.
+ * One switch row (the card's boolean settings): title/description left,
+ * the standard switch right. Flipping persists the value through the
+ * scope; the takeovers read it live, so the very next click follows.
  */
-function SwitchRow(props: { title: string, desc: string, checked: boolean, onWrite: (next: boolean) => void }) {
-  const { title, desc, checked, onWrite } = props
+function SwitchRow(props: { title: string, desc: string, checked: boolean, disabled: boolean, onWrite: (next: boolean) => void }) {
+  const { title, desc, checked, disabled, onWrite } = props
   return (
-    <div className="dsh_vscodeSet_row" data-vscode-switch-row={OPEN_AS_DEFAULT_KEY}>
+    <div className="dsh_vscodeSet_row" data-vscode-switch-row="openAsDefault">
       <span className="dsh_vscodeSet_text">
         <span className="dsh_vscodeSet_title">{title}</span>
         <span className="dsh_vscodeSet_desc">{desc}</span>
@@ -114,6 +123,7 @@ function SwitchRow(props: { title: string, desc: string, checked: boolean, onWri
             type="checkbox"
             className="dsh_vscodeSet_switchInput"
             checked={checked}
+            disabled={disabled}
             aria-label={title}
             onChange={event => { onWrite(event.currentTarget.checked) }}
           />
@@ -130,12 +140,11 @@ function SwitchRow(props: { title: string, desc: string, checked: boolean, onWri
  * One stacked text row: title/description on top, the input alone on its
  * own full-width line below. Displays the stored string ('' when unset,
  * which the read side treats as "not set" and falls back to the code
- * default); commits the raw text on blur/Enter exactly like the
- * declarative text row did — as-is, including '' when cleared — but only
- * when it actually changed.
+ * default); commits the raw text on blur/Enter exactly as typed —
+ * including '' when cleared — but only when it actually changed.
  */
-function TextRow(props: { spec: TextSpec, raw: unknown, onWrite: (value: string) => void }) {
-  const { spec, raw, onWrite } = props
+function TextRow(props: { spec: TextSpec, raw: unknown, disabled: boolean, onWrite: (value: string) => void }) {
+  const { spec, raw, disabled, onWrite } = props
   const title = t(spec.title)
   const placeholder = t(spec.placeholder)
   // The value the row shows at rest: the stored string, else '' (unset).
@@ -167,6 +176,7 @@ function TextRow(props: { spec: TextSpec, raw: unknown, onWrite: (value: string)
         placeholder={placeholder}
         spellCheck={false}
         aria-label={title}
+        disabled={disabled}
         onChange={event => { setDraft(event.currentTarget.value) }}
         onBlur={commit}
         onKeyDown={event => {
@@ -181,15 +191,14 @@ function TextRow(props: { spec: TextSpec, raw: unknown, onWrite: (value: string)
  * The blocklist row: the effective extension list as removable tags plus
  * one inline input adding new entries (free-form, normalized on commit —
  * the <datalist> dropdown only SUGGESTS common binary types). Commits per
- * action (each add/remove persists the whole next array — the same
- * commit-per-action discipline better-sidebar's OpenWithSettings uses),
- * so no draft-vs-store reconciliation exists beyond the input's own text:
- * an unset key displays the code default, and the first edit writes an
+ * action (each add/remove persists the whole next array), so no
+ * draft-vs-store reconciliation exists beyond the input's own text: the
+ * composition base is the default list, and the first edit writes an
  * explicit array (removing every tag stores [] — "block nothing", a
  * stored decision, not a reset to the default).
  */
-function BlocklistRow(props: { raw: unknown, onWrite: (value: readonly string[]) => void }) {
-  const { raw, onWrite } = props
+function BlocklistRow(props: { raw: unknown, disabled: boolean, onWrite: (value: readonly string[]) => void }) {
+  const { raw, disabled, onWrite } = props
   const effective = parseOpenBlocklist(raw)
   const [draft, setDraft] = useState('')
   const [invalid, setInvalid] = useState(false)
@@ -235,6 +244,7 @@ function BlocklistRow(props: { raw: unknown, onWrite: (value: readonly string[])
             <button
               type="button"
               className="dsh_vscodeSet_tagX"
+              disabled={disabled}
               aria-label={t('settingOpenBlocklistRemove')}
               title={t('settingOpenBlocklistRemove')}
               onClick={() => { remove(extension) }}
@@ -255,6 +265,7 @@ function BlocklistRow(props: { raw: unknown, onWrite: (value: readonly string[])
           aria-label={label}
           aria-invalid={invalid}
           data-invalid={invalid ? 'true' : undefined}
+          disabled={disabled}
           onChange={event => {
             setDraft(event.currentTarget.value)
             setInvalid(false)
@@ -285,11 +296,11 @@ function BlocklistRow(props: { raw: unknown, onWrite: (value: readonly string[])
 
 /**
  * One numeric cap row: title/desc left, a bounded number input right.
- * Displays the stored value, or the code default when unset; flags
+ * Displays the stored value, or the default when unset; flags
  * out-of-range drafts live; commits clamped on blur/Enter.
  */
-function CapRow(props: { spec: CapSpec, raw: unknown, onWrite: (value: number) => void }) {
-  const { spec, raw, onWrite } = props
+function CapRow(props: { spec: CapSpec, raw: unknown, disabled: boolean, onWrite: (value: number) => void }) {
+  const { spec, raw, disabled, onWrite } = props
   const copy = CAP_COPY[spec.key]
   // The value the row shows at rest: the stored number, else the default.
   const effective = displayCap(raw, spec.def)
@@ -329,6 +340,7 @@ function CapRow(props: { spec: CapSpec, raw: unknown, onWrite: (value: number) =
           inputMode="numeric"
           aria-label={title}
           aria-invalid={outOfRange}
+          disabled={disabled}
           title={outOfRange ? t('settingRangeHint') : undefined}
           data-invalid={outOfRange ? 'true' : undefined}
           onChange={event => { setDraft(event.currentTarget.value) }}
@@ -343,49 +355,120 @@ function CapRow(props: { spec: CapSpec, raw: unknown, onWrite: (value: number) =
 }
 
 /**
- * The settings panel body: the default-tab switch, the open-blocklist tag
- * row (it qualifies the switch above it — which files that takeover must
- * NOT claim), the serverUrl text row, then one {@link CapRow} per declared
- * cap spec, reading and writing this descriptor's own pluginSettings blob.
+ * The card: the disclosure header (collapsed at rest, like every card on
+ * that page) over the disclosed body — the takeover switch, the
+ * open-blocklist tag row (it qualifies the switch above it — which files
+ * that takeover must NOT claim), the serverUrl text row, one {@link
+ * CapRow} per declared cap spec, and the reset footer — reading and
+ * writing the `vscode-sidebar` settings section.
  */
-export function CapSettingsPanel(props: CapSettingsPanelProps): React.ReactNode {
-  const { pluginSettings, updatePluginSetting, service } = props
+export function VscodeSettingsCard(props: VscodeSettingsCardProps): React.ReactNode {
+  const { scope } = props
+  const snapshot = useSettingsSnapshot(scope)
+  const values: VscodeSidebarSettings = snapshot.value ?? VSCODE_SIDEBAR_SETTINGS_BASE
+  const disabled = !snapshot.writable
+  const user = readUserLayer(scope)
+  const overridden = RESETTABLE_FIELDS.filter(field => field in user)
+  const [resetting, setResetting] = useState(false)
+  // Card-local, like the official chrome: which card a user has open is a
+  // reading gesture, not something the Host has any stake in — and every
+  // card on the page starts collapsed.
+  const [open, setOpen] = useState(false)
+
+  /** 「恢复默认」: clear the user layer field by field, so every row
+   * re-inherits the composition base (the code defaults). */
+  const resetDefaults = (): void => {
+    if (scope === undefined || resetting) return
+    setResetting(true)
+    void Promise.all(overridden.map(field => scope.unset(field)))
+      .catch(() => {
+        // A rejected clear reloads Host state through the scope itself;
+        // the card simply follows the next snapshot.
+      })
+      .finally(() => { setResetting(false) })
+  }
+
+  const write = (field: string, value: unknown): void => {
+    void scope?.set(field, value).catch(() => {
+      // Same recovery contract: the scope re-reads on failure.
+    })
+  }
+
+  const title = t('cardTitle')
   return (
-    <div className="dsh_vscodeSet_rows" data-vscode-settings>
-      <SwitchRow
-        title={t('settingOpenAsDefault')}
-        desc={t('settingOpenAsDefaultDesc')}
-        checked={pluginSettings[OPEN_AS_DEFAULT_KEY] === true}
-        onWrite={(next) => {
-          updatePluginSetting(OPEN_AS_DEFAULT_KEY, next)
-          // Flipping ON offers the swap to the active session right away:
-          // a still-pristine session becomes a VSCode-default one behind
-          // the popup (the async prefs write would reach the same result
-          // through the watcher — this just skips the round-trip), while
-          // a used session keeps its layout either way.
-          if (next && service !== undefined) applyDefaultTab(service)
-        }}
-      />
-      <BlocklistRow
-        raw={pluginSettings[OPEN_BLOCKLIST_KEY]}
-        onWrite={(value) => { updatePluginSetting(OPEN_BLOCKLIST_KEY, [...value]) }}
-      />
-      {TEXT_SPECS.map(spec => (
-        <TextRow
-          key={spec.key}
-          spec={spec}
-          raw={pluginSettings[spec.key]}
-          onWrite={(value) => { updatePluginSetting(spec.key, value) }}
-        />
-      ))}
-      {CAP_SPECS.map(spec => (
-        <CapRow
-          key={spec.key}
-          spec={spec}
-          raw={pluginSettings[spec.key]}
-          onWrite={(value) => { updatePluginSetting(spec.key, value) }}
-        />
-      ))}
+    <div
+      className={open ? 'dsh_vscodeSet_card dsh_vscodeSet_card--open' : 'dsh_vscodeSet_card'}
+      data-vscode-settings-card={snapshot.status}
+      data-vscode-card-open={open ? 'true' : 'false'}
+    >
+      <button
+        type="button"
+        className="dsh_vscodeSet_cardHead"
+        aria-expanded={open}
+        aria-label={`${t(open ? 'cardCollapse' : 'cardExpand')}: ${title}`}
+        onClick={() => { setOpen(!open) }}
+      >
+        <span className="dsh_vscodeSet_cardText">
+          <span className="dsh_vscodeSet_cardTitle">{title}</span>
+          <span className="dsh_vscodeSet_cardDesc">{t('cardDescription')}</span>
+        </span>
+        {overridden.length > 0 && <span className="dsh_vscodeSet_chip">{t('cardCustomized')}</span>}
+        <svg className="dsh_vscodeSet_chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="dsh_vscodeSet_cardBody">
+          {disabled && <div className="dsh_vscodeSet_readonly">{t('cardReadOnly')}</div>}
+          <div className="dsh_vscodeSet_rows" data-vscode-settings>
+            <SwitchRow
+              title={t('settingOpenAsDefault')}
+              desc={t('settingOpenAsDefaultDesc')}
+              checked={values.openAsDefault === true}
+              disabled={disabled}
+              onWrite={(next) => { write('openAsDefault', next) }}
+            />
+            <BlocklistRow
+              raw={values.openBlocklist}
+              disabled={disabled}
+              onWrite={(value) => { write(OPEN_BLOCKLIST_KEY, [...value]) }}
+            />
+            {TEXT_SPECS.map(spec => (
+              <TextRow
+                key={spec.key}
+                spec={spec}
+                raw={values[spec.key]}
+                disabled={disabled}
+                onWrite={(value) => { write(spec.key, value) }}
+              />
+            ))}
+            {CAP_SPECS.map(spec => (
+              <CapRow
+                key={spec.key}
+                spec={spec}
+                raw={values[spec.key]}
+                disabled={disabled}
+                onWrite={(value) => { write(spec.key, value) }}
+              />
+            ))}
+          </div>
+          <div className="dsh_vscodeSet_foot">
+            {overridden.length > 0 && (
+              <>
+                <span className="dsh_vscodeSet_footNote">{t('cardCustomized')}</span>
+                <button
+                  type="button"
+                  className="dsh_vscodeSet_reset"
+                  disabled={disabled || resetting}
+                  onClick={resetDefaults}
+                >
+                  {t('cardReset')}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

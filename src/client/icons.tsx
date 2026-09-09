@@ -27,6 +27,27 @@ export function VscodeIcon(size: number): ReactNode {
   )
 }
 
+/** The props face the official right-Sidebar's guide entry icon accepts. */
+export interface GuideIconProps {
+  /** Square edge in px; the glyph defaults to 16 when absent. */
+  readonly size?: number | undefined
+  /** Extra class for layout placement; color rides currentColor. */
+  readonly className?: string | undefined
+}
+
+/**
+ * The guide-entry glyph: {@link VscodeIcon} dressed as the component the
+ * official `SidebarRightGuideEntry.icon` seat expects
+ * (`ComponentType<IconProps>`), drawn at the sidebar's own 16px scale.
+ */
+export function VscodeGuideIcon({ size = 16, className }: GuideIconProps): ReactNode {
+  return (
+    <span className={className} aria-hidden="true" style={{ display: 'inline-flex' }}>
+      {VscodeIcon(size)}
+    </span>
+  )
+}
+
 /**
  * The document glyph of one composer reference chip (16×16 viewBox,
  * stroked) — the file icon of a vscode-selection chip.

@@ -1,11 +1,11 @@
 /**
  * `dsh-sidebar-vscode`, node half: the vscode-selection context boundary,
- * the extension command channel's fenced routes, and the same-origin
- * VS Code reverse proxy.
+ * the extension command channel's fenced routes, the `vscode-sidebar`
+ * settings section, and the same-origin VS Code reverse proxy.
  *
- * Everything UI-shaped (the better-sidebar VS Code tab, the composer
- * chips, the reference rail, the chat-open interception) lives in the
- * browser half. This half owns:
+ * Everything UI-shaped (the official right-Sidebar `vscode` tab, the
+ * composer chips, the reference rail, the chat-open interception, the
+ * settings card) lives in the browser half. This half owns:
  *
  * - the model-facing seam: for every live agent it listens at
  *   `agent/pre-step`, expands canonical `dsh-vscode:` (editor selections)
@@ -14,6 +14,10 @@
  *   context messages sourced `{ kind: 'vscode-mention', … }` — or, for
  *   resources, content-less `<file-selection>`/`<folder-selection>`
  *   markers sourced `{ kind: 'vscode-resource', … }` (see `src/mention.ts`);
+ *
+ * - the `vscode-sidebar` settings section (`src/settingsSection.ts`),
+ *   registered on the settings provider so the official「插件配置」tab
+ *   serves the namespace this plugin's browser card edits;
  *
  * - the fenced route family under `/sidebar-vscode/api/*`, dispatched
  *   through one method table (METHODS below): the open-channel probes and
@@ -42,6 +46,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // Type-only: brings the agent event and PreStepDecision declarations in.
 import type {} from '@deepseek-ai/dsh-agent'
 import { createFileRangeReader, vscodeMentionPreStep } from './mention.ts'
+import { installVscodeSidebarSettings } from './settingsSection.ts'
 import {
   OPEN_CHANNEL_BASE,
   parseOpenCommand,
@@ -297,6 +302,16 @@ export function apply(ctx: Context): void {
     }, 'dsh-sidebar-vscode: vscode-mention contexts')
   })
   /* v8 ignore stop */
+
+  // ── The `vscode-sidebar` settings section ──────────────────────────────
+  // The official「插件配置」card tab pairs the namespaces the Host serves
+  // with the browser-registered cards, so this registration is what makes
+  // the plugin's card appear (设置 → 插件 → 插件配置 → VSCode 侧边栏).
+  // Fail-soft: a deployment without a settings provider never serves the
+  // namespace (no card), and the browser half falls back to code defaults.
+  ctx.inject(['settings'], settingsCtx => {
+    installVscodeSidebarSettings(ctx, settingsCtx.get('settings'))
+  })
 
   // ── Same-origin /vscode reverse proxy ──────────────────────────────────
   // Probe-gated and fail-soft: an unreachable or conflicting upstream only

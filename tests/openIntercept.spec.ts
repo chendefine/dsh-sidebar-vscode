@@ -1,920 +1,251 @@
 /**
- * Unit tests for the chat-open takeover's shared plumbing (openIntercept.ts)
- * — the openRequest vehicle, the reroute driver, and the two era-specific
- * wrappers of the runtime's chat file-open funnel (`remote.session
- * .openWorkspacePath` on the gateway-era runtime, `workspaces.openPath` on
- * the legacy one).
+ * Unit tests for the official-sidebar chat-open takeover
+ * (openIntercept.ts): the local `dsh-resource://file/` address parser
+ * (a structural twin of the official grammar) and the
+ * `ctx.sidebarRight.openResource` wrapper — the gate, the blocklist
+ * fall-through, the params translation, and the restore-only-ours
+ * disposal.
  *
  * @module dsh-sidebar-vscode/tests/openIntercept.spec
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
-  createChatOpenRoute,
-  extractOpenRequest,
-  filesTabSeed,
-  findTabMeta,
   isAbsoluteLike,
-  mergeOpenRequest,
-  nextNonce,
-  rerouteChatOpen,
-  rerouteFilesOpen,
-  requestAddressedTo,
+  parseFileAddress,
   resolveAgainst,
-  stripOpenRequest,
-  clearTabOpenRequest,
-  SIDEBAR_FILES_TAB_TYPE,
-  wrapRemoteOpenWorkspacePath,
-  wrapWorkspacesOpenPath,
-  type InterceptServiceFace,
-  type OpenTabSeed,
-  type RemoteOpenResult,
-  type RemoteSessionLike,
-  type WorkspacesLike,
+  wrapSidebarRightOpenResource,
+  type SidebarRightLike,
 } from '../src/client/openIntercept.ts'
 
-/** A recording fake of the betterSidebar service slice. */
-interface RecordingService extends InterceptServiceFace {
-  openTabs: OpenTabSeed[]
-  updates: Array<{ tabId: string, patch: { title?: string, path?: string, meta?: unknown } }>
-  refusals: string[]
-}
+// ---- parseFileAddress (the documented grammar, same cases as official) ----
 
-function makeService(state?: object): RecordingService {
-  const service = {
-    openTabs: [] as OpenTabSeed[],
-    updates: [] as RecordingService['updates'],
-    refusals: [] as string[],
-    openTab(seed: OpenTabSeed): void {
-      // A refused type (disabled in settings) is the service's contract: no-op.
-      if (service.refusals.includes(seed.type)) return
-      service.openTabs.push(seed)
-    },
-    isTabEnabled(id: string): boolean {
-      return !service.refusals.includes(id)
-    },
-    updateTab(tabId: string, patch: { title?: string, path?: string, meta?: unknown }): void {
-      service.updates.push({ tabId, patch })
-    },
-    getSnapshot(): { sessionId?: string | undefined, state?: unknown } {
-      return state === undefined ? {} : { sessionId: 's1', state }
-    },
-  }
-  return service as unknown as RecordingService & InterceptServiceFace
-}
-
-describe('wrapWorkspacesOpenPath (option III — the legacy runtime funnel)', () => {
-  it('intercepts opens when enabled, reroutes, and resolves as success', async () => {
-    const rerouted: string[] = []
-    const opened: string[] = []
-    const workspaces: WorkspacesLike = {
-      openPath: (path: string) => {
-        opened.push(path)
-        return Promise.resolve()
-      },
-    }
-    const stop = wrapWorkspacesOpenPath(workspaces, {
-      takeoverEnabled: () => true,
-      reroute: path => { rerouted.push(path) },
+describe('parseFileAddress', () => {
+  it('parses a session-scoped address into id + relative path', () => {
+    expect(parseFileAddress('dsh-resource://file/session/abc/src/a.ts')).toEqual({
+      scope: 'session', sessionId: 'abc', path: 'src/a.ts',
     })
-    await expect(workspaces.openPath('/w/a.ts')).resolves.toBeUndefined()
-    expect(rerouted).toEqual(['/w/a.ts'])
-    expect(opened).toEqual([]) // the host opener never ran — no xdg-open
-    stop()
   })
 
-  it('falls through untouched when the switch is off or the path is empty', async () => {
-    const opened: string[] = []
-    const workspaces: WorkspacesLike = {
-      openPath: (path: string) => {
-        opened.push(path)
-        return Promise.resolve()
-      },
-    }
-    const stop = wrapWorkspacesOpenPath(workspaces, {
-      takeoverEnabled: () => false,
-      reroute: () => { throw new Error('must not reroute') },
+  it('parses an absolute POSIX address with the leading slash restored', () => {
+    expect(parseFileAddress('dsh-resource://file/absolute/home/ys/notes.txt')).toEqual({
+      scope: 'absolute', path: '/home/ys/notes.txt',
     })
-    await workspaces.openPath('/w/a.ts')
-    await workspaces.openPath('')
-    expect(opened).toEqual(['/w/a.ts', ''])
-    stop()
   })
 
-  it('reroutes a blocked path into the built-in Files tab when the dep claims it', async () => {
-    const rerouted: string[] = []
-    const filesOpens: string[] = []
-    const opened: string[] = []
-    const workspaces: WorkspacesLike = {
-      openPath: (path: string) => {
-        opened.push(path)
-        return Promise.resolve()
-      },
-    }
-    const stop = wrapWorkspacesOpenPath(workspaces, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: path => { rerouted.push(path) },
-      rerouteBlocked: path => { filesOpens.push(path); return true },
+  it('keeps a Windows drive colon literal', () => {
+    expect(parseFileAddress('dsh-resource://file/absolute/C:/x/y.txt')).toEqual({
+      scope: 'absolute', path: 'C:/x/y.txt',
     })
-    await workspaces.openPath('/w/report.pdf')
-    await workspaces.openPath('/w/main.ts')
-    expect(filesOpens).toEqual(['/w/report.pdf']) // the Files tab took the blocked open
-    expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute to VSCode
-    expect(opened).toEqual([]) // the host opener never ran — no xdg-open
-    stop()
   })
 
-  it('declines a blocked path to the stock opener when the Files reroute refuses or is absent', async () => {
-    const opened: string[] = []
-    const workspaces: WorkspacesLike = {
-      openPath: (path: string) => {
-        opened.push(path)
-        return Promise.resolve()
-      },
-    }
-    // A refusal (the Files tab type disabled in the side card settings)…
-    const stop = wrapWorkspacesOpenPath(workspaces, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: () => { throw new Error('must not reroute') },
-      rerouteBlocked: () => false,
+  it('preserves a UNC path\'s empty first segment', () => {
+    expect(parseFileAddress('dsh-resource://file/absolute//server/share/x.txt')).toEqual({
+      scope: 'absolute', path: '//server/share/x.txt',
     })
-    await workspaces.openPath('/w/report.pdf')
-    stop()
-    // …and an absent dep (minimal wiring) both fall back to the original.
-    const stopBare = wrapWorkspacesOpenPath(workspaces, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    await workspaces.openPath('/w/report.pdf')
-    stopBare()
-    expect(opened).toEqual(['/w/report.pdf', '/w/report.pdf'])
   })
 
-  it('restore puts back the exact original (chains with better-sidebar\'s wrapper)', () => {
-    const workspaces: WorkspacesLike = { openPath: () => Promise.resolve() }
-    const original = workspaces.openPath
-    const stopOuter = wrapWorkspacesOpenPath(workspaces, { takeoverEnabled: () => false, reroute: () => {} })
-    const mid = workspaces.openPath
-    const stopInner = wrapWorkspacesOpenPath(workspaces, { takeoverEnabled: () => true, reroute: () => {} })
-    expect(workspaces.openPath).not.toBe(mid)
-    stopInner()
-    expect(workspaces.openPath).toBe(mid)
-    stopOuter()
-    expect(workspaces.openPath).toBe(original)
-  })
-
-  it('the reroute\'s own openTab (the VSCode tab) is untouched by this wrapper', async () => {
-    const service = makeService()
-    const workspaces: WorkspacesLike = { openPath: () => Promise.resolve() }
-    const stop = wrapWorkspacesOpenPath(workspaces, {
-      takeoverEnabled: () => true,
-      reroute: path => { rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', path) },
+  it('decodes component-encoded segments', () => {
+    expect(parseFileAddress('dsh-resource://file/session/a%20b/c%23d.ts')).toEqual({
+      scope: 'session', sessionId: 'a b', path: 'c#d.ts',
     })
-    await workspaces.openPath('/w/a.ts')
-    expect(service.openTabs).toEqual([{ type: 'dsh-sidebar-vscode:vscode', path: '/w/a.ts' }])
-    stop()
   })
 
-  it('a service without a callable openPath member installs nothing (fail-soft seam)', () => {
-    // Same regression class as the settings takeover: a runtime whose
-    // workspaces mirror carries a different shape must not crash plugin
-    // activation — the wrapper declines with a no-op disposer.
-    for (const openPath of [undefined, 'not-a-function']) {
-      const workspaces = { openPath } as unknown as WorkspacesLike
-      const stop = wrapWorkspacesOpenPath(workspaces, {
-        takeoverEnabled: () => true,
-        reroute: () => { throw new Error('must not reroute') },
-      })
-      expect(() => stop()).not.toThrow()
-      expect(workspaces.openPath).toBe(openPath) // untouched
-    }
+  it('refuses non-file schemes, foreign hosts, and unknown scopes', () => {
+    expect(parseFileAddress('sidebar://guide')).toBeUndefined()
+    expect(parseFileAddress('dsh-resource://other/session/a/b')).toBeUndefined()
+    expect(parseFileAddress('dsh-resource://file/relative/a/b')).toBeUndefined()
+    expect(parseFileAddress('https://example.com/x')).toBeUndefined()
+  })
+
+  it('refuses path-less or id-less shapes and malformed escapes', () => {
+    expect(parseFileAddress('dsh-resource://file/session/abc')).toBeUndefined()
+    expect(parseFileAddress('dsh-resource://file/session//x')).toBeUndefined()
+    expect(parseFileAddress('dsh-resource://file/absolute/')).toBeUndefined()
+    expect(parseFileAddress('dsh-resource://file/session/abc/%zz')).toBeUndefined()
   })
 })
 
-/**
- * A fake of the gateway's remote session namespace, mirroring how the client
- * projection mounts namespace methods: `openWorkspacePath` is a configurable,
- * getter-only own property returning a FRESH invocation closure per access
- * (the closure the stock getter mints reads the live mount each time).
- */
-function makeRemoteSession(options?: {
-  onCall?: (request: unknown, signal?: AbortSignal) => RemoteOpenResult
-}): RemoteSessionLike & {
-  calls: Array<{ request: unknown, signal?: AbortSignal }>
-  getterReads: number
-  __remount(next: (request: unknown, signal?: AbortSignal) => Promise<RemoteOpenResult>): void
-} {
-  const calls: Array<{ request: unknown, signal?: AbortSignal }> = []
-  let invocation: (request: unknown, signal?: AbortSignal) => Promise<RemoteOpenResult> = (
-    request, signal,
-  ) => {
-    calls.push({ request, signal })
-    return Promise.resolve(options?.onCall?.(request, signal) ?? { ok: true, value: { opened: true } })
-  }
-  const service = {
-    calls,
-    getterReads: 0,
-    get openWorkspacePath() {
-      service.getterReads += 1
-      return (request: unknown, signal?: AbortSignal) => invocation(request, signal)
-    },
-    /** Swap what the next getter read yields (a namespace remount). */
-    __remount(next: (request: unknown, signal?: AbortSignal) => Promise<RemoteOpenResult>): void {
-      invocation = next
-    },
-  }
-  return service as typeof service & RemoteSessionLike
-}
-
-describe('wrapRemoteOpenWorkspacePath (option III — the gateway-era runtime funnel)', () => {
-  it('intercepts opens when enabled, reroutes, and resolves the native success receipt', async () => {
-    const rerouted: string[] = []
-    const session = makeRemoteSession()
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      reroute: path => { rerouted.push(path) },
-    })
-    await expect(session.openWorkspacePath!({ path: '/w/a.ts' }))
-      .resolves.toEqual({ ok: true, value: { opened: true } })
-    expect(rerouted).toEqual(['/w/a.ts'])
-    expect(session.calls).toEqual([]) // the Host remote never ran — no xdg-open
-    stop()
-  })
-
-  it('passes the caller signal through untouched on the fall-through', async () => {
-    const session = makeRemoteSession()
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => false,
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    const signal = new AbortController().signal
-    await session.openWorkspacePath!({ path: '/w/a.ts' }, signal)
-    expect(session.calls).toEqual([{ request: { path: '/w/a.ts' }, signal }])
-    stop()
-  })
-
-  it('falls through on empty, missing, and malformed request paths', async () => {
-    const session = makeRemoteSession()
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    await session.openWorkspacePath!({ path: '' })
-    await session.openWorkspacePath!({} as { path: string })
-    await session.openWorkspacePath!(null as unknown as { readonly path: string }, undefined)
-    expect(session.calls).toHaveLength(3)
-    stop()
-  })
-
-  it('reroutes a blocked path into the built-in Files tab when the dep claims it', async () => {
-    const session = makeRemoteSession()
-    const rerouted: string[] = []
-    const filesOpens: string[] = []
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: path => { rerouted.push(path) },
-      rerouteBlocked: path => { filesOpens.push(path); return true },
-    })
-    const receipt = await session.openWorkspacePath!({ path: '/w/report.pdf' })
-    // The blocked open never reached the Host remote (recorded) — the Files
-    // tab took it, and the caller still sees the native success receipt.
-    expect(filesOpens).toEqual(['/w/report.pdf'])
-    expect(receipt).toEqual({ ok: true, value: { opened: true } })
-    await session.openWorkspacePath!({ path: '/w/main.ts' })
-    expect(rerouted).toEqual(['/w/main.ts']) // the rest still reroute
-    expect(session.calls).toEqual([]) // the Host opener never ran — no xdg-open
-    stop()
-  })
-
-  it('declines a blocked path to the stock opener when the Files reroute refuses or is absent', async () => {
-    const session = makeRemoteSession()
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: () => { throw new Error('must not reroute') },
-      rerouteBlocked: () => false, // the Files tab type disabled in settings
-    })
-    await session.openWorkspacePath!({ path: '/w/report.pdf' })
-    stop()
-    const stopBare = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    await session.openWorkspacePath!({ path: '/w/report.pdf' })
-    stopBare()
-    // Both declines reached the stock closure (the recorded Host remote).
-    expect(session.calls).toEqual([
-      { request: { path: '/w/report.pdf' }, signal: undefined },
-      { request: { path: '/w/report.pdf' }, signal: undefined },
-    ])
-  })
-
-  it('re-reads the stock method per access, so a remount under the wrapper stays live', async () => {
-    const session = makeRemoteSession()
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => false,
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    const before = session.getterReads
-    await session.openWorkspacePath!({ path: '/w/a.ts' })
-    expect(session.getterReads).toBeGreaterThan(before)
-    // The host unmounts and remounts the method (a fresh invocation closure)
-    // while our wrapper is installed: the next fall-through must reach the
-    // NEW closure, never a snapshot of the old one.
-    let remounted = false
-    session.__remount(async () => {
-      remounted = true
-      return { ok: true, value: { opened: true } }
-    })
-    await session.openWorkspacePath!({ path: '/w/b.ts' })
-    expect(remounted).toBe(true)
-    stop()
-  })
-
-  it('restore puts back the exact original descriptor', () => {
-    const session = makeRemoteSession()
-    const original = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
-    const stop = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get)
-      .not.toBe(original?.get)
-    stop()
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')).toEqual(original)
-  })
-
-  it('restore is a no-op after the host unmounted or replaced the property', () => {
-    const session = makeRemoteSession()
-    // …the gateway's unmount path deletes the own property wholesale: the
-    // disposer must not resurrect the stale descriptor.
-    const stop1 = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    delete (session as RemoteSessionLike).openWorkspacePath
-    expect(() => stop1()).not.toThrow()
-    expect('openWorkspacePath' in session).toBe(false)
-
-    // …and a host re-install under our wrapper must survive our dispose.
-    // (Re-mount a stock-shaped method first: the delete above removed it.)
-    const remount = (): () => Promise<RemoteOpenResult> =>
-      () => Promise.resolve({ ok: true, value: { opened: true } })
-    Object.defineProperty(session, 'openWorkspacePath', {
-      configurable: true,
-      enumerable: true,
-      get: remount,
-    })
-    const stop2 = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).not.toBe(remount)
-    const replacement = (): { ok: true, value: { opened: true } } => ({ ok: true, value: { opened: true } })
-    const replacementGetter = (): unknown => replacement
-    Object.defineProperty(session, 'openWorkspacePath', {
-      configurable: true,
-      enumerable: true,
-      get: replacementGetter,
-    })
-    stop2()
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).toBe(replacementGetter)
-    expect(session.openWorkspacePath).toBe(replacement)
-  })
-
-  it('wrappers compose and unwrap in stack order', () => {
-    const session = makeRemoteSession()
-    const original = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
-    const stopOuter = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    const outer = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get
-    const stopInner = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).not.toBe(outer)
-    stopInner()
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.get).toBe(outer)
-    stopOuter()
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')).toEqual(original)
-  })
-
-  it('a namespace without the mounted method installs nothing (fail-soft seam)', () => {
-    // No own property at all (method not mounted)…
-    const bare = {} as RemoteSessionLike
-    expect(() => wrapRemoteOpenWorkspacePath(bare, {
-      takeoverEnabled: () => true,
-      reroute: () => { throw new Error('must not reroute') },
-    })()).not.toThrow()
-    expect('openWorkspacePath' in bare).toBe(false)
-    // …a value property that is NOT a function (a foreign runtime shape — a
-    // FUNCTION-valued property is a peer shadow and chains, see the dedicated
-    // suite below)…
-    const valued = { openWorkspacePath: 42 } as unknown as RemoteSessionLike
-    expect(() => wrapRemoteOpenWorkspacePath(valued, {
-      takeoverEnabled: () => true,
-      reroute: () => { throw new Error('must not reroute') },
-    })()).not.toThrow()
-    expect(valued.openWorkspacePath).toBe(42)
-    // …and a getter that yields a non-function.
-    const odd = { get openWorkspacePath() { return 42 } } as unknown as RemoteSessionLike
-    expect(() => wrapRemoteOpenWorkspacePath(odd, {
-      takeoverEnabled: () => true,
-      reroute: () => { throw new Error('must not reroute') },
-    })()).not.toThrow()
-    expect(odd.openWorkspacePath).toBe(42)
-  })
-
-  it('the reroute lands the same openTab/meta vehicle as the legacy wrapper', async () => {
-    const service = makeService()
-    const session = makeRemoteSession()
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      reroute: path => { rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', path) },
-    })
-    await session.openWorkspacePath!({ path: '/w/a.ts' })
-    expect(service.openTabs).toEqual([{ type: 'dsh-sidebar-vscode:vscode', path: '/w/a.ts' }])
-    expect(service.updates).toHaveLength(1)
-    stop()
-  })
-})
-
-/**
- * dsh-better-sidebar ≥ 0.18.0 shadows the SAME `remote.session
- * .openWorkspacePath` seam with a VALUE-property wrapper (captured original
- * closure, `{ writable: true, value: wrapped }`), installed through its own
- * nested inject BEFORE this plugin's (batch module order), so the funnel the
- * wrapper meets at install time is that shadow, not the stock getter. These
- * suites pin the value-path chaining that keeps the takeover outermost.
- */
-describe('wrapRemoteOpenWorkspacePath on a peer value-property shadow (dsh-better-sidebar ≥ 0.18.0)', () => {
-  /**
-   * A structural twin of the peer's `wrapOpenWorkspacePath`: capture the
-   * current closure, redefine the property as a value. Returns the peer's
-   * own disposer (which — like the real one — restores its SAVED descriptor
-   * unconditionally, clobbering whatever is installed).
-   */
-  function applyPeerShadow(
-    session: RemoteSessionLike,
-    onCall: (request: { readonly path: string }, signal?: AbortSignal) => Promise<RemoteOpenResult>,
-  ): () => void {
-    const saved = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
-    const original = session.openWorkspacePath
-    const wrapped = (request: { readonly path: string }, signal?: AbortSignal): Promise<RemoteOpenResult> => {
-      void original
-      return onCall(request, signal)
-    }
-    Object.defineProperty(session, 'openWorkspacePath', {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: wrapped,
-    })
-    return () => {
-      if (saved !== undefined) Object.defineProperty(session, 'openWorkspacePath', saved)
-    }
-  }
-
-  it('chains onto the shadow: the later install is outermost and claims the open', async () => {
-    const session = makeRemoteSession()
-    const peerCalls: Array<{ request: unknown, signal?: AbortSignal }> = []
-    const stopPeer = applyPeerShadow(session, (request, signal) => {
-      peerCalls.push({ request, signal })
-      return Promise.resolve({ ok: true, value: { opened: true } })
-    })
-    const rerouted: string[] = []
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      reroute: path => { rerouted.push(path) },
-    })
-    await expect(session.openWorkspacePath!({ path: '/w/a.ts' }))
-      .resolves.toEqual({ ok: true, value: { opened: true } })
-    expect(rerouted).toEqual(['/w/a.ts'])
-    expect(peerCalls).toEqual([]) // the shadow never claimed — ours is outermost
-    expect(session.calls).toEqual([]) // and neither did the stock Host remote
-    stop()
-    stopPeer()
-  })
-
-  it('a declined call falls to the peer shadow, and further to the stock closure', async () => {
-    const session = makeRemoteSession()
-    const peerCalls: string[] = []
-    const stopPeer = applyPeerShadow(session, request => {
-      peerCalls.push(request.path)
-      return Promise.resolve({ ok: true, value: { opened: true } })
-    })
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => false, // the openAsDefault switch off
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    await session.openWorkspacePath!({ path: '/w/a.ts' })
-    expect(peerCalls).toEqual(['/w/a.ts']) // the peer's takeover takes over
-    expect(session.calls).toEqual([]) // its own gates passed — stock never ran
-    stop()
-    stopPeer()
-    // With the peer gone too, the decline reaches the stock closure.
-    const stopBare = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => false,
-      reroute: () => { throw new Error('must not reroute') },
-    })
-    await session.openWorkspacePath!({ path: '/w/b.ts' })
-    expect(session.calls).toEqual([{ request: { path: '/w/b.ts' }, signal: undefined }])
-    stopBare()
-  })
-
-  it('blocked-path routing keeps its semantics through the value path', async () => {
-    const session = makeRemoteSession()
-    const stopPeer = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
-    const filesOpens: string[] = []
-    const stop = wrapRemoteOpenWorkspacePath(session, {
-      takeoverEnabled: () => true,
-      blocked: path => path.endsWith('.pdf'),
-      reroute: () => { throw new Error('must not reroute') },
-      rerouteBlocked: path => { filesOpens.push(path); return true },
-    })
-    await expect(session.openWorkspacePath!({ path: '/w/report.pdf' }))
-      .resolves.toEqual({ ok: true, value: { opened: true } })
-    expect(filesOpens).toEqual(['/w/report.pdf']) // the built-in Files tab took it
-    stop()
-    stopPeer()
-  })
-
-  it('restore puts back the peer shadow while ours is still installed; a displaced restore no-ops', () => {
-    const session = makeRemoteSession()
-    const stopPeer = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
-    const peerValue = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value
-    const stop = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).not.toBe(peerValue)
-    stop()
-    // Still ours at dispose time → the peer's shadow descriptor is back.
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).toBe(peerValue)
-
-    // A peer re-apply over our wrapper displaces us: our dispose must not
-    // clobber the fresh shadow (restore-only-ours).
-    const stop2 = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    const stopPeer2 = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
-    const freshPeerValue = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value
-    stop2()
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).toBe(freshPeerValue)
-    stopPeer2()
-    stopPeer()
-  })
-
-  it('a one-shot re-wrap after displacement restores the outermost slot (index.tsx re-assert)', async () => {
-    const session = makeRemoteSession()
-    const peer1Calls: string[] = []
-    const stopPeer1 = applyPeerShadow(session, request => {
-      peer1Calls.push(request.path)
-      return Promise.resolve({ ok: true, value: { opened: true } })
-    })
-    let enabled = true
-    const rerouted: string[] = []
-    const deps = {
-      takeoverEnabled: (): boolean => enabled,
-      reroute: (path: string): void => { rerouted.push(path) },
-    }
-    let disposeWrap = wrapRemoteOpenWorkspacePath(session, deps)
-    // The peer's disable/enable cycle re-runs its shadow over ours (its
-    // disposer restores unconditionally), displacing us…
-    const peer2Calls: string[] = []
-    const stopPeer2 = applyPeerShadow(session, request => {
-      peer2Calls.push(request.path)
-      return Promise.resolve({ ok: true, value: { opened: true } })
-    })
-    // …the re-assert unwinds and re-wraps, becoming outermost again.
-    disposeWrap()
-    disposeWrap = wrapRemoteOpenWorkspacePath(session, deps)
-    await session.openWorkspacePath!({ path: '/w/a.ts' })
-    expect(rerouted).toEqual(['/w/a.ts']) // ours claims while enabled
-    expect(peer2Calls).toEqual([]) // the latest shadow never saw it
-    enabled = false // decline now, so the FALL-THROUGH proves the layering
-    await session.openWorkspacePath!({ path: '/w/b.ts' })
-    expect(peer2Calls).toEqual(['/w/b.ts']) // the decline reaches the LATEST shadow, never a stale layer
-    expect(peer1Calls).toEqual([])
-    disposeWrap()
-    stopPeer2()
-    stopPeer1()
-  })
-
-  it('the full boot stack composes and unwinds: stock getter → peer shadow → ours', () => {
-    const session = makeRemoteSession()
-    const stock = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')
-    const stopPeer = applyPeerShadow(session, () => Promise.resolve({ ok: true, value: { opened: true } }))
-    const peerValue = Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value
-    expect(peerValue).toBeInstanceOf(Function)
-    const stop = wrapRemoteOpenWorkspacePath(session, { takeoverEnabled: () => false, reroute: () => {} })
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).not.toBe(peerValue)
-    stop()
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')?.value).toBe(peerValue)
-    stopPeer()
-    // The peer's unconditional restore brings the stock getter back.
-    expect(Object.getOwnPropertyDescriptor(session, 'openWorkspacePath')).toEqual(stock)
-  })
-})
-
-describe('openRequest vehicle', () => {
-  it('extractOpenRequest accepts a well-formed request and normalizes line/column', () => {
-    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', line: 10.5, column: 2 } }))
-      .toEqual({ nonce: 3, path: '/w/a.ts', line: 10, column: 2 })
-  })
-
-  it('extractOpenRequest rejects absent, malformed, and non-object shapes', () => {
-    expect(extractOpenRequest(undefined)).toBeNull()
-    expect(extractOpenRequest(null)).toBeNull()
-    expect(extractOpenRequest({})).toBeNull()
-    expect(extractOpenRequest({ openRequest: null })).toBeNull()
-    expect(extractOpenRequest({ openRequest: { nonce: '3', path: '/w/a.ts' } })).toBeNull()
-    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '' } })).toBeNull()
-    expect(extractOpenRequest({ openRequest: [1, 2] })).toBeNull()
-    expect(extractOpenRequest([1, 2])).toBeNull()
-  })
-
-  it('extractOpenRequest carries a well-formed sessionId and drops a meaningless one', () => {
-    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', sessionId: 's-7' } }))
-      .toEqual({ nonce: 3, path: '/w/a.ts', sessionId: 's-7' })
-    // '' is the wrappers' "no session context" marker — it must not ride
-    // the persisted request as an address nothing can match.
-    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', sessionId: '' } }))
-      .toEqual({ nonce: 3, path: '/w/a.ts' })
-    expect(extractOpenRequest({ openRequest: { nonce: 3, path: '/w/a.ts', sessionId: 7 } }))
-      .toEqual({ nonce: 3, path: '/w/a.ts' })
-  })
-
-  it('requestAddressedTo: unstamped wildcard matches anything; a stamp demands its session', () => {
-    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts' }, 's-1')).toBe(true)
-    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts' }, undefined)).toBe(true)
-    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts', sessionId: 's-1' }, 's-1')).toBe(true)
-    // The cross-workspace guard: another session's tab declines.
-    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts', sessionId: 's-1' }, 's-2')).toBe(false)
-    expect(requestAddressedTo({ nonce: 1, path: '/w/a.ts', sessionId: 's-1' }, undefined)).toBe(false)
-  })
-
-  it('mergeOpenRequest preserves sibling meta keys', () => {
-    const merged = mergeOpenRequest({ treeOpen: true, other: { deep: 1 } }, { nonce: 7, path: '/w/a.ts' })
-    expect(merged).toEqual({
-      treeOpen: true,
-      other: { deep: 1 },
-      openRequest: { nonce: 7, path: '/w/a.ts' },
-    })
-  })
-
-  it('mergeOpenRequest replaces (not nests) a previous openRequest', () => {
-    const merged = mergeOpenRequest(
-      { openRequest: { nonce: 1, path: '/old' } },
-      { nonce: 2, path: '/new' },
-    )
-    expect(merged).toEqual({ openRequest: { nonce: 2, path: '/new' } })
-  })
-
-  it('nextNonce is strictly monotonic even within one millisecond', () => {
-    let frozen = 1000
-    const now = () => frozen
-    const a = nextNonce(now)
-    const b = nextNonce(now)
-    const c = nextNonce(now)
-    expect(b).toBe(a + 1)
-    expect(c).toBe(b + 1)
-    frozen = 999 // wall clock going backwards never rewinds the sequence
-    const d = nextNonce(now)
-    expect(d).toBe(c + 1)
-    // A later wall clock is adopted; an earlier module state never rewinds.
-    const later = a + 10_000
-    frozen = later
-    expect(nextNonce(now)).toBe(later)
-    frozen = later - 1
-    expect(nextNonce(now)).toBe(later + 1)
-  })
-})
-
-describe('findTabMeta', () => {
-  const state = {
-    splits: {
-      kind: 'split',
-      children: [
-        { kind: 'leaf', id: 'p1', tabs: [{ id: 'other', meta: { a: 1 } }] },
-        { kind: 'leaf', id: 'p2', tabs: [{ id: 'vscode', meta: { mine: true } }] },
-      ],
-    },
-    bottomSplits: { kind: 'leaf', id: 'b1', tabs: [{ id: 'term', meta: { t: 1 } }] },
-  }
-
-  it('finds tabs in the top tree across splits', () => {
-    expect(findTabMeta(state, 'vscode')).toEqual({ mine: true })
-  })
-
-  it('finds tabs in the bottom tree', () => {
-    expect(findTabMeta(state, 'term')).toEqual({ t: 1 })
-  })
-
-  it('unknown ids and malformed states yield undefined (never throw)', () => {
-    expect(findTabMeta(state, 'nope')).toBeUndefined()
-    expect(findTabMeta(undefined, 'x')).toBeUndefined()
-    expect(findTabMeta(null, 'x')).toBeUndefined()
-    expect(findTabMeta('string', 'x')).toBeUndefined()
-    expect(findTabMeta({ splits: { kind: 'leaf', tabs: 'not-an-array' } }, 'x')).toBeUndefined()
-  })
-})
+// ---- resolveAgainst / isAbsoluteLike (the join the translation needs) ----
 
 describe('resolveAgainst', () => {
-  it('absolute paths (posix, drive, UNC) pass through', () => {
-    expect(resolveAgainst('/w', '/w/a.ts')).toBe('/w/a.ts')
-    expect(resolveAgainst('C:\\w', 'C:\\a.ts')).toBe('C:\\a.ts')
-    expect(resolveAgainst('/w', '\\\\server\\share\\a.ts')).toBe('\\\\server\\share\\a.ts')
-  })
-
-  it('relative paths join onto the cwd with its separator style', () => {
-    expect(resolveAgainst('/w', 'a.ts')).toBe('/w/a.ts')
-    expect(resolveAgainst('/w/', 'a.ts')).toBe('/w/a.ts')
-    expect(resolveAgainst('C:\\w\\', 'a.ts')).toBe('C:\\w\\a.ts')
-  })
-
-  it('an absent cwd leaves the path untouched', () => {
-    expect(resolveAgainst(undefined, 'a.ts')).toBe('a.ts')
-  })
-
-  it('isAbsoluteLike mirrors the same rules', () => {
+  it('returns absolute inputs untouched (POSIX, drive, UNC)', () => {
+    expect(resolveAgainst('/w', '/x/a.ts')).toBe('/x/a.ts')
+    expect(resolveAgainst('/w', 'C:\\x\\a.ts')).toBe('C:\\x\\a.ts')
+    expect(resolveAgainst('/w', '\\\\srv\\share\\a.ts')).toBe('\\\\srv\\share\\a.ts')
     expect(isAbsoluteLike('/a')).toBe(true)
     expect(isAbsoluteLike('a/b')).toBe(false)
-    expect(isAbsoluteLike('C:/a')).toBe(true)
-    expect(isAbsoluteLike('C:\\a')).toBe(true)
-    expect(isAbsoluteLike('rel:C')).toBe(false)
+  })
+
+  it('joins relatives onto the cwd with its own separator flavor', () => {
+    expect(resolveAgainst('/w', 'src/a.ts')).toBe('/w/src/a.ts')
+    expect(resolveAgainst('C:\\w\\', 'src\\a.ts')).toBe('C:\\w\\src\\a.ts')
+    expect(resolveAgainst(undefined, 'src/a.ts')).toBe('src/a.ts')
   })
 })
 
-describe('rerouteFilesOpen (the blocklist-hit reroute into the built-in Files tab)', () => {
-  it('lands the Files tab seed: per-path id, basename title, no meta vehicle', () => {
-    const service = makeService()
-    rerouteFilesOpen(service, '/w/report.pdf')
-    rerouteFilesOpen(service, 'C:\\w\\img\\shot.png')
-    // A structural twin of better-sidebar's own openSidebarFile: the
-    // built-in 'editor' type, the file name as title, the path-derived id
-    // (multiple files coexist; the descriptor's path dedupeKey focuses an
-    // already-open one).
-    expect(service.openTabs).toEqual([
-      { type: SIDEBAR_FILES_TAB_TYPE, title: 'report.pdf', path: '/w/report.pdf', id: 'editor:/w/report.pdf' },
-      { type: SIDEBAR_FILES_TAB_TYPE, title: 'shot.png', path: 'C:\\w\\img\\shot.png', id: 'editor:C:\\w\\img\\shot.png' },
-    ])
-    // No openRequest meta on this route — the editor tab consumes its path
-    // seed natively, so no updateTab is ever sent.
-    expect(service.updates).toEqual([])
-  })
+// ---- the openResource takeover wrapper ----
 
-  it('filesTabSeed mirrors the same contract for hand-built callers', () => {
-    expect(filesTabSeed('/w/a.tar.gz')).toEqual({
-      type: SIDEBAR_FILES_TAB_TYPE,
-      title: 'a.tar.gz',
-      path: '/w/a.tar.gz',
-      id: 'editor:/w/a.tar.gz',
-    })
-    // A path with no separator is its own title.
-    expect(filesTabSeed('readme.md').title).toBe('readme.md')
-  })
-})
+/** A controller fake: class-shaped, methods on the prototype (like the real service). */
+class FakeSidebarRight implements SidebarRightLike {
+  readonly openedResources: Array<{ address: string, options?: unknown }> = []
+  readonly openedTabs: Array<{ kind: string, options?: unknown }> = []
+  openResourceShouldThrow = false
 
-describe('rerouteChatOpen', () => {
-  it('opens the VSCode tab with the file path and stamps a merged openRequest', () => {
-    const state = {
-      splits: { kind: 'leaf', tabs: [{ id: 'dsh-sidebar-vscode:vscode', meta: { treeOpen: true } }] },
-    }
-    const service = makeService(state)
-    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/a.ts')
-    // The content seed carries the path (panel auto-expansion + focus).
-    expect(service.openTabs).toEqual([
-      { type: 'dsh-sidebar-vscode:vscode', path: '/w/a.ts' },
-    ])
-    // The meta update preserves the sibling key and carries a monotonic nonce.
-    expect(service.updates).toHaveLength(1)
-    const { tabId, patch } = service.updates[0]!
-    expect(tabId).toBe('dsh-sidebar-vscode:vscode')
-    const meta = patch.meta as { treeOpen: boolean, openRequest: { nonce: number, path: string } }
-    expect(meta.treeOpen).toBe(true)
-    expect(meta.openRequest.path).toBe('/w/a.ts')
-    expect(meta.openRequest.nonce).toBeGreaterThan(0)
-    // A second reroute mints a strictly greater nonce.
-    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/b.ts')
-    const second = service.updates[1]!.patch.meta as { openRequest: { nonce: number } }
-    expect(second.openRequest.nonce).toBeGreaterThan(meta.openRequest.nonce)
-  })
-
-  it('stamps the addressed session so foreign workbenches decline the open', () => {
-    const state = {
-      splits: { kind: 'leaf', tabs: [{ id: 'dsh-sidebar-vscode:vscode' }] },
-    }
-    const service = makeService(state)
-    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/a.ts', 's-42')
-    const meta = service.updates[0]!.patch.meta as { openRequest: { sessionId?: string } }
-    expect(meta.openRequest.sessionId).toBe('s-42')
-    // An empty id (the wrappers' unknown-session marker) stays a wildcard.
-    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/b.ts', '')
-    const wildcard = service.updates[1]!.patch.meta as { openRequest: { sessionId?: string } }
-    expect(wildcard.openRequest.sessionId).toBeUndefined()
-  })
-
-  it('is harmless when the tab never landed (updateTab is the no-op path)', () => {
-    const service = makeService()
-    service.refusals.push('dsh-sidebar-vscode:vscode') // disabled in settings
-    rerouteChatOpen(service, 'dsh-sidebar-vscode:vscode', '/w/a.ts')
-    expect(service.openTabs).toEqual([])
-    expect(service.updates).toEqual([
-      { tabId: 'dsh-sidebar-vscode:vscode', patch: { meta: { openRequest: expect.objectContaining({ path: '/w/a.ts' }) } } },
-    ])
-  })
-})
-
-describe('stripOpenRequest / clearTabOpenRequest (the one-shot retirement)', () => {
-  it('stripOpenRequest removes only the request, preserving sibling keys', () => {
-    expect(stripOpenRequest({ treeOpen: true, openRequest: { nonce: 1, path: '/w' }, keep: 2 }))
-      .toEqual({ treeOpen: true, keep: 2 })
-  })
-
-  it('stripOpenRequest answers null when there is nothing to strip', () => {
-    expect(stripOpenRequest(undefined)).toBeNull()
-    expect(stripOpenRequest(null)).toBeNull()
-    expect(stripOpenRequest({})).toBeNull()
-    expect(stripOpenRequest({ treeOpen: true })).toBeNull()
-    expect(stripOpenRequest([1])).toBeNull()
-  })
-
-  it('clearTabOpenRequest strips the addressed tab in the top tree', () => {
-    const state = {
-      splits: {
-        kind: 'split',
-        children: [
-          { kind: 'leaf', tabs: [{ id: 'other', meta: { a: 1 } }] },
-          { kind: 'leaf', tabs: [{ id: 'vscode', meta: { treeOpen: true, openRequest: { nonce: 5, path: '/w' } } }] },
-        ],
-      },
-    }
-    const store = { update(mutator: (draft: unknown) => void) { mutator(state) } }
-    clearTabOpenRequest(store, 'vscode')
-    expect(state.splits.children[1]!.tabs[0]!.meta).toEqual({ treeOpen: true })
-  })
-
-  it('clearTabOpenRequest reaches the bottom tree and drops an emptied meta entirely', () => {
-    const state = {
-      bottomSplits: { kind: 'leaf', tabs: [{ id: 'vscode', meta: { openRequest: { nonce: 5, path: '/w' } } }] },
-    }
-    const store = { update(mutator: (draft: unknown) => void) { mutator(state) } }
-    clearTabOpenRequest(store, 'vscode')
-    expect(state.bottomSplits.tabs[0]!.meta).toBeUndefined()
-  })
-
-  it('clearTabOpenRequest is a no-op for missing tabs, foreign metas, and store-less callers', () => {
-    const state = { splits: { kind: 'leaf', tabs: [{ id: 'other', meta: { openRequest: { nonce: 1, path: '/w' } } }] } }
-    const before = JSON.parse(JSON.stringify(state))
-    const store = { update(mutator: (draft: unknown) => void) { mutator(state) } }
-    clearTabOpenRequest(store, 'vscode') // not in the tree
-    expect(state).toEqual(before)
-    expect(() => clearTabOpenRequest(undefined, 'vscode')).not.toThrow()
-    expect(() => clearTabOpenRequest({} as unknown as { update(): void }, 'vscode')).not.toThrow()
-    // A throwing mutator never breaks the open path.
-    const throwing = { update() { throw new Error('store gone') } }
-    expect(() => clearTabOpenRequest(throwing, 'vscode')).not.toThrow()
-  })
-})
-
-describe('createChatOpenRoute (the shared decision both chat seams ride)', () => {
-  /** One deps bundle over recorders. */
-  function makeDeps(options: { enabled?: boolean, blocked?: boolean, filesAccepts?: boolean } = {}) {
-    const rerouted: string[] = []
-    const reroutedBlocked: string[] = []
-    return {
-      deps: {
-        takeoverEnabled: () => options.enabled ?? true,
-        blocked: options.blocked === undefined ? undefined : () => options.blocked!,
-        reroute: (path: string) => { rerouted.push(path) },
-        rerouteBlocked: options.filesAccepts === undefined ? undefined : (path: string) => {
-          reroutedBlocked.push(path)
-          return options.filesAccepts!
-        },
-      },
-      rerouted,
-      reroutedBlocked,
-    }
+  openResource(address: string, options?: { kind?: string, params?: unknown }): void {
+    if (this.openResourceShouldThrow) throw new Error('boom')
+    this.openedResources.push({ address, options })
   }
 
-  it('claims and reroutes an unblocked path while the gate is on', () => {
-    const h = makeDeps()
-    expect(createChatOpenRoute(h.deps)('/w/a.ts')).toBe(true)
-    expect(h.rerouted).toEqual(['/w/a.ts'])
+  openTab(kind: string, options?: { params?: unknown }): void {
+    this.openedTabs.push({ kind, options })
+  }
+}
+
+/** The deps table over a fake, with per-test knobs. */
+function makeDeps(options: {
+  enabled?: boolean
+  blocked?: boolean
+  cwd?: string
+  kind?: string
+} = {}) {
+  return {
+    takeoverEnabled: () => options.enabled ?? true,
+    blocked: (_path: string) => options.blocked ?? false,
+    // Only session 's1' has a known workspace root; any other id is the
+    // unknown-cwd decline path.
+    cwdOf: (sessionId: string) => (sessionId === 's1' ? options.cwd : undefined),
+    kind: options.kind ?? 'vscode',
+  }
+}
+
+describe('wrapSidebarRightOpenResource', () => {
+  const SESSION_ADDR = 'dsh-resource://file/session/s1/src/a.ts'
+
+  it('claims an enabled session-scope open as a workbench openTab', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    service.openResource(SESSION_ADDR)
+    expect(service.openedTabs).toEqual([
+      { kind: 'vscode', options: { params: { path: '/w/src/a.ts' } } },
+    ])
+    expect(service.openedResources).toEqual([])
+    stop()
   })
 
-  it('declines (stock behavior) when the gate is off, the path is empty, or not a string', () => {
-    const h = makeDeps()
-    const route = createChatOpenRoute(h.deps)
-    expect(route('/w/a.ts')).toBe(true)
-    const off = makeDeps({ enabled: false })
-    expect(createChatOpenRoute(off.deps)('/w/a.ts')).toBe(false)
-    expect(route('')).toBe(false)
-    expect(route(undefined)).toBe(false)
-    expect(route(42)).toBe(false)
-    expect(h.rerouted).toEqual(['/w/a.ts'])
+  it('uses an absolute-scope path as-is (no cwd join)', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    service.openResource('dsh-resource://file/absolute/etc/conf.yaml')
+    expect(service.openedTabs).toEqual([
+      { kind: 'vscode', options: { params: { path: '/etc/conf.yaml' } } },
+    ])
+    stop()
   })
 
-  it('a blocklist hit is claimed only when the Files-tab reroute accepts', () => {
-    const accepted = makeDeps({ blocked: true, filesAccepts: true })
-    expect(createChatOpenRoute(accepted.deps)('/w/a.pdf')).toBe(true)
-    expect(accepted.reroutedBlocked).toEqual(['/w/a.pdf'])
-    expect(accepted.rerouted).toEqual([])
-    const refused = makeDeps({ blocked: true, filesAccepts: false })
-    expect(createChatOpenRoute(refused.deps)('/w/a.pdf')).toBe(false)
-    expect(refused.rerouted).toEqual([])
+  it('forwards a sane params.line and drops junk lines', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    service.openResource(SESSION_ADDR, { params: { line: 42 } })
+    service.openResource('dsh-resource://file/absolute/x/y.ts', { params: { line: -3 } })
+    expect(service.openedTabs.map(entry => entry.options)).toEqual([
+      { params: { path: '/w/src/a.ts', line: 42 } },
+      { params: { path: '/x/y.ts' } },
+    ])
+    stop()
   })
 
-  it('a blocklist hit with no blocked-wiring declines to the stock opener', () => {
-    const h = makeDeps({ blocked: true })
-    expect(createChatOpenRoute(h.deps)('/w/a.pdf')).toBe(false)
+  it('falls through untouched when the switch is off', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ enabled: false, cwd: '/w' }))
+    const options = { params: { line: 7 } }
+    service.openResource(SESSION_ADDR, options)
+    expect(service.openedTabs).toEqual([])
+    expect(service.openedResources).toEqual([{ address: SESSION_ADDR, options }])
+    stop()
+  })
+
+  it('falls through for non-file addresses, malformed ones, and unknown cwds', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    service.openResource('sidebar://guide')
+    service.openResource('dsh-resource://file/session/nope/x')
+    expect(service.openedTabs).toEqual([])
+    expect(service.openedResources.map(entry => entry.address)).toEqual([
+      'sidebar://guide', 'dsh-resource://file/session/nope/x',
+    ])
+    stop()
+  })
+
+  it('falls through for a blocked path (the official viewers take it)', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ blocked: true, cwd: '/w' }))
+    service.openResource(SESSION_ADDR)
+    expect(service.openedTabs).toEqual([])
+    expect(service.openedResources).toEqual([{ address: SESSION_ADDR, options: undefined }])
+    stop()
+  })
+
+  it('falls back to the original when the workbench openTab refuses', () => {
+    const service = new FakeSidebarRight()
+    const originalOpenTab = service.openTab
+    service.openTab = (): void => { throw new Error('no session surface') }
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    service.openResource(SESSION_ADDR)
+    expect(service.openedResources).toEqual([{ address: SESSION_ADDR, options: undefined }])
+    service.openTab = originalOpenTab
+    stop()
+  })
+
+  it('installs nothing on a seam-less service shape', () => {
+    const bare = {} as FakeSidebarRight
+    const stop = wrapSidebarRightOpenResource(bare, makeDeps({ cwd: '/w' }))
+    expect(() => stop()).not.toThrow()
+  })
+
+  it('disposes by removing only its own shadow (prototype method resumes)', () => {
+    const service = new FakeSidebarRight()
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    expect(Object.getOwnPropertyDescriptor(service, 'openResource')?.value).toBeTypeOf('function')
+    stop()
+    expect(Object.getOwnPropertyDescriptor(service, 'openResource')).toBeUndefined()
+    // The prototype method answers again, unintercepted.
+    service.openResource(SESSION_ADDR)
+    expect(service.openedTabs).toEqual([])
+    expect(service.openedResources).toHaveLength(1)
+  })
+
+  it('leaves a later re-shadow standing on dispose (restore-only-ours)', () => {
+    const service = new FakeSidebarRight()
+    const stopFirst = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    const stopSecond = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/v' }))
+    stopFirst()
+    // The second wrapper is still the installed one.
+    service.openResource(SESSION_ADDR)
+    expect(service.openedTabs).toEqual([
+      { kind: 'vscode', options: { params: { path: '/v/src/a.ts' } } },
+    ])
+    stopSecond()
+  })
+
+  it('composes onto a foreign own-property value shadow', () => {
+    const service = new FakeSidebarRight()
+    const foreignCalls: string[] = []
+    const stock = service.openResource.bind(service)
+    Object.defineProperty(service, 'openResource', {
+      configurable: true, writable: true,
+      value: (address: string, options?: { kind?: string, params?: unknown }) => {
+        foreignCalls.push(address)
+        stock(address, options)
+      },
+    })
+    const stop = wrapSidebarRightOpenResource(service, makeDeps({ cwd: '/w' }))
+    service.openResource(SESSION_ADDR)
+    // The outermost (ours) claims the open; the foreign shadow never sees it.
+    expect(service.openedTabs).toHaveLength(1)
+    expect(foreignCalls).toEqual([])
+    service.openResource('sidebar://guide')
+    expect(foreignCalls).toEqual(['sidebar://guide'])
+    stop()
   })
 })

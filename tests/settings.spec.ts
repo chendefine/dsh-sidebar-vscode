@@ -114,3 +114,61 @@ describe('commitCap', () => {
     expect(commitCap('80.9', effective, MAX_LINES_MIN, MAX_LINES_MAX)).toBe(81)
   })
 })
+
+// ---- the `vscode-sidebar` settings scope model (the read side) ----
+
+import type { SettingsScopeFace } from '../src/client/settings.ts'
+const {
+  readSettingCaps,
+  readSettings,
+  readUserLayer,
+  takeoverSwitchOn,
+} = await import('../src/client/settings.ts')
+
+describe('readSettings / takeoverSwitchOn / readSettingCaps', () => {
+  /** A scope fake over a plain snapshot value. */
+  function scopeOf(value: unknown, user?: unknown): SettingsScopeFace {
+    return {
+      getSnapshot: () => ({ status: 'ready', value, writable: true, ...(user !== undefined ? { user } : {}) }),
+      subscribe: () => () => {},
+      set: async () => {},
+      unset: async () => {},
+    } as unknown as SettingsScopeFace
+  }
+
+  it('reads the accepted section once the scope is ready', () => {
+    const scope = scopeOf({ openAsDefault: true, serverUrl: 'http://x:8000' })
+    expect(readSettings(scope)).toMatchObject({ openAsDefault: true, serverUrl: 'http://x:8000' })
+    expect(takeoverSwitchOn(scope)).toBe(true)
+  })
+
+  it('falls back to the composition base for a loading or absent scope', async () => {
+    const { VSCODE_SIDEBAR_SETTINGS_BASE } = await import('../src/shared/settings.ts')
+    const loading: SettingsScopeFace = {
+      getSnapshot: () => ({ status: 'loading', value: undefined, writable: false }),
+      subscribe: () => () => {},
+      set: async () => {},
+      unset: async () => {},
+    } as unknown as SettingsScopeFace
+    expect(readSettings(loading)).toBe(VSCODE_SIDEBAR_SETTINGS_BASE)
+    expect(readSettings(undefined)).toBe(VSCODE_SIDEBAR_SETTINGS_BASE)
+    expect(takeoverSwitchOn(undefined)).toBe(false)
+    expect(readSettings(undefined).openBlocklist).toEqual(VSCODE_SIDEBAR_SETTINGS_BASE.openBlocklist)
+  })
+
+  it('reads the caps with defensive re-defaulting', () => {
+    expect(readSettingCaps(readSettings(undefined))).toEqual({ maxLines: 200, maxBytes: 20000 })
+    expect(readSettingCaps(readSettings(scopeOf({ maxLines: 80, maxBytes: 5000 })))).toEqual({
+      maxLines: 80, maxBytes: 5000,
+    })
+    expect(readSettingCaps({ maxLines: Number.NaN, maxBytes: -1 } as never)).toEqual({
+      maxLines: MAX_LINES_DEFAULT, maxBytes: MAX_BYTES_DEFAULT,
+    })
+  })
+
+  it('surfaces the user layer for the card\'s reset affordance', () => {
+    expect(readUserLayer(scopeOf({}, { serverUrl: 'x' }))).toEqual({ serverUrl: 'x' })
+    expect(readUserLayer(undefined)).toEqual({})
+    expect(readUserLayer(scopeOf({}, null))).toEqual({})
+  })
+})

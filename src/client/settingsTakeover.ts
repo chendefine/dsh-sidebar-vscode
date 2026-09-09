@@ -13,11 +13,12 @@
  * deliberately carries no path, so the browser cannot choose a Host target;
  * this plugin instead resolves the document through its OWN fenced node-half
  * route (`settings.document`, see src/client/openChannelApi.ts) and reroutes
- * the open exactly like the chat-side seams (options II + III in
- * openIntercept.ts): land/focus the VSCode tab and stamp an openRequest its
- * component consumes. Since dc70396 an absolute path needs no mapping-rule
- * match (mapPathForOpen passes unmatched paths through), so the home-side
- * settings.yaml opens as-is in the default same-container topology.
+ * the open exactly like the chat-side seam (openIntercept.ts):
+ * `sidebarRight.openTab('vscode', { params: { path } })` — the official
+ * sidebar reveals the workbench tab and hands it the navigation. An absolute
+ * path needs no mapping-rule match (mapPathForOpen passes unmatched paths
+ * through), so the home-side settings.yaml opens as-is in the default
+ * same-container topology.
  *
  * Fail-soft by construction: the wrapper declines (gate off, settings
  * provider absent, node half not reloaded yet, any transport error) by
@@ -27,13 +28,101 @@
  * wrapRemoteOpenSettingsDocument) — the button never breaks because of this
  * plugin, it merely keeps its stock behavior.
  *
- * Dependency-free by design (mirrors openIntercept.ts's wrappers) so the
+ * Dependency-free by design (mirrors openIntercept.ts's wrapper) so the
  * takeover logic is unit-testable in isolation.
  *
  * @module dsh-sidebar-vscode/client/settingsTakeover
  */
 
-import { redefineGetterMethod } from './openIntercept.ts'
+// ---- gateway namespace method redefinition (shared takeover mechanics) ----
+
+/**
+ * Redefine one gateway-namespace method with an intercepting replacement,
+ * chaining onto WHATEVER property shape is installed.
+ *
+ * Two shapes reach this seam, and both must compose:
+ *
+ * - the gateway's own mount (`remote.<ns>.<method>`): configurable,
+ *   getter-only own properties — no setter, so plain assignment throws —
+ *   where every getter access returns a FRESH invocation closure resolved
+ *   against the live mount. This helper redefines the property with its own
+ *   getter that re-invokes the original getter on every access and hands the
+ *   yielded closure through `makeInterceptor`, so each caller still resolves
+ *   a fresh chain against the live mount — exactly the stock semantics.
+ * - a peer's VALUE-property shadow: another plugin wrapping the same seam
+ *   by capturing the current closure and redefining the property as
+ *   `{ writable: true, value: wrapped }` — a plain function, no getter. A
+ *   getter-only redefinition cannot chain onto that (the descriptor has no
+ *   `get`), so here the captured `descriptor.value` plays the original: the
+ *   interceptor wraps it and is installed as a value property again, so
+ *   whichever plugin installs LATER sits outermost and sees each call first.
+ *
+ * The disposer restores the saved descriptor, but only while OUR replacement
+ * is still the installed one: the gateway deletes the property when it
+ * unmounts the method and re-creates it on remount, and clobbering either
+ * state with the saved (stale) descriptor would resurrect a dead mount.
+ *
+ * Fail-soft at the seam: a target carrying no such own property, a descriptor
+ * whose getter does not yield a callable, or a value that is not a function
+ * installs nothing.
+ *
+ * @param target - the namespace service object (or any face carrying the method).
+ * @param method - the own property name to redefine.
+ * @param makeInterceptor - wraps one original closure; on the getter path it
+ * is invoked once per property access (the interceptor never holds a stale
+ * mount), on the value path once at install.
+ * @returns the disposer restoring the original descriptor (HMR-safe).
+ */
+export function redefineGetterMethod<Original extends (...args: never[]) => unknown>(
+  target: object,
+  method: string,
+  makeInterceptor: (original: Original) => Original,
+): () => void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, method)
+  if (descriptor === undefined) {
+    return () => {}
+  }
+  if (typeof descriptor.get === 'function') {
+    // Probe the stock getter once: it must yield the callable invocation
+    // closure callers expect (a getter of any other shape is a foreign runtime).
+    if (typeof descriptor.get.call(target) !== 'function') {
+      return () => {}
+    }
+    const readOriginal = descriptor.get
+    const wrapperGetter = (): Original => {
+      const original = readOriginal.call(target) as Original
+      return makeInterceptor(original)
+    }
+    Object.defineProperty(target, method, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get: wrapperGetter,
+    })
+    return () => {
+      const current = Object.getOwnPropertyDescriptor(target, method)
+      if (current?.get === wrapperGetter) {
+        Object.defineProperty(target, method, descriptor)
+      }
+    }
+  }
+  if (typeof descriptor.value === 'function') {
+    const original = descriptor.value as Original
+    const wrapped = makeInterceptor(original)
+    Object.defineProperty(target, method, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      writable: true,
+      value: wrapped,
+    })
+    return () => {
+      const current = Object.getOwnPropertyDescriptor(target, method)
+      if (current?.value === wrapped) {
+        Object.defineProperty(target, method, descriptor)
+      }
+    }
+  }
+  return () => {}
+}
 
 /**
  * Structural answer shape of `settings.openDocument` the wrapper must
@@ -69,7 +158,7 @@ export interface SettingsTakeoverDeps {
    * call falls back to the stock behavior.
    */
   resolvePath(): Promise<string | null>
-  /** Route the open into the VSCode tab (open + meta update). */
+  /** Route the open into the workbench tab (openTab + navigation params). */
   reroute(path: string): void
   /**
    * Close the host settings dialog after a successful reroute (optional —

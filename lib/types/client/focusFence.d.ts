@@ -53,8 +53,9 @@ export interface FocusFenceDeps {
  * (the document they must live in is whichever the frame shows now — an
  * intermediate about:blank would otherwise leave them aimed at a dead
  * document); setVisible() feeds the hidden situation (armed only on an
- * EXPLICIT false — an old better-sidebar peer passing no flag must never
- * have its user clicks fought; undefined fails open).
+ * EXPLICIT false — the official tab body's `visible` is always boolean;
+ * a hypothetical absent flag must never have its user clicks fought;
+ * undefined fails open).
  */
 export declare class FocusFenceController {
     private readonly deps;

@@ -21,7 +21,7 @@
  * through — the rules are PREFIX REWRITERS, never a whitelist: only empty or
  * non-absolute input is rejected ({@link mapPath} /
  * {@link reverseMapPath}). The `pathMap` key is settings-document-only
- * (no settings-panel row — see settingsRows.tsx); empty/unset is the
+ * (no card row — see settingsCard.tsx); empty/unset is the
  * same-container default.
  *
  * @module dsh-sidebar-vscode/client/paths

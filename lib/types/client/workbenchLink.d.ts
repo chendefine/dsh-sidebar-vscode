@@ -29,7 +29,7 @@
  * @module dsh-sidebar-vscode/client/workbenchLink
  */
 import { type PathMapRule } from './paths.ts';
-import type { OpenRequest } from './openIntercept.ts';
+import type { OpenRequest } from './openRequests.ts';
 import type { OpenCommand } from './openChannelApi.ts';
 /** The live inputs the opener reads per open (kept fresh by the view). */
 export interface WorkbenchInputs {

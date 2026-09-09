@@ -387,3 +387,62 @@ describe('closeSettingsDialog (the settings modal close seam)', () => {
     expect(doc.events).toEqual([])
   })
 })
+
+// ---- redefineGetterMethod (the gateway-era seam mechanics) ----
+
+const { redefineGetterMethod } = await import('../src/client/settingsTakeover.ts')
+
+describe('redefineGetterMethod (moved home from the openIntercept era)', () => {
+
+  it('chains onto a getter-only mount, per-access original', () => {
+    let inner = 0
+    const target: { method(extra: number): number } = Object.create({ method(_extra: number): number { return -1 } })
+    Object.defineProperty(target, 'method', {
+      configurable: true,
+      get: () => (_extra: number) => { inner += 1; return inner },
+    })
+    const stop = redefineGetterMethod<(extra: number) => number>(
+      target, 'method',
+      original => (extra: number) => original(extra) + extra,
+    )
+    expect(target.method(10)).toBe(11)
+    expect(target.method(100)).toBe(102) // fresh original per access
+    stop()
+    expect(Object.getOwnPropertyDescriptor(target, 'method')?.get).toBeTypeOf('function')
+    expect(target.method(0)).toBe(3) // the stock getter answers again
+  })
+
+  it('chains onto a value-property shadow (a peer\'s wrapper)', () => {
+    const target = { method: (x: number) => x * 2 }
+    const stop = redefineGetterMethod<(x: number) => number>(
+      target, 'method',
+      original => (x: number) => original(x) + 1,
+    )
+    expect(target.method(5)).toBe(11)
+    stop()
+    expect(target.method(5)).toBe(10)
+  })
+
+  it('installs nothing for a missing property or a non-callable shape', () => {
+    const bare = {}
+    const stop = redefineGetterMethod(bare, 'missing', original => original)
+    expect(() => stop()).not.toThrow()
+    const weird: { method: null } = { method: null }
+    const stopWeird = redefineGetterMethod(weird as never, 'method', original => original)
+    expect(() => stopWeird()).not.toThrow()
+    expect(weird.method).toBeNull()
+  })
+
+  it('unwinds in LIFO order; an out-of-order dispose never clobbers a live shadow', () => {
+    const target = { method: (x: number) => x }
+    const stopFirst = redefineGetterMethod<(x: number) => number>(target, 'method', original => x => original(x) + 1)
+    const stopSecond = redefineGetterMethod<(x: number) => number>(target, 'method', original => x => original(x) + 100)
+    // The later shadow is outermost and sees each call first.
+    expect(target.method(0)).toBe(101) // 0 + the first wrapper's +1 + the second's +100
+    // LIFO dispose unwinds the chain completely.
+    stopSecond()
+    expect(target.method(0)).toBe(1) // the first wrapper stands
+    stopFirst()
+    expect(target.method(0)).toBe(0) // the raw original again
+  })
+})

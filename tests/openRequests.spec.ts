@@ -1,117 +1,149 @@
 /**
- * Unit tests for the open-request consumer (src/client/openRequests.ts):
- * the one-shot execution discipline for the openRequest stamps the
- * takeover seams write onto the VSCode tab's persisted meta — page-load
- * floors, instance baselines, the page-level executed watermark, gate
- * deferral, and session addressing.
+ * Unit tests for the navigation consumer (src/client/openRequests.ts):
+ * the one-shot execution discipline for the `openTab('vscode', { params })`
+ * navigations the takeover wrapper mints — revision-0 standing down, the
+ * page-level executed watermark (remount must not replay, the mount-batch
+ * click must run), gate deferral, and malformed params consumption.
  *
- * The page-level executed watermark is MODULE state shared by every
- * consumer of the page (that is its point: a tab close/reopen remount must
- * not replay), so every test mints its own nonce range to stay isolated.
+ * The page-level watermark is MODULE state shared by every consumer of
+ * the page (that is its point), so every test mints its own tab identity
+ * and resets the table first.
  *
  * @module dsh-sidebar-vscode/tests/openRequests.spec
  */
 
-import { describe, expect, it, vi } from 'vitest'
-import { OpenRequestConsumer, pageLoadedAt } from '../src/client/openRequests.ts'
-import type { OpenRequest } from '../src/client/openIntercept.ts'
-
-/** One consumer over fakes. */
-function makeConsumer(options: {
-  floor?: number
-  settled?: boolean
-} = {}) {
-  const retire = vi.fn()
-  const execute = vi.fn(async () => {})
-  const consumer = new OpenRequestConsumer({
-    retire,
-    execute,
-    gateSettled: () => options.settled ?? true,
-    pageLoadedAt: () => options.floor ?? pageLoadedAt(),
-  })
-  return { consumer, retire, execute }
-}
-
-/** One request literal. */
-function request(nonce: number, path = '/w/a.ts', sessionId?: string): OpenRequest {
-  return { nonce, path, ...(sessionId !== undefined ? { sessionId } : {}) }
-}
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  nextNonce,
+  OpenRequestConsumer,
+  readNavigationOpen,
+  resetExecutedWatermark,
+  type NavigationStamp,
+  type OpenRequest,
+} from '../src/client/openRequests.ts'
 
 /** Flush the fire-and-forget execution promise. */
 const flush = async (): Promise<void> => { await new Promise(r => { setTimeout(r, 0) }) }
 
+/** One navigation literal. */
+function navigation(revision: number, params: unknown = { path: '/w/a.ts' }): NavigationStamp {
+  return { revision, params }
+}
+
+describe('readNavigationOpen', () => {
+  it('reads a well-formed params object', () => {
+    expect(readNavigationOpen({ path: '/w/a.ts', line: 4, column: 2 }))
+      .toEqual({ path: '/w/a.ts', line: 4, column: 2 })
+  })
+
+  it('drops junk line/column and refuses non-object or path-less shapes', () => {
+    expect(readNavigationOpen({ path: '/w/a.ts', line: -1 })).toEqual({ path: '/w/a.ts' })
+    expect(readNavigationOpen({ path: '/w/a.ts', line: 1.5 })).toEqual({ path: '/w/a.ts', line: 1 })
+    expect(readNavigationOpen(null)).toBeNull()
+    expect(readNavigationOpen('x')).toBeNull()
+    expect(readNavigationOpen({})).toBeNull()
+    expect(readNavigationOpen({ line: 3 })).toBeNull()
+  })
+})
+
+describe('nextNonce', () => {
+  it('is strictly monotonic within the same millisecond', () => {
+    const frozen = () => 1000
+    expect(nextNonce(frozen)).toBe(1000)
+    expect(nextNonce(frozen)).toBe(1001)
+  })
+})
+
 describe('OpenRequestConsumer', () => {
-  it('skips and retires a request that predates the page load', () => {
-    const h = makeConsumer({ floor: 1000 })
-    h.consumer.update(request(500), 's1')
-    expect(h.retire).toHaveBeenCalledTimes(1)
-    expect(h.execute).not.toHaveBeenCalled()
+  beforeEach(() => {
+    resetExecutedWatermark()
   })
 
-  it('skips and retires a persisted request when none is visible at mount', () => {
-    const h = makeConsumer({ floor: 1000 })
-    h.consumer.update(null, 's1')
-    expect(h.retire).toHaveBeenCalledTimes(1)
-  })
-
-  it('executes a same-page request exactly once and retires it', async () => {
-    const h = makeConsumer({ floor: 1000 })
-    h.consumer.update(request(1500, '/w/a.ts', 's1'), 's1')
-    h.consumer.update(request(1500, '/w/a.ts', 's1'), 's1')
+  it('executes a fresh navigation exactly once', async () => {
+    const execute = vi.fn(async (_request: OpenRequest) => {})
+    const consumer = new OpenRequestConsumer({ execute, gateSettled: () => true })
+    consumer.update(navigation(1), 's1', 't1')
+    consumer.update(navigation(1), 's1', 't1')
     await flush()
-    expect(h.execute).toHaveBeenCalledTimes(1)
-    expect(h.execute).toHaveBeenCalledWith(request(1500, '/w/a.ts', 's1'))
-    // The second feed of the same nonce is the spent branch: retired on
-    // sight (exactly the historical effect's behavior when its deps
-    // re-run with the same request).
-    expect(h.retire).toHaveBeenCalledTimes(2)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0]![0]).toMatchObject({ path: '/w/a.ts' })
+    expect(typeof execute.mock.calls[0]![0].nonce).toBe('number')
   })
 
-  it('declines (after retiring) a request addressed to another session', async () => {
-    const h = makeConsumer({ floor: 1000 })
-    h.consumer.update(request(2500, '/w/a.ts', 'other'), 's1')
+  it('stands down on revision 0 (a seeded or undo-restored record)', () => {
+    const execute = vi.fn(async (_request: OpenRequest) => {})
+    const consumer = new OpenRequestConsumer({ execute, gateSettled: () => true })
+    consumer.update(navigation(0), 's1', 't1')
+    consumer.update(undefined, 's1', 't1')
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('defers while the boot gate is unsettled, then executes once', async () => {
+    const execute = vi.fn(async (_request: OpenRequest) => {})
+    let settled = false
+    const consumer = new OpenRequestConsumer({ execute, gateSettled: () => settled })
+    consumer.update(navigation(1), 's1', 't1')
+    expect(execute).not.toHaveBeenCalled()
+    settled = true
+    consumer.update(navigation(1), 's1', 't1')
     await flush()
-    expect(h.retire).toHaveBeenCalledTimes(1)
-    expect(h.execute).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 
-  it('treats an unstamped request as a wildcard (the settings takeover)', async () => {
-    const h = makeConsumer({ floor: 1000 })
-    h.consumer.update(request(3500), 's1')
+  it('skips a navigation this page already executed on remount (the watermark)', async () => {
+    const first = vi.fn(async (_request: OpenRequest) => {})
+    const consumerA = new OpenRequestConsumer({ execute: first, gateSettled: () => true })
+    consumerA.update(navigation(2), 's1', 't1')
     await flush()
-    expect(h.execute).toHaveBeenCalledTimes(1)
-  })
+    expect(first).toHaveBeenCalledTimes(1)
 
-  it('defers while the boot gate is unsettled, then executes once it settles', async () => {
-    const h = makeConsumer({ floor: 1000, settled: false })
-    h.consumer.update(request(4500, '/w/a.ts', 's1'), 's1')
-    expect(h.execute).not.toHaveBeenCalled()
-    expect(h.retire).not.toHaveBeenCalled()
-    // The caller re-feeds the same request when the gate settles.
-    const h2 = makeConsumer({ floor: 1000, settled: true })
-    h2.consumer.update(request(4500, '/w/a.ts', 's1'), 's1')
+    // A remount (tab switch back): the same navigation must not replay.
+    const second = vi.fn(async (_request: OpenRequest) => {})
+    const consumerB = new OpenRequestConsumer({ execute: second, gateSettled: () => true })
+    consumerB.update(navigation(2), 's1', 't1')
     await flush()
-    expect(h2.execute).toHaveBeenCalledTimes(1)
+    expect(second).not.toHaveBeenCalled()
   })
 
-  it('a spent nonce is retired on sight, never re-executed', () => {
-    const h = makeConsumer({ floor: 1000 })
-    h.consumer.update(request(5500, '/w/a.ts', 's1'), 's1')
-    h.consumer.update(request(5400, '/w/b.ts', 's1'), 's1')
-    expect(h.execute).toHaveBeenCalledTimes(1)
-    expect(h.retire).toHaveBeenCalledTimes(2)
-  })
-
-  it('a fresh instance inherits the page watermark (a remount never replays)', async () => {
-    const first = makeConsumer({ floor: 1000 })
-    first.consumer.update(request(6500, '/w/a.ts', 's1'), 's1')
+  it('executes a navigation that arrived while the body was unmounted', async () => {
+    const first = vi.fn(async (_request: OpenRequest) => {})
+    const consumerA = new OpenRequestConsumer({ execute: first, gateSettled: () => true })
+    consumerA.update(navigation(1), 's1', 't1')
     await flush()
-    expect(first.execute).toHaveBeenCalledTimes(1)
-    // The tab closed and reopened: a NEW consumer, the SAME persisted
-    // request — the page-level watermark holds it back.
-    const second = makeConsumer({ floor: 1000 })
-    second.consumer.update(request(6500, '/w/a.ts', 's1'), 's1')
-    expect(second.execute).not.toHaveBeenCalled()
-    expect(second.retire).toHaveBeenCalledTimes(1)
+    expect(first).toHaveBeenCalledTimes(1)
+
+    // The body unmounts; another chat click navigates again (revision 2).
+    const second = vi.fn(async (_request: OpenRequest) => {})
+    const consumerB = new OpenRequestConsumer({ execute: second, gateSettled: () => true })
+    consumerB.update(navigation(2), 's1', 't1')
+    await flush()
+    expect(second).toHaveBeenCalledTimes(1)
+    expect(second.mock.calls[0]![0].path).toBe('/w/a.ts')
+  })
+
+  it('consumes a malformed params navigation as seen, without executing', async () => {
+    const execute = vi.fn(async (_request: OpenRequest) => {})
+    const consumer = new OpenRequestConsumer({ execute, gateSettled: () => true })
+    consumer.update(navigation(3, { nope: true }), 's1', 't1')
+    await flush()
+    expect(execute).not.toHaveBeenCalled()
+    // A malformed navigation must not block a later well-formed one.
+    consumer.update(navigation(4, { path: '/w/b.ts' }), 's1', 't1')
+    await flush()
+    expect(execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps watermarks per session+tab identity', async () => {
+    const execute = vi.fn(async (_request: OpenRequest) => {})
+    const consumerA = new OpenRequestConsumer({ execute, gateSettled: () => true })
+    consumerA.update(navigation(1), 's1', 't1')
+    await flush()
+    expect(execute).toHaveBeenCalledTimes(1)
+    // The same revision under ANOTHER session's tab is that tab's own
+    // mount-batch click (a different body, a fresh consumer instance).
+    const consumerB = new OpenRequestConsumer({ execute, gateSettled: () => true })
+    consumerB.update(navigation(1), 's2', 't9')
+    await flush()
+    expect(execute).toHaveBeenCalledTimes(2)
   })
 })

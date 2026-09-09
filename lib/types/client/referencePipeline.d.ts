@@ -9,7 +9,7 @@
  * per-session values (pathMap/cwd/caps) and refreshes the options; the
  * DOCK reads both at paste time. A single module (the plugin is a
  * singleton per page) is the simplest wiring that keeps all three
- * decoupled — no prop drilling through better-sidebar's slot faces, and
+ * decoupled — no prop drilling through the host's slot faces, and
  * no React context the bridge (a plain DOM callback) could not reach.
  *
  * @module dsh-sidebar-vscode/client/referencePipeline

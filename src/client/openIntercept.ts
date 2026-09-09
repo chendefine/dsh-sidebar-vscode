@@ -1,311 +1,109 @@
 /**
- * The chat-open takeover's shared plumbing: the reroute driver, the
- * openRequest meta vehicle, and the `workspaces.openPath` wrapper — the
- * pieces both takeover seams (research options II + III) share.
+ * The chat-open takeover of the OFFICIAL right Sidebar: one wrapper around
+ * `ctx.sidebarRight.openResource` — the navigation controller's public
+ * resource funnel — plus the local `dsh-resource://file/` address parser
+ * the wrapper needs.
  *
- * The three seams every chat-originated open can flow through:
- * - the turn-tail slot (option II, turnTail.tsx): the produced-files row
- *   (the "changed files" chips) is claimed at priority -2, before
- *   dsh-better-sidebar's own -1 entry, so its chips open here;
- * - `workspaces.openPath` (option III, below): the pre-gateway client
- *   runtime's funnel for the remaining chat-side opens (tool-row path
- *   links, prose file mentions — ui-conversation's apply.ts was its only
- *   production caller). This also repairs the headless-container hole:
- *   better-sidebar declines its own takeover whenever its built-in editor
- *   tab is disabled, letting opens fall through to the Host OS opener
- *   (`spawn xdg-open ENOENT`); this wrapper keeps them landing in the
- *   VSCode tab regardless.
- * - `remote.session.openWorkspacePath` (option III, the gateway era —
- *   wrapRemoteOpenWorkspacePath below): the current runtime's replacement
- *   funnel (ui-chat's injected openFile is its only production caller),
- *   wrapped through the same gate; exactly one of the two era-specific
- *   openPath wrappers ever installs. dsh-better-sidebar ≥ 0.18.0 shadows
- *   this same method (value-property wrapper, nested inject), so the
- *   redefinition chains onto BOTH the stock getter mount and the peer's
- *   value shadow — see redefineGetterMethod.
+ * Every chat-originated file open of the official runtime flows through
+ * this ONE public seam: ui-chat's injected `openFile` (tool-row path
+ * links, prose file mentions), the deliverables row's produced-files
+ * chips, every future caller that hands the sidebar a file address. The
+ * wrapper's gate decides per call:
  *
- * The reroute lands as: `openTab({ type: TAB_ID, path })` — a CONTENT seed,
- * so better-sidebar's own "land in sight" logic expands the hosting panel,
- * and the single-instance descriptor focuses an already-open tab — followed
- * by `updateTab(TAB_ID, { meta })` carrying an `openRequest` the VscodeView
- * consumes (meta is the documented cross-tab vehicle; a single-instance
- * focus never applies seed fields, hence the explicit update).
+ * - the `openAsDefault` switch off, a non-file address, an unparseable
+ *   one, a session-scoped address whose workspace root is not (yet)
+ *   known, or a blocklisted path → the call falls through UNTOUCHED to
+ *   the stock routing, where the official registry ranks its builtin
+ *   viewers (the text preview claims file addresses at the `fallback`
+ *   band — exactly the reroute the better-sidebar-era blocklist made
+ *   into its own Files tab);
+ * - otherwise the open is CLAIMED for the workbench: translated into
+ *   `openTab('vscode', { params: { path, line? } })` on the same
+ *   service, so the ONE workbench tab of the mounted session is revealed
+ *   (the column expands in the same step — the official "content the
+ *   user cannot see is not opened" rule) and the open lands inside the
+ *   embedded VS Code through `tab.navigation.params`.
  *
- * Every gate may also reroute one path specifically through the optional
- * `blocked` dep — the open blocklist (openBlocklist.ts): a file type the
- * code editor renders poorly opens in better-sidebar's built-in Files tab
- * instead (its registered file viewers are the sidebar's own surface for
- * Office/image/PDF types), via the optional `rerouteBlocked` dep. When
- * that dep is absent or declines — the Files tab type disabled in the
- * side card settings, the same refusal better-sidebar's own takeover
- * makes — the open falls through to the stock Host opener, the same
- * untouched path a declined switch takes.
+ * Why a wrapper instead of a resource-viewer tab type: the registry's
+ * identity rule would mint one tab per address, and each tab renders its
+ * own body — a second workbench iframe racing the first re-opens VS
+ * Code's IndexedDB and deadlocks (see bootLock.ts). One page tab, with
+ * opens delivered as navigation params, is the shape the workbench needs.
  *
- * Dependency-free by design (mirrors better-sidebar's openpath-intercept.ts)
- * so the takeover logic is unit-testable in isolation.
+ * The wrapper is an own-property shadow on the service INSTANCE (the
+ * methods live on the prototype; every `ctx.sidebarRight.openResource`
+ * call site resolves the own property first), installed for the plugin's
+ * lifetime and restored only while the shadow is still ours — the same
+ * discipline the previous era's remote-namespace wrappers used.
+ *
+ * The parser below is a structural twin of the official
+ * `parseFileAddress` (`@deepseek-ai/dsh-util-workspace-path`): the client
+ * bundle may not value-import official packages (the tsdown purity gate),
+ * so the documented grammar is re-implemented and unit-tested against
+ * the same cases.
  *
  * @module dsh-sidebar-vscode/client/openIntercept
  */
 
-/** The open-tab seed shape the reroute sends (structural subset of OpenTabSeed). */
-export interface OpenTabSeed {
-  type: string
-  title?: string
-  path?: string
-  id?: string
-  url?: string
-  meta?: unknown
-}
+import type { VscodeTabParams } from './definition.ts'
 
-/** The betterSidebar service slice the reroute driver (below) touches. */
-export interface InterceptServiceFace {
-  openTab(seed: OpenTabSeed): void
-  isTabEnabled(id: string): boolean
-  updateTab(tabId: string, patch: { title?: string, path?: string, meta?: unknown }): void
-  getSnapshot(): { sessionId?: string | undefined, state?: unknown }
-}
-
-/**
- * Per-call decisions the wrappers need (wired to the switch + service).
- */
-export interface OpenInterceptDeps {
-  /**
-   * Whether to take over THIS call: the `openAsDefault` switch (the same
-   * switch that seeds new sessions with the VSCode tab) must be on and the
-   * VSCode tab type enabled. A declining call falls through untouched.
-   */
-  takeoverEnabled(): boolean
-  /**
-   * Decline the VSCode reroute for THIS PATH specifically — the open
-   * blocklist (a file type the code editor renders poorly: Office
-   * documents, images, PDFs; see openBlocklist.ts). A blocked path is
-   * then offered to {@link rerouteBlocked} (the built-in Files tab) and
-   * only falls through to the stock Host opener when that declines.
-   * Optional: absent wiring blocks nothing (and the settings-open
-   * takeover never wires it — its settings.yaml is a text document the
-   * blocklist must not break).
-   */
-  blocked?(path: string): boolean
-  /**
-   * Reroute a BLOCKED path into better-sidebar's built-in Files tab — the
-   * viewer surface for the types the code editor renders poorly. Return
-   * true to claim the open (the wrapper resolves the stock success the
-   * native opener would have); return false — or leave the dep absent —
-   * to decline it back to the stock Host opener (the Files tab type
-   * disabled in the side card settings; better-sidebar's own takeover
-   * makes the same call, and the headless `xdg-open ENOENT` it can hit is
-   * exactly why an accepting reroute must never surface an error).
-   */
-  rerouteBlocked?(path: string): boolean
-  /** Route the open into the VSCode tab (open + meta update). */
-  reroute(path: string): void
-}
-
-// ---- open-request vehicle (SidebarTab.meta) ----
-
-/** One file-open request carried on the VSCode tab's meta. */
-export interface OpenRequest {
-  /** Monotonic id; consumers only act on values greater than the last one seen. */
-  nonce: number
-  /** The DSH-side absolute path to open. */
-  path: string
-  /**
-   * The session whose workbench the request targets. Stamped at mint from
-   * the session that produced the path; a consumer mounting another
-   * session's VSCode tab declines the request (it would land the file in a
-   * FOREIGN workspace — the observed cross-workspace poison deliveries).
-   * Absent = wildcard (the settings takeover has no session context).
-   */
-  sessionId?: string
-  /** Optional 1-based cursor position (reserved; produced chips are path-only). */
-  line?: number
-  column?: number
-}
-
-/**
- * Structurally read the openRequest off a tab meta. Returns null for absent
- * or malformed shapes — a foreign meta (another plugin's, or a hand-edited
- * layout) must never crash the consumer.
- */
-export function extractOpenRequest(meta: unknown): OpenRequest | null {
-  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) return null
-  const record = (meta as { openRequest?: unknown }).openRequest
-  if (record === null || typeof record !== 'object' || Array.isArray(record)) return null
-  const req = record as { nonce?: unknown, path?: unknown, sessionId?: unknown, line?: unknown, column?: unknown }
-  if (typeof req.nonce !== 'number' || !Number.isFinite(req.nonce)) return null
-  if (typeof req.path !== 'string' || req.path === '') return null
-  const out: OpenRequest = { nonce: req.nonce, path: req.path }
-  if (typeof req.sessionId === 'string' && req.sessionId !== '') out.sessionId = req.sessionId
-  if (typeof req.line === 'number' && Number.isFinite(req.line) && req.line > 0) {
-    out.line = Math.floor(req.line)
+/** One parsed `dsh-resource://file/…` address, in one of its two scopes. */
+export type FileAddress =
+  | {
+    readonly scope: 'session'
+    /** The Session whose workspace root the path is relative to. */
+    readonly sessionId: string
+    /** Workspace-relative `/`-separated path, no leading `/`; empty for the root itself. */
+    readonly path: string
   }
-  if (typeof req.column === 'number' && Number.isFinite(req.column) && req.column > 0) {
-    out.column = Math.floor(req.column)
+  | {
+    readonly scope: 'absolute'
+    /** Absolute `/`-separated path: `/a/b` on POSIX, `C:/a/b` for a drive, `//server/share/a` for UNC. */
+    readonly path: string
   }
-  return out
+
+/** The scheme+type prefix every file address opens with. */
+const FILE_ADDRESS_PREFIX = 'dsh-resource://file/'
+
+/** Whether a decoded first path segment is a Windows drive (`C:`). */
+function isDriveSegment(segment: string | undefined): boolean {
+  return segment !== undefined && /^[A-Za-z]:$/.test(segment)
 }
 
 /**
- * Whether `request` is addressed to the session whose VSCode tab mounted
- * the consumer. A request stamped with a `sessionId` (every chat-originated
- * open) only executes for that session — a page/window showing a DIFFERENT
- * conversation (its workbench embeds a different workspace folder) must
- * decline it, or the open lands a foreign file into that workspace's spool
- * (the exact cross-workspace delivery observed in the poisoned spools).
- * An unstamped request (the settings takeover, which has no session
- * context) stays a wildcard.
+ * Read a file address back into its parts (the official grammar:
+ * component-encoded segments, `:` literal for drive letters, a UNC
+ * path's empty first segment preserved).
+ * @param address - a candidate address.
+ * @returns the parts, or `undefined` when the string is not a
+ * `dsh-resource://file/` URI in a known scope with a path, or a segment
+ * is not validly encoded.
  */
-export function requestAddressedTo(request: OpenRequest, sessionId: string | undefined): boolean {
-  if (request.sessionId === undefined) return true
-  return sessionId !== undefined && sessionId === request.sessionId
-}
-
-/**
- * Merge one openRequest into an existing tab meta, preserving sibling keys
- * (any other plugin-owned fields on the same meta object survive verbatim).
- */
-export function mergeOpenRequest(meta: unknown, request: OpenRequest): Record<string, unknown> {
-  const base = meta !== null && typeof meta === 'object' && !Array.isArray(meta)
-    ? { ...(meta as Record<string, unknown>) }
-    : {}
-  base.openRequest = { ...request }
-  return base
-}
-
-/**
- * Copy one tab meta WITHOUT its openRequest, preserving sibling keys.
- * Returns null when there was nothing to strip (the meta carried no
- * request) so callers skip a pointless store mutation.
- *
- * The openRequest is a ONE-SHOT command, not durable tab state: the
- * sidebar layout (meta included) is persisted and shared across windows
- * and reloads, so an executed-but-unstripped request sat in the layout
- * until some later remount mistook it for a fresh click — the mechanism
- * behind the hours-later re-executions that poisoned foreign workspaces'
- * spools. Stripping on consumption retires it for every observer.
- */
-export function stripOpenRequest(meta: unknown): Record<string, unknown> | null {
-  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) return null
-  const record = meta as Record<string, unknown>
-  if (!('openRequest' in record) || record.openRequest === undefined) return null
-  const rest = { ...record }
-  delete rest.openRequest
-  return rest
-}
-
-/** The mutating store face the meta strip needs (SidebarStore.update). */
-export interface MutatingStoreFace {
-  update(mutator: (draft: unknown) => void): void
-}
-
-/**
- * Strip the VSCode tab's openRequest from the CURRENT session's persisted
- * layout. One-shot semantics for a one-shot command: call after executing
- * (or declining) a request. Fail-soft by construction — a store without
- * `update` (a foreign peer) is a no-op, and a missing tab id simply finds
- * nothing to strip.
- */
-export function clearTabOpenRequest(store: MutatingStoreFace | undefined, tabId: string): void {
-  if (store === undefined || typeof store.update !== 'function') return
+export function parseFileAddress(address: string): FileAddress | undefined {
+  if (!address.startsWith(FILE_ADDRESS_PREFIX)) return undefined
   try {
-    store.update(draft => { stripOpenRequestFromState(draft, tabId) })
-  } catch {
-    // Never let hygiene break the open path.
-  }
-}
-
-/** Find the tab in one sidebar state draft and strip its meta request. */
-function stripOpenRequestFromState(state: unknown, tabId: string): void {
-  if (state === null || typeof state !== 'object') return
-  const record = state as { splits?: unknown, bottomSplits?: unknown }
-  if (stripOpenRequestFromNode(record.splits, tabId)) return
-  stripOpenRequestFromNode(record.bottomSplits, tabId)
-}
-
-function stripOpenRequestFromNode(node: unknown, tabId: string): boolean {
-  if (node === null || typeof node !== 'object') return false
-  const record = node as { kind?: unknown, tabs?: unknown, children?: unknown }
-  if (record.kind === 'leaf' && Array.isArray(record.tabs)) {
-    for (const tab of record.tabs) {
-      if (tab !== null && typeof tab === 'object' && (tab as { id?: unknown }).id === tabId) {
-        const target = tab as { meta?: unknown }
-        const stripped = stripOpenRequest(target.meta)
-        if (stripped !== null) {
-          target.meta = Object.keys(stripped).length > 0 ? stripped : undefined
-          return true
-        }
-        return false
-      }
+    const url = new URL(address)
+    if (url.protocol !== 'dsh-resource:' || url.host !== 'file') return undefined
+    const [, scope, ...rest] = url.pathname.split('/')
+    if (scope === 'session') {
+      const [id, ...segments] = rest
+      if (id === undefined || id === '' || segments.length === 0) return undefined
+      return { scope, sessionId: decodeURIComponent(id), path: segments.map(decodeURIComponent).join('/') }
     }
-    return false
-  }
-  if (Array.isArray(record.children)) {
-    for (const child of record.children) {
-      if (stripOpenRequestFromNode(child, tabId)) return true
-    }
-  }
-  return false
-}
-
-/** The last minted nonce (module state — one monotonic sequence per page). */
-let lastNonce = 0
-
-/**
- * Mint the next nonce: wall-clock based so sequences survive reloads, but
- * strictly monotonic within a page (two clicks in the same millisecond must
- * still produce increasing values, or the second would be swallowed).
- */
-export function nextNonce(now: () => number = Date.now): number {
-  const current = now()
-  lastNonce = current > lastNonce ? current : lastNonce + 1
-  return lastNonce
-}
-
-// ---- state walk + path resolution (reroute plumbing) ----
-
-/** The tab shape the meta walk reads. */
-interface TabShape {
-  id: string
-  meta?: unknown
-}
-
-/** The split-tree shape the meta walk descends (leaf | split). */
-type WalkShape =
-  | { kind: 'leaf', tabs: TabShape[] }
-  | { kind: 'split', children: WalkShape[] }
-
-/**
- * Find one tab's meta in a sidebar state (both trees — splits and
- * bottomSplits — are searched). Structural and throw-free: a malformed state
- * simply yields undefined, and `updateTab` on a missing tab is a documented
- * no-op, so a walk failure can never break the reroute.
- */
-export function findTabMeta(state: unknown, tabId: string): unknown {
-  if (state === null || typeof state !== 'object') return undefined
-  const record = state as { splits?: unknown, bottomSplits?: unknown }
-  const top = walkTab(record.splits, tabId)
-  if (top !== undefined) return top
-  return walkTab(record.bottomSplits, tabId)
-}
-
-function walkTab(node: unknown, tabId: string): unknown {
-  if (node === null || typeof node !== 'object') return undefined
-  const record = node as { kind?: unknown, tabs?: unknown, children?: unknown }
-  if (record.kind === 'leaf' && Array.isArray(record.tabs)) {
-    for (const tab of record.tabs) {
-      if (tab !== null && typeof tab === 'object' && (tab as TabShape).id === tabId) {
-        return (tab as TabShape).meta
-      }
+    if (scope === 'absolute') {
+      // An empty first segment with more behind it is a UNC path's `//`; alone it is no path.
+      const unc = rest[0] === '' && rest.length > 1
+      const segments = (unc ? rest.slice(1) : rest).map(decodeURIComponent)
+      if (segments.length === 0 || segments[0] === '') return undefined
+      if (unc) return { scope, path: `//${segments.join('/')}` }
+      return { scope, path: isDriveSegment(segments[0]) ? segments.join('/') : `/${segments.join('/')}` }
     }
     return undefined
+  } catch {
+    // `new URL` throws TypeError on a non-URL and `decodeURIComponent`
+    // throws URIError on a malformed escape; both mean "not a file address".
+    return undefined
   }
-  if (Array.isArray(record.children)) {
-    for (const child of record.children) {
-      const found = walkTab(child, tabId)
-      if (found !== undefined) return found
-    }
-  }
-  return undefined
 }
 
 /** Whether a path is absolute (POSIX root, drive letter, or UNC share). */
@@ -316,13 +114,10 @@ export function isAbsoluteLike(path: string): boolean {
 }
 
 /**
- * Resolve a (possibly relative) path against the session cwd. The seams
- * differ here: the openPath-funnel callers (ui-conversation's apply.ts on
- * the pre-gateway runtime, ui-chat's openFile now) already resolve to
- * absolute, while turn-tail produced paths come
- * straight from tool callView `locations` and may be workspace-relative —
- * better-sidebar's own `openSidebarFile` resolves them against the session
- * cwd the same way. Mirrors its `resolveSidebarPath` semantics.
+ * Resolve a (possibly relative) path against the session cwd — the join
+ * the session-scope translation needs (the official `fileAddressFor`
+ * folded this step into address construction; the takeover unfolds it
+ * again on the way back).
  */
 export function resolveAgainst(cwd: string | undefined, path: string): string {
   if (isAbsoluteLike(path)) return path
@@ -332,319 +127,109 @@ export function resolveAgainst(cwd: string | undefined, path: string): string {
   return `${base.replace(/[\\/]+$/, '')}${separator}${path}`
 }
 
-/**
- * The reroute driver both seams share: land the VSCode tab (content seed →
- * panel auto-expansion + single-instance focus) and stamp the openRequest
- * meta. The `openTab` call lands on the real service untouched — neither
- * seam wraps openTab (option I was rolled back), and the openPath wrapper
- * is not on this path. `sessionId` (the session whose workbench the open
- * targets) rides the request so a consumer in another session's tab
- * declines it instead of delivering a foreign file.
- */
-export function rerouteChatOpen(
-  service: InterceptServiceFace,
-  tabId: string,
-  path: string,
-  sessionId?: string,
-): void {
-  service.openTab({ type: tabId, path })
-  const state = service.getSnapshot().state
-  const request: OpenRequest = { nonce: nextNonce(), path }
-  if (sessionId !== undefined && sessionId !== '') request.sessionId = sessionId
-  service.updateTab(tabId, { meta: mergeOpenRequest(findTabMeta(state, tabId), request) })
+/** The open options face the wrapper intercepts (structural subset). */
+export interface OpenResourceOptionsLike {
+  readonly kind?: string
+  readonly params?: unknown
 }
 
-// ---- blocklist-hit reroute (the built-in Files tab) ----
+/** The navigation-controller face the wrapper installs onto (structural over `ISidebarRight`). */
+export interface SidebarRightLike {
+  openResource(address: string, options?: OpenResourceOptionsLike): void
+  openTab(kind: string, options?: { readonly params?: unknown }): void
+}
 
-/** better-sidebar's built-in Files tab type (the editor/files window). */
-export const SIDEBAR_FILES_TAB_TYPE = 'editor'
+/** Per-call decisions the wrapper needs (wired to the switch + settings). */
+export interface OpenResourceInterceptDeps {
+  /** Whether to take over THIS call: the `openAsDefault` switch, read live. */
+  takeoverEnabled(): boolean
+  /**
+   * The open blocklist verdict for one ABSOLUTE path: a blocked path
+   * falls through to the stock routing (the official viewers' surface).
+   */
+  blocked(path: string): boolean
+  /**
+   * The workspace root of one session (the cwd the session-scope address
+   * resolves against). Undefined = unresolvable for now → fall through.
+   */
+  cwdOf(sessionId: string): string | undefined
+  /** The workbench tab kind to open (`VSCODE_KIND`). */
+  kind: string
+}
 
-/**
- * The open-tab seed that lands one file in better-sidebar's built-in
- * Files tab: a structural twin of its own openSidebarFile (intercept.tsx)
- * — the per-path id lets multiple files coexist while the editor
- * descriptor's path dedupeKey focuses an already-open one, and the title
- * shows the file name. No meta vehicle and no updateTab: the editor tab
- * consumes its path seed natively (openTab alone is the whole reroute).
- */
-export function filesTabSeed(absolutePath: string): OpenTabSeed {
-  const at = Math.max(absolutePath.lastIndexOf('/'), absolutePath.lastIndexOf('\\'))
-  const title = at === -1 ? absolutePath : absolutePath.slice(at + 1)
-  return { type: SIDEBAR_FILES_TAB_TYPE, title, path: absolutePath, id: `editor:${absolutePath}` }
+/** The 1-based line of one open's `params`, when the caller gave a sane one. */
+function readLine(options: OpenResourceOptionsLike | undefined): number | undefined {
+  const line = (options?.params as { line?: unknown } | undefined)?.line
+  if (typeof line !== 'number' || !Number.isFinite(line) || line <= 0) return undefined
+  return Math.floor(line)
 }
 
 /**
- * The blocklist-hit reroute driver: land the file in the sidebar's
- * built-in Files tab, whose registered file viewers render exactly the
- * types the code editor shows poorly (images, PDFs, Office documents —
- * plus any viewer a companion plugin like dsh-sidebar-onlyoffice
- * registers). Callers gate on `isTabEnabled(SIDEBAR_FILES_TAB_TYPE)`
- * first: this driver sends the seed unconditionally, and a disabled type
- * is the service's own refusal contract (warn + no-op).
+ * Wrap `ctx.sidebarRight.openResource` — the official sidebar's public
+ * resource funnel — with the workbench takeover.
+ *
+ * Fail-soft at the seam: a service whose `openResource` does not resolve
+ * to a function, or whose `openTab` does not, installs nothing (the stock
+ * funnel stands). A claimed open that throws inside `openTab` also falls
+ * back to the original — a stock open beats a lost one.
+ *
+ * @param service - the navigation controller instance (`ctx.sidebarRight`).
+ * @param deps - per-call takeover decisions.
+ * @returns the disposer removing the shadow while it is still ours
+ * (HMR-safe; a later re-shadow by anyone else is left standing).
  */
-export function rerouteFilesOpen(service: InterceptServiceFace, absolutePath: string): void {
-  service.openTab(filesTabSeed(absolutePath))
-}
-
-// ---- the shared chat-open decision (every chat seam's interceptor core) ----
-
-/**
- * Build the one chat-open decision both era wrappers share: gate → open
- * blocklist → reroute. The returned route answers whether the open was
- * CLAIMED — the caller then synthesizes its seam's stock success receipt
- * (a swallowed open must never surface the Host opener's failure, or the
- * headless `xdg-open ENOENT`, to the chat UI); a declined call falls
- * through to the untouched original, whatever its seam shape is.
- *
- * - gate off / non-string / empty path → decline (stock behavior);
- * - a blocklist hit is offered to {@link OpenInterceptDeps.rerouteBlocked}
- *   (better-sidebar's built-in Files tab — the viewer surface for the
- *   types the code editor renders poorly): accepted → claimed, refused
- *   (tab type disabled) → decline back to the stock Host opener;
- * - otherwise the VSCode reroute runs and the open is claimed.
- *
- * @param deps - per-call takeover decisions (the same gate for every seam).
- * @returns the route: `(path) => claimed`.
- */
-export function createChatOpenRoute(deps: OpenInterceptDeps): (path: unknown) => boolean {
-  return (path: unknown): boolean => {
-    if (!deps.takeoverEnabled() || typeof path !== 'string' || path === '') return false
-    if (deps.blocked?.(path) === true) {
-      // A blocklist hit: the built-in Files tab takes it when the wiring
-      // accepts; a refusal (tab type disabled) falls through to the stock
-      // Host opener.
-      return deps.rerouteBlocked?.(path) === true
-    }
-    deps.reroute(path)
-    return true
-  }
-}
-
-// ---- workspaces.openPath interception (option III — the legacy runtime funnel) ----
-
-/** The client workspaces service slice the wrapper replaces (runtime IWorkspaces mirror). */
-export interface WorkspacesLike {
-  openPath(path: string): Promise<void>
-}
-
-/**
- * Wrap `workspaces.openPath` — the client runtime's chat file-open funnel —
- * with the SAME takeover gate and reroute as the turn-tail claim (option II).
- * The decision body is {@link createChatOpenRoute}; only this seam's result
- * shape (a `Promise<void>` whose callers ignore the value) lives here.
- *
- * Why this second seam is needed: better-sidebar declines BOTH of its own
- * interceptions whenever its built-in editor tab is disabled in the side
- * card settings (`tabsEnabled['editor'] === false` gates the turn-tail row
- * AND its openPath wrapper — see its intercept.tsx). The open then falls
- * through to the Host OS opener, which on a headless container dies with
- * `spawn xdg-open ENOENT`. Wrapping openPath here keeps chat file opens
- * landing in the VSCode tab even when the user disabled better-sidebar's
- * Files tab (a natural pairing: files belong in VS Code, not the built-in
- * editor).
- *
- * Fail-soft at the seam like wrapSettingsOpenDocument: a workspaces
- * service without a callable `openPath` member (a runtime whose mirror
- * carries a different shape) installs nothing — the funnel keeps its
- * stock behavior and the plugin still activates.
- *
- * Chain-safety: better-sidebar wraps the same method with the identical
- * RAW-reference restore contract, so the two wrappers compose in any
- * install/dispose order. With both active and the switch on, THIS wrapper
- * (installed later, runs first) intercepts and the call never reaches
- * better-sidebar's — same destination either way.
- *
- * @param workspaces - the client workspaces service to wrap.
- * @param deps - per-call takeover decisions (the same gate as the turn-tail claim's).
- * @returns the disposer restoring the original method (HMR-safe).
- */
-export function wrapWorkspacesOpenPath(workspaces: WorkspacesLike, deps: OpenInterceptDeps): () => void {
-  const original = workspaces.openPath
-  if (typeof original !== 'function') {
-    return () => {}
-  }
-  const route = createChatOpenRoute(deps)
-  workspaces.openPath = (path: string): Promise<void> => {
-    // Callers ignore the result; resolving as success mirrors
-    // better-sidebar's own wrapper (a swallowed open must not surface the
-    // host's xdg-open rejection to the chat UI).
-    if (route(path)) return Promise.resolve()
-    return original.call(workspaces, path)
-  }
-  return () => {
-    workspaces.openPath = original
-  }
-}
-
-// ---- gateway namespace method redefinition (shared takeover mechanics) ----
-
-/**
- * Redefine one gateway-namespace method with an intercepting replacement,
- * chaining onto WHATEVER property shape is installed.
- *
- * Two shapes reach this seam, and both must compose:
- *
- * - the gateway's own mount (`remote.<ns>.<method>`): configurable,
- *   getter-only own properties — no setter, so plain assignment throws —
- *   where every getter access returns a FRESH invocation closure resolved
- *   against the live mount. This helper redefines the property with its own
- *   getter that re-invokes the original getter on every access and hands the
- *   yielded closure through `makeInterceptor`, so each caller still resolves
- *   a fresh chain against the live mount — exactly the stock semantics.
- * - a peer's VALUE-property shadow: dsh-better-sidebar ≥ 0.18.0 wraps the
- *   same `openWorkspacePath` seam by capturing the current closure and
- *   redefining the property as `{ writable: true, value: wrapped }` — a
- *   plain function, no getter. A getter-only redefinition cannot chain onto
- *   that (the descriptor has no `get`), which fail-softed this plugin's
- *   takeover into permanent silence while the peer claimed every chat open.
- *   Here the captured `descriptor.value` plays the original: the interceptor
- *   wraps it and is installed as a value property again, so whichever plugin
- *   installs LATER sits outermost and sees each call first. The batch module
- *   order loads this plugin after the peer (entry 54 vs 46), so the takeover
- *   wins; a later peer re-apply that displaces us is repaired by the caller's
- *   one-shot re-assert (see index.tsx).
- *
- * The disposer restores the saved descriptor, but only while OUR replacement
- * is still the installed one: the gateway deletes the property when it
- * unmounts the method and re-creates it on remount, and clobbering either
- * state with the saved (stale) descriptor would resurrect a dead mount.
- *
- * Fail-soft at the seam: a target carrying no such own property, a descriptor
- * whose getter does not yield a callable, or a value that is not a function
- * installs nothing.
- *
- * @param target - the namespace service object (or any face carrying the method).
- * @param method - the own property name to redefine.
- * @param makeInterceptor - wraps one original closure; on the getter path it
- * is invoked once per property access (the interceptor never holds a stale
- * mount), on the value path once at install (the peer's own shadow semantics).
- * @returns the disposer restoring the original descriptor (HMR-safe).
- */
-export function redefineGetterMethod<Original extends (...args: never[]) => unknown>(
-  target: object,
-  method: string,
-  makeInterceptor: (original: Original) => Original,
+export function wrapSidebarRightOpenResource(
+  service: SidebarRightLike,
+  deps: OpenResourceInterceptDeps,
 ): () => void {
-  const descriptor = Object.getOwnPropertyDescriptor(target, method)
-  if (descriptor === undefined) {
+  const original = service.openResource
+  const openTab = service.openTab
+  if (typeof original !== 'function' || typeof openTab !== 'function') {
     return () => {}
   }
-  if (typeof descriptor.get === 'function') {
-    // Probe the stock getter once: it must yield the callable invocation
-    // closure callers expect (a getter of any other shape is a foreign runtime).
-    if (typeof descriptor.get.call(target) !== 'function') {
-      return () => {}
+  const saved = Object.getOwnPropertyDescriptor(service, 'openResource')
+  const fallthrough = (address: string, options?: OpenResourceOptionsLike): void => {
+    original.call(service, address, options)
+  }
+  const wrapped = (address: string, options?: OpenResourceOptionsLike): void => {
+    if (!deps.takeoverEnabled()) return fallthrough(address, options)
+    if (typeof address !== 'string' || !address.startsWith(FILE_ADDRESS_PREFIX)) {
+      return fallthrough(address, options)
     }
-    const readOriginal = descriptor.get
-    const wrapperGetter = (): Original => {
-      const original = readOriginal.call(target) as Original
-      return makeInterceptor(original)
+    const parsed = parseFileAddress(address)
+    if (parsed === undefined) return fallthrough(address, options)
+    let absolute: string
+    if (parsed.scope === 'absolute') {
+      absolute = parsed.path
+    } else {
+      const cwd = deps.cwdOf(parsed.sessionId)
+      if (cwd === undefined || cwd === '') return fallthrough(address, options)
+      absolute = resolveAgainst(cwd, parsed.path)
     }
-    Object.defineProperty(target, method, {
-      configurable: true,
-      enumerable: descriptor.enumerable,
-      get: wrapperGetter,
-    })
-    return () => {
-      const current = Object.getOwnPropertyDescriptor(target, method)
-      if (current?.get === wrapperGetter) {
-        Object.defineProperty(target, method, descriptor)
-      }
+    if (deps.blocked(absolute)) return fallthrough(address, options)
+    const line = readLine(options)
+    const params: VscodeTabParams = { path: absolute, ...line !== undefined ? { line } : {} }
+    try {
+      openTab.call(service, deps.kind, { params })
+    } catch {
+      // A refused/failed workbench open must not lose the click: hand it
+      // to the stock routing instead.
+      fallthrough(address, options)
     }
   }
-  if (typeof descriptor.value === 'function') {
-    // A peer's VALUE-property shadow (dsh-better-sidebar ≥ 0.18.0): chain
-    // onto the captured closure and re-install as a value property, so the
-    // later installer (this plugin, by batch order) becomes the outermost
-    // interceptor. Restore-only-ours keeps the chain safe across disposals.
-    const original = descriptor.value as Original
-    const wrapped = makeInterceptor(original)
-    Object.defineProperty(target, method, {
-      configurable: true,
-      enumerable: descriptor.enumerable,
-      writable: true,
-      value: wrapped,
-    })
-    return () => {
-      const current = Object.getOwnPropertyDescriptor(target, method)
-      if (current?.value === wrapped) {
-        Object.defineProperty(target, method, descriptor)
-      }
+  Object.defineProperty(service, 'openResource', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: wrapped,
+  })
+  return () => {
+    const current = Object.getOwnPropertyDescriptor(service, 'openResource')
+    if (current?.value !== wrapped) return
+    if (saved === undefined) {
+      delete (service as { openResource?: unknown }).openResource
+    } else {
+      Object.defineProperty(service, 'openResource', saved)
     }
   }
-  return () => {}
-}
-
-// ---- remote.session.openWorkspacePath interception (option III — the gateway-era funnel) ----
-
-/**
- * The funnel's result faces (structural subset of the runtime's `RemoteResult`:
- * `{ ok: true, value } | { ok: false, error }`).
- */
-export type RemoteOpenResult =
-  | { ok: true, value: { opened: true } }
-  | { ok: false, error: Error }
-
-/**
- * The remote session namespace slice the wrapper replaces. `openWorkspacePath`
- * is optional because the seam is fail-soft: a namespace without the mounted
- * method (older runtime, method unmounted) installs nothing.
- */
-export interface RemoteSessionLike {
-  openWorkspacePath?(request: { readonly path: string }, signal?: AbortSignal): Promise<RemoteOpenResult>
-}
-
-/**
- * Wrap `remote.session.openWorkspacePath` — the chat file-open funnel of the
- * gateway-era client runtime — with the SAME takeover gate and reroute as the
- * legacy `workspaces.openPath` wrapper above.
- *
- * Why this seam exists: the runtime that replaced `workspaces.openPath` routes
- * every chat-side file open through the `session/openWorkspacePath` Host
- * Remote (ui-chat's injected `openFile` — the Read/Write/... tool-row path
- * links and prose file mentions — is its only production caller), which drives
- * the Host's native opener (`xdg-open` — dead on a headless container). The
- * service now owning the `workspaces` key (the workspace controller) carries
- * no opener at all, so the legacy wrapper above installs nothing there and
- * this seam takes over instead. On the pre-gateway runtime the reverse holds:
- * this wrapper is never installed (the namespace service never appears) and
- * the legacy one keeps the takeover.
- *
- * Mechanics (dual-shape property redefinition, per-access original on the
- * getter path, captured original on the value path, restore-only-ours) live
- * in {@link redefineGetterMethod}; fail-soft at the seam like
- * wrapWorkspacesOpenPath: a service carrying no such property (method not
- * mounted, or a runtime whose namespace shape differs) installs nothing and
- * the funnel keeps its stock behavior.
- *
- * Peer interop: dsh-better-sidebar ≥ 0.18.0 shadows this SAME method (a
- * value-property wrapper installed through its own nested inject), so this
- * wrapper must chain onto a value property, not just the stock getter —
- * before that support the getter-only probe fail-softed here and the peer's
- * shadow claimed every chat file open for its built-in editor. The two
- * wrappers compose in install order (later = outermost = first to see each
- * call); the batch module order loads this plugin after the peer, so with
- * the takeover switch on the open lands in the VSCode tab and the peer's
- * closure stays as the decline-time fallback.
- *
- * @param session - the remote session namespace service to wrap.
- * @param deps - per-call takeover decisions (the same gate as the turn-tail claim's).
- * @returns the disposer restoring the original property descriptor (HMR-safe).
- */
-export function wrapRemoteOpenWorkspacePath(session: RemoteSessionLike, deps: OpenInterceptDeps): () => void {
-  const route = createChatOpenRoute(deps)
-  return redefineGetterMethod<NonNullable<RemoteSessionLike['openWorkspacePath']>>(
-    session, 'openWorkspacePath',
-    original => (request: unknown, signal?: AbortSignal): Promise<RemoteOpenResult> => {
-      const path = request !== null && typeof request === 'object'
-        ? (request as { path?: unknown }).path
-        : undefined
-      // Callers check `result.ok`; an intercepted open reports the same
-      // success the native receipt would (a rerouted open must not surface
-      // the Host opener's failure — or the headless `xdg-open ENOENT` — to
-      // the chat UI).
-      if (route(path)) return Promise.resolve({ ok: true, value: { opened: true } })
-      return original(request as { readonly path: string }, signal)
-    },
-  )
 }

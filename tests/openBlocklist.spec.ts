@@ -147,22 +147,25 @@ describe('blocklistSuggestions', () => {
 })
 
 describe('readOpenBlocklist', () => {
-  /** Minimal store face mirroring settings.ts's StoreLike. */
-  function storeOf(value: unknown) {
+  /** Minimal settings-scope face mirroring settings.ts's SettingsScopeFace. */
+  function scopeOf(value: unknown) {
     return {
-      getSnapshot: () => ({ prefs: { pluginSettings: { 'dsh-sidebar-vscode:vscode': { openBlocklist: value } } } }),
+      getSnapshot: () => ({ status: 'ready' as const, value: { openBlocklist: value } as never, writable: true }),
+      subscribe: () => () => {},
+      set: async () => {},
+      unset: async () => {},
     }
   }
 
-  it('reads the stored array through the settings blob', () => {
-    expect(readOpenBlocklist(storeOf(['zip']))).toEqual(['zip'])
+  it('reads the resolved section array through the settings scope', () => {
+    expect(readOpenBlocklist(scopeOf(['zip']))).toEqual(['zip'])
   })
 
-  it('falls back to the default for an unset key', () => {
-    expect(readOpenBlocklist(storeOf(undefined))).toEqual(DEFAULT_OPEN_BLOCKLIST)
+  it('falls back to the default for an unset section value', () => {
+    expect(readOpenBlocklist(scopeOf(undefined))).toEqual(DEFAULT_OPEN_BLOCKLIST)
   })
 
-  it('treats a missing store as unset (the code default)', () => {
+  it('treats a missing scope as unset (the code default)', () => {
     expect(readOpenBlocklist(undefined)).toEqual(DEFAULT_OPEN_BLOCKLIST)
   })
 })

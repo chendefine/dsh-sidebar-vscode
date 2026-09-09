@@ -5,18 +5,20 @@
 # context boundary (agent/pre-step expansion of canonical `dsh-vscode:`
 # and `dsh-vscode-res:` mentions into <text-selection> / <file-selection> /
 # <folder-selection> context messages, sourced { kind: 'vscode-mention' } /
-# { kind: 'vscode-resource' }); the browser half registers the
-# 'dsh-sidebar-vscode:vscode' better-sidebar tab, the composer reference
-# chips, and the reference rail.
+# { kind: 'vscode-resource' }) and the `vscode-sidebar` settings section
+# the official plugin-config card edits; the browser half registers the
+# official right-Sidebar 'vscode' tab type (ctx.sidebarRightTabs +
+# the sidebar.right.pane.tab seat), the composer reference chips, the
+# reference rail, the settings.plugin.item card, and the openResource /
+# openSettingsDocument takeovers.
 #
-# No config keys are read by the host half (capture bounds live in the
-# sidebar settings page and ride inside each mention payload). User-facing
-# configuration (the editor base URL and the workspace path mapping)
-# lives in the sidebar settings page: 侧边卡片 → VSCode 卡片 → 功能设置
-# (persisted in pluginSettings['dsh-sidebar-vscode:vscode'], NOT here).
+# User-facing configuration (the editor base URL, the workspace path
+# mapping, the openAsDefault switch, the open blocklist, the capture caps)
+# lives in the settings document's 'vscode-sidebar' namespace:
+# 设置 → 插件 → 插件配置 → VSCode 侧边栏 (NOT here).
 #
-# Double-mount guard (same pattern as dsh-better-sidebar's own bundle patch):
-# an aggregate bundle may already mount this package under its own entry id.
+# Double-mount guard (same pattern as the official bundle patches): an
+# aggregate bundle may already mount this package under its own entry id.
 # The `!!js` back-off row below is intentionally left COMMENTED OUT (this
 # repo ships without it enabled), so in the aggregate scenario the duplicate
 # id fails loudly as a duplicate instead of silently backing off — keep

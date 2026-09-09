@@ -1,50 +1,46 @@
 /**
  * The open-blocklist contract: file types the chat-open takeover must NOT
  * claim. When the `openAsDefault` switch is on, every chat-originated file
- * open (turn-tail produced chips, tool-row path links, prose file mentions)
+ * open (tool-row path links, prose file mentions, produced-files chips)
  * is rerouted into the VSCode tab — but some files (Office documents,
- * images, PDFs) belong to the sidebar's viewer surface (better-sidebar's
- * built-in Files tab), not a code editor. This module owns the whole pure
- * contract both sides share:
+ * images, PDFs) belong to the sidebar's viewer surface, not a code
+ * editor. This module owns the whole pure contract both sides share:
  *
- * - the stored shape (`pluginSettings['dsh-sidebar-vscode:vscode']
- *   .openBlocklist` — a string array of file extensions) and its code
- *   default (the seven common binary types below);
- * - the UNSET-VERSUS-EMPTY rule: a missing (or non-array) key means the
- *   code default (the feature works out of the box), while an explicitly
- *   stored `[]` means "block nothing" — the same unset-means-default
- *   discipline `serverUrl` and the capture caps follow;
+ * - the stored shape (the `vscode-sidebar` settings section's
+ * `openBlocklist` field — a string array of file extensions) and its
+ * base default (the seven common binary types below; the official
+ * settings layering makes unset resolve to that base, so an explicit
+ * `[]` remains the stored decision "block nothing");
  * - normalization (case-insensitive, dot-tolerant, charset-checked) and
  *   matching (a path is blocked when its lowercased BASE NAME ends with
- *   `'.' + extension` — one rule that covers single-part (`pdf`), treats
- *   `a.notpdf` as NOT matching `pdf`, needs no special case for
+ *   `'.' + extension` — one rule that covers single-part (`pdf`),
+ *   treats `a.notpdf` as NOT matching `pdf`, needs no special case for
  *   extension-less files, and supports multi-part extensions such as
  *   `tar.gz` when the entry itself carries the dot).
  *
- * The read side is per-call (readOpenBlocklist): the takeover gates call
+ * The read side is per-call (readOpenBlocklist): the takeover gate calls
  * it on every open, so settings edits apply to the very next click with
  * no re-wiring.
  *
- * Scope: ONLY the two chat-open seams (openIntercept.ts's wrappers and
- * the turn-tail chips). The settings-page「打开配置文件」takeover
- * (settingsTakeover.ts) deliberately ignores this list — it opens a text
- * document through its own resolve route, and honoring the list there
- * would let a blacklisted `yaml` break the button.
+ * Scope: ONLY the chat-open seam (openIntercept.ts's wrapper). The
+ * settings-page「打开配置文件」takeover (settingsTakeover.ts)
+ * deliberately ignores this list — it opens a text document through its
+ * own resolve route, and honoring the list there would let a blacklisted
+ * `yaml` break the button.
  *
  * Dependency-free by design so the contract is unit-testable in isolation.
  *
  * @module dsh-sidebar-vscode/client/openBlocklist
  */
 
-import { readSettingValue } from './settings.ts'
+import { readSettings, type SettingsScopeFace } from './settings.ts'
 
-/** The pluginSettings key of the open blocklist (a string[] of extensions). */
+/** The settings field the blocklist persists under (kept as the test handle). */
 export const OPEN_BLOCKLIST_KEY = 'openBlocklist'
 
-/** The out-of-the-box blocklist: common binary/Office/image types. */
-export const DEFAULT_OPEN_BLOCKLIST: readonly string[] = [
-  'pdf', 'docx', 'xlsx', 'pptx', 'png', 'jpeg', 'jpg',
-]
+/** The out-of-the-box blocklist (one source with the Host schema's base). */
+export { DEFAULT_OPEN_BLOCKLIST } from '../shared/settings.ts'
+import { DEFAULT_OPEN_BLOCKLIST } from '../shared/settings.ts'
 
 /**
  * Suggestions the settings row's dropdown offers beyond what is already
@@ -132,16 +128,15 @@ export function blocklistSuggestions(current: readonly string[]): readonly strin
   return BLOCKLIST_SUGGESTIONS.filter(entry => !listed.has(entry))
 }
 
-/** The minimal store face the settings read needs (mirrors settings.ts). */
-interface StoreLike {
-  getSnapshot(): { prefs: { pluginSettings: Record<string, Record<string, unknown>> } }
-}
+/** The minimal settings-scope face the settings read needs (mirrors settings.ts). */
+type ScopeLike = SettingsScopeFace | undefined
 
 /**
- * The effective blocklist for one open decision: the stored
- * `openBlocklist` value parsed per call (absent store = the code default,
- * matching readSettingValue's undefined-for-no-store contract).
+ * The effective blocklist for one open decision: the resolved
+ * `vscode-sidebar` section's `openBlocklist` value parsed per call
+ * (absent scope = the code default, matching readSettings's
+ * base-fallback contract).
  */
-export function readOpenBlocklist(store: StoreLike | undefined): readonly string[] {
-  return parseOpenBlocklist(readSettingValue(store, OPEN_BLOCKLIST_KEY))
+export function readOpenBlocklist(scope: ScopeLike): readonly string[] {
+  return parseOpenBlocklist(readSettings(scope).openBlocklist)
 }

@@ -31,7 +31,7 @@
 
 import { t } from './i18n.ts'
 import { buildVscodeUrl, mapPath, mapPathForOpen, type PathMapRule } from './paths.ts'
-import type { OpenRequest } from './openIntercept.ts'
+import type { OpenRequest } from './openRequests.ts'
 import type { OpenCommand } from './openChannelApi.ts'
 
 /** The live inputs the opener reads per open (kept fresh by the view). */

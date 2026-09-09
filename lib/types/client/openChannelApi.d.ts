@@ -5,8 +5,8 @@
  * `dsh.selection-reference` extension is alive in the embedded workbench and
  * (b) hand it one file-open command.
  *
- * The routes are fence-protected by the node half (same-origin GUI only),
- * same trust model as better-sidebar's `/sidebar/api`. Both helpers are
+ * The routes are fence-protected by the node half (same-origin GUI only) —
+ * the plugin family's standard browser-trust fence. Both helpers are
  * fail-soft: any error answers `false` / `undefined`, and the VscodeView
  * falls back to the URL-payload channel — a missing route (older host half
  * not reloaded yet) or a missing extension must degrade, never break.

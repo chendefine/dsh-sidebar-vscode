@@ -1,21 +1,20 @@
 /**
  * The plugin's stylesheet registry: every CSS block this plugin injects
  * lives here exactly once, and one idempotent adopter installs any subset —
- * replacing the four per-module copies of the find-or-create + dispose
+ * replacing the per-module copies of the find-or-create + dispose
  * boilerplate the feature accretion left behind (tab chrome, composer
- * rail, settings panel, turn-tail row).
+ * rail, settings card).
  *
  * All rules ride the host's `--dsw-alias-*` design tokens (maintained by
  * the theme presenter — they flip with the appearance preference), so the
  * sheets need no theme awareness of their own. Class prefixes stay
- * per-surface (`dsh_vscodeTab_`, `dsh_vscodeRef_`, `dsh_vscodeSet_`,
- * `dsh_vscodeTurnTail_`).
+ * per-surface (`dsh_vscodeTab_`, `dsh_vscodeRef_`, `dsh_vscodeSet_`).
  *
  * @module dsh-sidebar-vscode/client/styles
  */
 
 /** The injectable sheets this plugin owns. */
-export type PluginStyleId = 'tab' | 'rail' | 'settings' | 'turnTail'
+export type PluginStyleId = 'tab' | 'rail' | 'settings'
 
 /** One sheet: its idempotency id and its rules. */
 interface StyleSheetSpec {
@@ -228,6 +227,139 @@ const STYLE_SHEETS: Record<PluginStyleId, StyleSheetSpec> = {
   settings: {
     id: 'dsh-sidebar-vscode-settings-css',
     css: `
+/* The card shell: one plugin's disclosure box inside the official
+ * configurable-plugins tab (设置 → 插件 → 插件配置), matching that tab's
+ * card rhythm over the same host tokens — collapsed at rest, the whole
+ * header one button, the body disclosed in place. */
+.dsh_vscodeSet_card {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-3);
+  transition: border-color 0.16s, background 0.16s;
+}
+.dsh_vscodeSet_card:hover {
+  border-color: var(--dsw-alias-label-dimmed);
+}
+.dsh_vscodeSet_card--open {
+  border-color: var(--dsw-alias-label-dimmed);
+  background: var(--dsw-alias-bg-layer-2);
+}
+/* The header: one full-width button stacking the name over the line
+ * describing what the settings govern, with the disclosure glyph at its
+ * end (the official PluginCard rhythm). */
+.dsh_vscodeSet_cardHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dsh_vscodeSet_cardHead:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+.dsh_vscodeSet_cardText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dsh_vscodeSet_cardTitle {
+  font-size: 15px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+.dsh_vscodeSet_cardDesc {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* Marker for a card holding user-layer overrides (the chip the official
+ * chrome gives an unsaved card; ours marks persisted customization). */
+.dsh_vscodeSet_chip {
+  flex: none;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+}
+.dsh_vscodeSet_chevron {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  transition: transform 0.16s;
+}
+.dsh_vscodeSet_card--open .dsh_vscodeSet_chevron {
+  transform: rotate(180deg);
+}
+/* The disclosed body: separated from the header by the section hairline,
+ * inset to the header's text column. */
+.dsh_vscodeSet_cardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 16px;
+  padding: 12px 0 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+.dsh_vscodeSet_foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 0;
+  min-height: 30px;
+}
+.dsh_vscodeSet_footNote {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsh_vscodeSet_reset {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.dsh_vscodeSet_reset:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.dsh_vscodeSet_reset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dsh_vscodeSet_readonly {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-label);
+  font: var(--dsw-font-xxs-12);
+}
 .dsh_vscodeSet_rows {
   display: flex;
   flex-direction: column;
@@ -358,9 +490,9 @@ const STYLE_SHEETS: Record<PluginStyleId, StyleSheetSpec> = {
   width: auto;
   min-width: 72px;
 }
-/* The switch row's control — the same visual switch better-sidebar's
- * settings popup uses (label + visually-hidden checkbox input + track /
- * thumb spans), so the popup reads as one design language. */
+/* The switch row's control — the platform-standard switch shape (label +
+ * visually-hidden checkbox input + track/thumb spans), so the card reads
+ * as one design language with the host's own settings surfaces. */
 .dsh_vscodeSet_switch {
   position: relative;
   display: inline-flex;
@@ -408,49 +540,6 @@ const STYLE_SHEETS: Record<PluginStyleId, StyleSheetSpec> = {
 .dsh_vscodeSet_switchInput:focus-visible + .dsh_vscodeSet_switchTrack {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
-}
-`,
-  },
-  turnTail: {
-    id: 'dsh-sidebar-vscode-turn-tail-css',
-    css: `
-.dsh_vscodeTurnTail_row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 4px 0;
-}
-.dsh_vscodeTurnTail_label {
-  font: var(--dsw-font-xxs-12);
-  color: var(--dsw-alias-label-tertiary);
-}
-.dsh_vscodeTurnTail_chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 200px;
-  padding: 2px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-label-secondary);
-  font: var(--dsw-font-xxs-12);
-  cursor: pointer;
-  overflow: hidden;
-}
-.dsh_vscodeTurnTail_chip:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-.dsh_vscodeTurnTail_chip span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh_vscodeTurnTail_more {
-  font: var(--dsw-font-xxs-12);
-  color: var(--dsw-alias-label-tertiary);
 }
 `,
   },

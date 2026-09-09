@@ -1,11 +1,11 @@
 /**
  * `dsh-sidebar-vscode`, node half: the vscode-selection context boundary,
- * the extension command channel's fenced routes, and the same-origin
- * VS Code reverse proxy.
+ * the extension command channel's fenced routes, the `vscode-sidebar`
+ * settings section, and the same-origin VS Code reverse proxy.
  *
- * Everything UI-shaped (the better-sidebar VS Code tab, the composer
- * chips, the reference rail, the chat-open interception) lives in the
- * browser half. This half owns:
+ * Everything UI-shaped (the official right-Sidebar `vscode` tab, the
+ * composer chips, the reference rail, the chat-open interception, the
+ * settings card) lives in the browser half. This half owns:
  *
  * - the model-facing seam: for every live agent it listens at
  *   `agent/pre-step`, expands canonical `dsh-vscode:` (editor selections)
@@ -14,6 +14,10 @@
  *   context messages sourced `{ kind: 'vscode-mention', … }` — or, for
  *   resources, content-less `<file-selection>`/`<folder-selection>`
  *   markers sourced `{ kind: 'vscode-resource', … }` (see `src/mention.ts`);
+ *
+ * - the `vscode-sidebar` settings section (`src/settingsSection.ts`),
+ *   registered on the settings provider so the official「插件配置」tab
+ *   serves the namespace this plugin's browser card edits;
  *
  * - the fenced route family under `/sidebar-vscode/api/*`, dispatched
  *   through one method table (METHODS below): the open-channel probes and

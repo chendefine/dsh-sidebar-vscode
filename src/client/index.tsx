@@ -1,40 +1,43 @@
 /**
- * Browser half of `dsh-sidebar-vscode`: a thin composition root. The
- * plugin's client-side mechanisms live in their own modules — the tab
- * view (VscodeView.tsx and its controllers), the reference pipeline
- * (references.ts / composer.tsx / referencePipeline.ts), the takeover
- * family (takeovers.ts), the settings panel (settingsRows.tsx) — and this
- * entry only wires them to the services:
+ * Browser half of `dsh-sidebar-vscode`: a thin composition root over the
+ * OFFICIAL right-Sidebar system. The plugin's client-side mechanisms live
+ * in their own modules — the tab body (VscodeView.tsx and its
+ * controllers), the reference pipeline (references.ts / composer.tsx /
+ * referencePipeline.ts), the takeover family (takeovers.ts), the settings
+ * card (settingsCard.tsx) — and this entry only wires them to the
+ * services:
  *
- * - the better-sidebar tab ('dsh-sidebar-vscode:vscode') embedding the
- *   VS Code web workbench at the current session workspace;
+ * - the `vscode` tab type, registered in the official two stages: the
+ *   static definition into `ctx.sidebarRightTabs` (guide-page entry box
+ *   included) and the body into the keyed `sidebar.right.pane.tab` seat
+ *   under the definition's id — the embedded VS Code web workbench at the
+ *   session's workspace;
  * - an `@`-trigger source named 'vscode-reference' whose codec serializes
  *   this plugin's occurrence chips back to their canonical mention at
  *   submit (the input machine routes serialization by source name);
  * - a reference lander shared by the clipboard bridge (tab component) and
  *   the paste fallback (composer dock): payload → chips on the addressed
  *   session's composer, plain-text mention as the degraded path;
- * - the takeover family (takeovers.ts): chat file opens and the settings
- *   page's「打开配置文件」button rerouted into the VSCode tab, all behind
+ * - the takeover family (takeovers.ts): the official
+ *   `ctx.sidebarRight.openResource` funnel and the settings page's
+ *   「打开配置文件」button rerouted into the workbench tab, all behind
  *   the openAsDefault switch and the open blocklist;
- * - the default-tab watcher (defaultTab.ts): brand-new sessions open the
- *   VSCode tab instead of better-sidebar's seeded Files tab.
- *
- * When better-sidebar is absent (optional peer), tab registration and the
- * takeovers silently skip; the reference plumbing still works for the
- * paste fallback.
+ * - the configuration card (settingsCard.tsx) inside the official
+ *   设置 → 插件 → 插件配置 tab, keyed by the `vscode-sidebar` namespace
+ *   the Host half serves.
  *
  * @module dsh-sidebar-vscode/client
  */
 
-import type { TabDescriptor } from 'dsh-better-sidebar'
 import { VscodeView } from './VscodeView.tsx'
-import { VscodeIcon } from './icons.tsx'
-import { attachLocale, t } from './i18n.ts'
-import { watchDefaultTab, type DefaultTabServiceFace } from './defaultTab.ts'
+import { attachLocale } from './i18n.ts'
+import { vscodeTabDefinition, VSCODE_ID } from './definition.ts'
 import { installTakeovers } from './takeovers.ts'
 import { ComposerDock } from './composer.tsx'
-import { CapSettingsPanel } from './settingsRows.tsx'
+import { VscodeSettingsCard } from './settingsCard.tsx'
+import type { SettingsScopeFace } from './settings.ts'
+import type { SidebarRightLike } from './openIntercept.ts'
+import type { SettingsApiLike } from './settingsTakeover.ts'
 import {
   setReferenceLander,
   type FallbackOptions,
@@ -43,6 +46,7 @@ import {
   type ReferenceRemover,
 } from './referencePipeline.ts'
 import { adoptPluginStyles } from './styles.ts'
+import { NS } from './locales.ts'
 import {
   buildRefsFromPayload,
   buildResourceRefsFromPayload,
@@ -55,38 +59,41 @@ import {
 } from './references.ts'
 import { isResourceList, type ClipboardPayload } from './selection.ts'
 import { readActiveComposerSelection, restoreActiveComposerCaret } from './composer.tsx'
+import { VSCODE_SIDEBAR_SETTINGS_NAMESPACE } from '../shared/settings.ts'
 
-/** Services required before mounting: the sidebar service, the slot registry
- * (the turn-tail claim), the locale service, the session registry, the
- * conversation input service, the trigger registry (chip serialization
- * routing), the client workspaces service (the openPath seam), and the
- * connection service (the settings.openDocument seam). */
+/** Services required before mounting: the official right-Sidebar's tab
+ * registry and navigation controller, the slot registry (the tab body,
+ * the composer dock, and the settings card seats), the locale service,
+ * the session registry, the conversation input service, the trigger
+ * registry (chip serialization routing), the settings scope (the
+ * `vscode-sidebar` namespace), and the connection service (the legacy
+ * settings.openDocument seam). */
 export const inject = [
-  'betterSidebar', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'workspaces', 'connection',
+  'sidebarRightTabs', 'sidebarRight', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'settingsScope', 'connection',
 ]
 
-/** The structural context face the client body touches. The betterSidebar
- * member is the service's registry face plus the slices the default-tab
- * watcher and the settings panel need — structural over the real
- * `BetterSidebarService`. */
+/** The structural context face the client body touches. */
 interface ClientContextFace {
-  betterSidebar?: DefaultTabServiceFace & {
-    registerTab(descriptor: TabDescriptor): () => void
-    /** Patch an open tab's display fields (the openRequest meta vehicle). */
-    updateTab(tabId: string, patch: { title?: string, path?: string, meta?: unknown }): void
+  /** The official tab-type registry (`ctx.sidebarRightTabs`). */
+  sidebarRightTabs?: {
+    register(definition: unknown): () => void
   }
+  /** The official navigation controller (`ctx.sidebarRight`). */
+  sidebarRight?: SidebarRightLike
   slots: {
     inject(key: string, callback: () => () => void): () => void
     register(options: {
       name: string
-      id: string
+      id?: string
+      key?: string
       order?: number
-      inject?: () => { lander: ReferenceLander, pasteMentions?: MentionPaster, removeRef?: ReferenceRemover }
+      locale?: string
+      inject?: () => Record<string, unknown>
     }, component: unknown): () => void
   }
   locale: Parameters<typeof attachLocale>[0]
   sessions?: SessionsServiceFace & {
-    /** The live session list (the cwd source for the chat-open reroute). */
+    /** The live session list (the cwd source for the session-scope translation). */
     list?: { getSnapshot(): {
       current?: string
       byId?: Record<string, { cwd?: string } | undefined>
@@ -96,6 +103,17 @@ interface ClientContextFace {
   inputTriggers?: {
     registerSource(source: VscodeTriggerSource): () => void
   }
+  /** The official settings-scope binder (`ctx.settingsScope`). */
+  settingsScope?: {
+    bind(spec: { namespace: string }): SettingsScopeFace
+  }
+  /** The connection service (the legacy settings.openDocument seam's target). */
+  connection?: { api?: { settings?: SettingsApiLike } }
+  /**
+   * Nested service injection (cordis `ctx.inject`): parks a child fiber
+   * until every named service exists (the settings takeover's era seam).
+   */
+  inject?(deps: readonly string[], body: (scope: { get(name: string): unknown }) => (() => void) | void): unknown
   effect(register: () => () => void, name?: string): void
 }
 
@@ -170,48 +188,22 @@ function readComposerPoint(
   return fromSurface === undefined ? undefined : { point: fromSurface, fromDom: true }
 }
 
-/** The tab descriptor this plugin registers. */
-export function vscodeTab(): TabDescriptor {
-  return {
-    id: 'dsh-sidebar-vscode:vscode',
-    title: () => t('title'),
-    icon: (size: number) => VscodeIcon(size),
-    order: 55,
-    single: true,
-    settings: {
-      // Every settings row renders through the custom panel below — no
-      // declarative `pluginToggles`: their fixed left-right split (control
-      // beside the description) cramps the long free-form `serverUrl`
-      // value, which the panel stacks instead (description on top,
-      // full-width input on its own line below; `pathMap` renders no row
-      // anywhere — settings-document only); the numeric
-      // capture caps (maxLines / maxBytes) need the custom panel anyway,
-      // because the declarative number row cannot pre-fill the code
-      // default on an unset key (its empty draft commits '' → 0 → the
-      // declared MINIMUM on a mere focus/blur) nor flag out-of-range
-      // input as it is typed. The panel shows the effective value
-      // (stored, else the default), enforces the declared bounds at input
-      // time, and persists only real changes.
-      render: (props) => (
-        <CapSettingsPanel
-          pluginSettings={props.pluginSettings}
-          updatePluginSetting={props.updatePluginSetting}
-          service={props.service}
-        />
-      ),
-    },
-    component: (props) => <VscodeView {...props} />,
-  }
-}
-
 /**
  * Client plugin body.
- * @param ctx - the client cordis context (sidebar + slots + locale + sessions
- * + conversation + inputTriggers services).
+ * @param ctx - the client cordis context (the official sidebar services +
+ * slots + locale + sessions + conversation + inputTriggers + settingsScope
+ * + connection).
  */
 export function apply(ctx: unknown): void {
   const client = ctx as ClientContextFace
   client.effect(() => attachLocale(client.locale), 'dsh-sidebar-vscode: dictionaries')
+
+  // ── The `vscode-sidebar` settings scope ────────────────────────────────
+  // One binding for the whole plugin: the takeover gates read it per call,
+  // the tab body and the settings card read it per render / per write.
+  // An absent settings service (a runtime without one) leaves the scope
+  // undefined and every consumer reads the code defaults.
+  const scope = client.settingsScope?.bind({ namespace: VSCODE_SIDEBAR_SETTINGS_NAMESPACE })
 
   // ── The reference pipeline: lander + paster + remover ──────────────────
   // One lander shared by the composer dock (paste fallback) and the tab's
@@ -276,12 +268,10 @@ export function apply(ctx: unknown): void {
   }, 'dsh-sidebar-vscode: reference lander handle')
 
   // ── The composer dock (the reference rail + paste fallbacks) ───────────
-  // The dock's and the settings panel's stylesheets live as long as the
-  // dock registration: adopted once, removed on plugin dispose / HMR
-  // re-apply (the gear popup renders the panel only while the plugin is
-  // loaded).
+  // The dock's stylesheet lives as long as the dock registration: adopted
+  // once, removed on plugin dispose / HMR re-apply.
   client.effect(() => {
-    const disposeStyles = adoptPluginStyles('rail', 'settings')
+    const disposeStyles = adoptPluginStyles('rail')
     const stop = client.slots.inject('conversation.input.dock', () => client.slots.register({
       name: 'conversation.input.dock',
       id: 'dsh-sidebar-vscode-composer',
@@ -317,36 +307,63 @@ export function apply(ctx: unknown): void {
     return () => { stop?.() }
   }, 'dsh-sidebar-vscode: @ source')
 
-  // ── The sidebar surfaces (need the optional better-sidebar peer) ───────
-  const betterSidebar = client.betterSidebar
-  if (betterSidebar === undefined) return
-  const descriptor = vscodeTab()
+  // ── The official right-Sidebar surfaces ─────────────────────────────────
+  // Fail-soft for a runtime without the official sidebar (an older host
+  // build): the tab never registers, the takeovers stay off, and the
+  // reference plumbing above keeps working for the paste fallback.
+  const tabs = client.sidebarRightTabs
+  const sidebarRight = client.sidebarRight
+  if (tabs === undefined || sidebarRight === undefined) return
+
+  // Stage one — the type declaration (the guide-page entry box included).
+  // The tab's stylesheet lives as long as the registration: adopted once,
+  // removed on plugin dispose / HMR re-apply.
   client.effect(() => {
-    // The tab's stylesheet lives as long as the tab registration: adopted
-    // once, removed on plugin dispose / HMR re-apply.
     const disposeStyles = adoptPluginStyles('tab')
-    const stop = betterSidebar.registerTab(descriptor)
+    const stop = tabs.register(vscodeTabDefinition())
     return () => {
       stop()
       disposeStyles()
     }
-  }, 'dsh-sidebar-vscode: vscode tab')
+  }, 'dsh-sidebar-vscode: vscode tab type')
 
-  // The default-tab watcher: better-sidebar seeds every brand-new session
-  // with a hardcoded 'Files' tab; when the openAsDefault switch is on, this
-  // swaps that pristine seed for the VSCode tab (new sessions only — used
-  // sessions keep their own layouts; see defaultTab.ts).
+  // Stage two — the body, keyed by the definition's id. The settings
+  // scope rides the registration's inject; the framework binds
+  // `useTabInfo()` and the session-scoped standard props.
   client.effect(() => {
-    const stop = watchDefaultTab(betterSidebar)
+    const stop = client.slots.inject('sidebar.right.pane.tab', () => client.slots.register({
+      name: 'sidebar.right.pane.tab',
+      key: VSCODE_ID,
+      locale: NS,
+      inject: () => ({ settings: scope }),
+    }, VscodeView))
     return () => { stop() }
-  }, 'dsh-sidebar-vscode: default tab watcher')
+  }, 'dsh-sidebar-vscode: vscode tab body')
 
-  // The takeover family (chat file opens + the settings open-document
-  // button), gated by the same openAsDefault switch as the default-tab
-  // swap: switch off → every seam declines and the chat/settings keep
-  // their stock behavior; switch on → the opens land in the VSCode tab
-  // and its meta carries the path (VscodeView opens it there).
+  // The takeover family (the official openResource funnel + the settings
+  // open-document button), gated by the same openAsDefault switch: switch
+  // off → every seam declines and the chat/settings keep their stock
+  // behavior; switch on → the opens land in the workbench tab and its
+  // navigation params carry the path.
   client.effect(() => {
-    return installTakeovers(client, betterSidebar)
+    return installTakeovers(client, scope)
   }, 'dsh-sidebar-vscode: chat + settings open takeover')
+
+  // ── The configuration card (设置 → 插件 → 插件配置) ──────────────────────
+  // Keyed by the settings namespace the Host half serves; the official
+  // configurable-plugins tab dispatches this card under that key. The
+  // card's stylesheet lives as long as the registration.
+  client.effect(() => {
+    const disposeStyles = adoptPluginStyles('settings')
+    const stop = client.slots.inject('settings.plugin.item', () => client.slots.register({
+      name: 'settings.plugin.item',
+      key: VSCODE_SIDEBAR_SETTINGS_NAMESPACE,
+      locale: NS,
+      inject: () => ({ scope }),
+    }, VscodeSettingsCard))
+    return () => {
+      stop()
+      disposeStyles()
+    }
+  }, 'dsh-sidebar-vscode: settings card')
 }

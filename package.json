@@ -1,7 +1,7 @@
 {
   "name": "dsh-sidebar-vscode",
-  "version": "0.2.9",
-  "description": "DSH web plugin: a better-sidebar tab that embeds the VS Code web workbench opened at the current session workspace — same-origin by default through the plugin's built-in reverse proxy (/sidebar/vscode), or via a gateway subpath / any configured editor base URL. Editor selections land as atomic reference chips whose canonical mentions the host half expands into <text-selection> context at agent/pre-step; explorer files/folders land as path-only resource chips expanded into content-less <file-selection>/<folder-selection> markers.",
+  "version": "0.3.0",
+  "description": "DSH web plugin: an official right-Sidebar tab type ('vscode') that embeds the VS Code web workbench opened at the current session workspace — same-origin by default through the plugin's built-in reverse proxy (/sidebar/vscode), or via a gateway subpath / any configured editor base URL. Editor selections land as atomic reference chips whose canonical mentions the host half expands into <text-selection> context at agent/pre-step; explorer files/folders land as path-only resource chips expanded into content-less <file-selection>/<folder-selection> markers. Chat-originated file opens (the sidebarRight openResource funnel) and the settings page's open-document button are taken over into the workbench behind the openAsDefault switch; its settings live in the official plugin-config card (namespace 'vscode-sidebar').",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -39,7 +39,8 @@
         "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-client-ui-input-trigger",
         "@deepseek-ai/dsh-client-locale",
-        "dsh-better-sidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
@@ -62,7 +63,7 @@
     "dsh",
     "dsh-plugin",
     "cordis",
-    "dsh-better-sidebar",
+    "dsh-client-ui-sidebar-right",
     "vscode",
     "serve-web",
     "sidebar-tab"
@@ -83,7 +84,6 @@
     "@deepseek-ai/dsh-client-ui-input-trigger": "*",
     "@deepseek-ai/dsh-client-ui-slots": "*",
     "@deepseek-ai/dsh-llm": "*",
-    "dsh-better-sidebar": ">=0.12.0",
     "react": ">=18.2.0"
   },
   "peerDependenciesMeta": {
@@ -111,9 +111,6 @@
     "@deepseek-ai/dsh-client-locale": {
       "optional": true
     },
-    "dsh-better-sidebar": {
-      "optional": true
-    },
     "react": {
       "optional": true
     }
@@ -126,10 +123,10 @@
     "@deepseek-ai/dsh-invariants": "0.0.1-rc.1",
     "@deepseek-ai/dsh-llm": "0.0.1-rc.1",
     "@deepseek-ai/dsh-timeout": "0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^24.0.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.1",
-    "dsh-better-sidebar": "^0.16.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsdown": "^0.22.2",

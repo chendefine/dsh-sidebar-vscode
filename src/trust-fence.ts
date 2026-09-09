@@ -1,11 +1,10 @@
 /**
  * Browser-trust fence for this plugin's routes, behaviorally identical to
- * the /api gateway's fence in @deepseek-ai/dsh-client-connection (and to
- * dsh-better-sidebar's copy of the same logic — the package does not export
- * these helpers, so the small surface is mirrored here with attribution;
- * both are BSD-3-Clause). Host-header loopback or a configured trusted
- * authority passes; cross-site browser markers refuse. This is a
- * DNS-rebinding / cross-site defense, not authentication.
+ * the /api gateway's fence in @deepseek-ai/dsh-client-connection (the
+ * package does not export these helpers, so the small surface is mirrored
+ * here with attribution; BSD-3-Clause). Host-header loopback or a
+ * configured trusted authority passes; cross-site browser markers refuse.
+ * This is a DNS-rebinding / cross-site defense, not authentication.
  *
  * @module dsh-sidebar-vscode/trust-fence
  */

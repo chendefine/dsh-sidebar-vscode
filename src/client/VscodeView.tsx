@@ -1,12 +1,14 @@
 /**
- * The VSCode tab component: a composition layer over the workbench
- * lifecycle controllers. Each orthogonal concern of embedding the VS Code
- * web workbench lives in its own unit-testable module, and this component
- * only wires them to the tab's props and renders their state:
+ * The `vscode` tab body of the official right Sidebar: a composition layer
+ * over the workbench lifecycle controllers. Each orthogonal concern of
+ * embedding the VS Code web workbench lives in its own unit-testable
+ * module, and this component only wires them to the tab's props and
+ * renders their state:
  *
  * - the iframe BASE resolution (same-origin mount vs direct URL, with
  *   self-healing graduation) — `workbenchBase.ts`;
- * - the session cwd resolution (scope fast path, `/sidebar/api` authoritative);
+ * - the session cwd resolution (the sessions registry's live snapshot —
+ *   the official standard `useSessions` prop);
  * - the BOOT GATE (park a nonce before the frame mounts, await the
  *   extension's post-reconcile receipt OR the rendered editor strip —
  *   whichever settles first — rotate on in-place reloads) —
@@ -18,37 +20,49 @@
  * - the FOCUS FENCE (bounce uninvited focus grabs out of the frame) —
  *   `focusFence.ts` (`FocusFenceController`) over the pure rules in
  *   `focusGuard.ts`;
- * - the OPEN REQUESTS (one-shot meta stamps: retire stale, defer until
- *   the gate settles, decline foreign sessions) — `openRequests.ts`
+ * - the OPEN NAVIGATIONS (one-shot revision discipline: retire stale,
+ *   defer until the gate settles) — `openRequests.ts`
  *   (`OpenRequestConsumer`) driving the two-channel opener in
  *   `workbenchLink.ts` (extension spool first, URL payload degraded);
  * - the CLIPBOARD BRIDGE (same-origin envelope interception) —
  *   `clipboardBridge.ts`;
  * - the paste-fallback options feed — `referencePipeline.ts`.
  *
+ * Props are the official keyed-seat share: the framework-bound
+ * `useTabInfo()` (live sidebar/panel/tab state — `tab.visible` is the
+ * docked-active-or-floating visibility, `tab.navigation` carries the
+ * takeover's `openTab` params with a monotonic revision), the
+ * session-scoped standard props (`sessionId`, `useSessions`), and this
+ * plugin's injected settings scope (the `vscode-sidebar` namespace).
+ *
  * Design notes that belong to the view itself:
+ * - The root mounts FULL-BLEED: the docking kit pads every tab body
+ *   (`.paneBody` 12px docked, `.floatBody` 10px floated), and a workbench
+ *   reads as the pane itself, not a framed picture — `fullBleed.ts`
+ *   measures the host's padding and cancels it edge to edge.
  * - The iframe is NOT sandboxed and NOT keyed away on `visible === false`:
  *   the workbench is served same-origin (through the host half's built-in
  *   `/sidebar/vscode` proxy, or the deployment's gateway subpath — cookies
- *   flow, the WebSocket terminal works) and the VS Code session should
- *   survive tab switches inside the sidebar. The FIRST load is deferred,
+ *   flow, the WebSocket terminal works). The FIRST load is deferred,
  *   though, until the tab has been visible once (a workbench booted
  *   inside a hidden iframe steals the caret from the composer via its
- *   Getting Started page, so the boot waits for an audience).
- * - The authoritative cwd comes from better-sidebar's `/sidebar/api`
- *   (`session.cwd`); the scope's optional cwd is used as a fast path.
- * - Settings (`serverUrl`, `pathMap`) are read from the store's prefs
- *   snapshot each render, so edits apply on the next render.
+ *   Getting Started page, so the boot waits for an audience). Note the
+ *   official pane renders only the ACTIVE tab's body: switching to a
+ *   sibling tab in the same pane unmounts the workbench (a reload path
+ *   the boot gate + editor-ledger reconcile handle), and switching back
+ *   remounts it through this same deferred-first-load rule.
+ * - Settings (`serverUrl`, `pathMap`, the caps) are read from the bound
+ *   scope each render (the settings card writes the document), so edits
+ *   apply on the next render.
  * - All chrome follows the DSH appearance (light / dark / system) through
  *   the host's `--dsw-alias-*` tokens (the tab stylesheet lives in
- *   styles.ts, adopted by the plugin body with the tab registration).
+ *   styles.ts, adopted by the plugin body with the body registration).
  *
  * @module dsh-sidebar-vscode/client/VscodeView
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { TabComponentProps } from 'dsh-better-sidebar'
-import { readSetting, readSettingValue } from './settings.ts'
+import { readSettingCaps, useSettings, type SettingsScopeFace } from './settings.ts'
 import {
   buildVscodeUrl,
   DEFAULT_SERVER_URL,
@@ -63,19 +77,40 @@ import { BootGateController, type BootGateStatus } from './bootGate.ts'
 import { FocusFenceController } from './focusFence.ts'
 import { useWorkbenchBase } from './workbenchBase.ts'
 import { WorkbenchBootLock, acquireWebLock, type BootLockStatus } from './bootLock.ts'
-import { OpenRequestConsumer, pageLoadedAt } from './openRequests.ts'
+import { OpenRequestConsumer } from './openRequests.ts'
 import { createWorkbenchOpener, type PendingOpen, type WorkbenchOpener } from './workbenchLink.ts'
+import { useFullBleed } from './fullBleed.ts'
 import type { ClipboardPayload } from './selection.ts'
 import { getReferenceLander, setFallbackOptions } from './referencePipeline.ts'
-import { extractOpenRequest, clearTabOpenRequest, type OpenRequest } from './openIntercept.ts'
 import { beginBoot, pollBootStatus, probeCapability, reportUserInteract, sendOpenCommand } from './openChannelApi.ts'
 import { t } from './i18n.ts'
 
-/** What `/sidebar/api/session.cwd` answers on success (`parsed.value`). */
-interface CwdResult {
-  cwd: string
-  root: string
-  parent: string | null
+/** The framework-bound tab-info hook's answer (structural subset the view reads). */
+export interface VscodeTabInfo {
+  readonly tab: {
+    readonly id: string
+    /** Docked bodies need an expanded sidebar and an active tab; floats stay visible. */
+    readonly visible: boolean
+    readonly navigation: {
+      readonly revision: number
+      readonly params: unknown
+    }
+  }
+}
+
+/** The sessions-registry selector hook (structural subset: the cwd source). */
+export type UseSessionsCwd = <R>(select: (snapshot: { byId: Record<string, { cwd?: string } | undefined> }) => R) => R
+
+/** The body's composed props: the official keyed-seat share plus the injected scope. */
+export interface VscodeViewProps {
+  /** The framework-bound tab information reader (`useTabInfo()`). */
+  useTabInfo(): VscodeTabInfo
+  /** The session this tab belongs to (session-scoped standard prop). */
+  sessionId: string
+  /** The sessions registry selector (the cwd source). */
+  useSessions: UseSessionsCwd
+  /** The bound `vscode-sidebar` settings scope (this plugin's registration inject). */
+  settings: SettingsScopeFace | undefined
 }
 
 /** One client-randomness boot nonce (printable, bounded). */
@@ -117,17 +152,21 @@ function NoticeRow(props: { text: string }): React.ReactNode {
 }
 
 /**
- * Render the VS Code workbench for the scope's workspace.
- * @param props - the tab component props (scope + the sidebar store).
+ * Render the VS Code workbench for the session's workspace.
+ * @param props - the official keyed-seat share plus the settings scope.
  */
-export function VscodeView(props: TabComponentProps): React.ReactNode {
-  const { scope, store, visible } = props
+export function VscodeView(props: VscodeViewProps): React.ReactNode {
+  const { sessionId, useSessions } = props
+  const { tab } = props.useTabInfo()
+  const visible = tab.visible
 
-  // ── Shared settings (read each render; the gear popup writes the doc) ──
-  const rawServerUrl = readSetting(store, 'serverUrl')
+  // ── Shared settings (read each render; the settings card writes the doc) ─
+  const values = useSettings(props.settings)
+  const rawServerUrl = values.serverUrl
   const effectiveServerUrl = rawServerUrl.trim() === '' ? DEFAULT_SERVER_URL : normalizeBaseUrl(rawServerUrl)
   const fullUrl = isFullServerUrl(effectiveServerUrl)
-  const pathMap = parsePathMap(readSetting(store, 'pathMap'))
+  const pathMap = parsePathMap(values.pathMap)
+  const { maxLines, maxBytes } = readSettingCaps(values)
 
   // Degradation notices only (unmapped opens / injection failures / text
   // fallback / proxy fallback); success is silent.
@@ -143,48 +182,8 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   const resolvingBase = baseState === 'resolving'
   const serverUrl = baseState === 'mount' ? PROXY_MOUNT : effectiveServerUrl
 
-  // ── Session cwd resolution: fast path via scope, authoritative via API ─
-  const [cwd, setCwd] = useState<string | undefined>(scope.cwd)
-  const [cwdFailed, setCwdFailed] = useState(false)
-  useEffect(() => {
-    if (scope.cwd !== undefined && scope.cwd !== '') {
-      setCwd(scope.cwd)
-      setCwdFailed(false)
-      return
-    }
-    let cancelled = false
-    const controller = new AbortController()
-    setCwd(undefined)
-    void (async () => {
-      try {
-        const response = await fetch('/sidebar/api/session.cwd', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId: scope.sessionId }),
-          signal: controller.signal,
-        })
-        const parsed: { ok?: boolean; value?: unknown } | null = await response.json().catch(() => null)
-        if (cancelled) return
-        if (!response.ok || parsed === null || parsed.ok !== true || parsed.value === undefined) {
-          setCwdFailed(true)
-          return
-        }
-        const value = parsed.value as Partial<CwdResult>
-        if (typeof value.cwd !== 'string' || value.cwd === '') {
-          setCwdFailed(true)
-          return
-        }
-        setCwd(value.cwd)
-        setCwdFailed(false)
-      } catch {
-        if (!cancelled) setCwdFailed(true)
-      }
-    })()
-    return () => {
-      cancelled = true
-      controller.abort()
-    }
-  }, [scope.sessionId, scope.cwd])
+  // ── Session cwd: the sessions registry's live snapshot ─────────────────
+  const cwd = useSessions(sessions => sessions.byId[sessionId]?.cwd)
 
   // Path translation. With no rules (the unset default) mapPath passes the
   // raw cwd through; `unmapped` degenerates to its null-only case, so the
@@ -301,23 +300,18 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   }
   const opener = openerRef.current
 
-  // ── The open-request consumer (one-shot meta stamps) ───────────────────
+  // ── The open-navigation consumer (one-shot revision discipline) ────────
   const consumerRef = useRef<OpenRequestConsumer | null>(null)
   if (consumerRef.current === null) {
     consumerRef.current = new OpenRequestConsumer({
-      retire: () => {
-        const tabId = (props.tab as { id?: unknown } | undefined)?.id
-        if (typeof tabId === 'string') clearTabOpenRequest(store, tabId)
-      },
-      execute: (request: OpenRequest) => openerRef.current?.open(request),
+      execute: request => openerRef.current?.open(request),
       gateSettled: () => gateRef.current !== null && gateRef.current.settled(),
-      pageLoadedAt,
     })
   }
-  const openRequest = extractOpenRequest((props.tab as { meta?: unknown } | undefined)?.meta)
+  const navigation = tab.navigation
   useEffect(() => {
-    consumerRef.current?.update(openRequest, scope.sessionId)
-  }, [openRequest?.nonce, scope.sessionId, gateState.phase, store])
+    consumerRef.current?.update(navigation, sessionId, tab.id)
+  }, [navigation.revision, navigation.params, sessionId, tab.id, gateState.phase])
 
   // The iframe target: the pending payload URL while one is valid for the
   // current basis, else the plain folder URL.
@@ -329,21 +323,20 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
 
   // ── Focus guards: deferred first load ───────────────────────────────────
   // Hold the iframe back until this tab has been visible at least once
-  // (active tab AND open panel): the openAsDefault swap lands this tab as
-  // a brand-new session's default while the panel is usually collapsed —
-  // a hidden boot buys nothing the user can see and only invites the
-  // focus grab. `visible === undefined` (a better-sidebar peer too old to
-  // pass the flag) fails OPEN — load as before, never defer on a guess.
-  const [everVisible, setEverVisible] = useState(visible !== false)
+  // (active tab AND open panel — the official docked-body visibility; a
+  // float is always visible): a takeover open landing this tab while the
+  // panel is collapsed waits for its audience, because a hidden boot buys
+  // nothing the user can see and only invites the focus grab.
+  const [everVisible, setEverVisible] = useState(visible)
   useEffect(() => {
-    if (visible !== false) setEverVisible(true)
+    if (visible) setEverVisible(true)
   }, [visible])
 
   // Hold the iframe until the cwd resolves (avoids loading the default
   // workspace first and flipping to ?folder= a moment later), until the
   // iframe base settles — a flip after the first load would reload the
   // workbench once for nothing — and until the tab has been shown once.
-  const ready = (cwd !== undefined || cwdFailed) && !resolvingBase && everVisible
+  const ready = cwd !== undefined && !resolvingBase && everVisible
 
   // Load state: the overlay hides on the iframe's load event; a src change
   // or a manual reload re-shows it.
@@ -422,14 +415,6 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
   }, [revealed, bootGate.phase, bootGate.nonce, loadKey])
 
   // ── Capture caps + the paste-fallback options feed ─────────────────────
-  const maxLinesSetting = readSettingValue(store, 'maxLines')
-  const maxLines = typeof maxLinesSetting === 'number' && Number.isFinite(maxLinesSetting) && maxLinesSetting > 0
-    ? Math.floor(maxLinesSetting)
-    : undefined
-  const maxBytesSetting = readSettingValue(store, 'maxBytes')
-  const maxBytes = typeof maxBytesSetting === 'number' && Number.isFinite(maxBytesSetting) && maxBytesSetting > 0
-    ? Math.floor(maxBytesSetting)
-    : undefined
   // Kept fresh in an effect (never mid-render): the dock's paste fallback
   // reads the latest values at paste time.
   useEffect(() => {
@@ -448,7 +433,7 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
         setFlash(t('injectFailed'))
         return false
       }
-      const outcome = await lander(scope.sessionId, payload, {
+      const outcome = await lander(sessionId, payload, {
         reverseRules: inputsRef.current.pathMap,
         cwd: inputsRef.current.cwd,
         maxLines,
@@ -461,7 +446,7 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
       if (outcome.textFallback > 0) setFlash(t('injectedAsText'))
       return true
     })()
-  }, [scope.sessionId, maxLines, maxBytes])
+  }, [sessionId, maxLines, maxBytes])
 
   const bridgeDisposer = useRef<(() => void) | null>(null)
   const installBridge = useCallback(() => {
@@ -488,7 +473,7 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
         now: () => Date.now(),
         setTimeout: (callback, ms) => { window.setTimeout(callback, ms) },
       },
-      { bornVisible: visible !== false },
+      { bornVisible: visible },
     )
   }
   const fence = fenceRef.current
@@ -503,8 +488,14 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
     fence.onFrameLoad()
   }, [installBridge, gate, fence])
 
+  // ── Full-bleed mounting: cancel the pane body's framing padding ────────
+  // The docking kit pads every tab body (12px docked / 10px floated); the
+  // workbench should BE the pane, so the root measures its host's padding
+  // and pulls itself out to cover the padding box (fullBleed.ts).
+  const bleed = useFullBleed<HTMLDivElement>()
+
   return (
-    <div className="dsh_vscodeTab_root">
+    <div className="dsh_vscodeTab_root" ref={bleed.ref} style={bleed.style}>
       <Toolbar
         mapped={mapped}
         target={target}
@@ -520,10 +511,8 @@ export function VscodeView(props: TabComponentProps): React.ReactNode {
         }}
       />
 
-      {/* Notices: unmappable workspace / cwd failure / degradations */}
-      {(unmapped || cwdFailed) && (
-        <NoticeRow text={cwdFailed ? t('cwdFailed') : t('unmapped')} />
-      )}
+      {/* Notices: unmappable workspace / degradations */}
+      {unmapped && <NoticeRow text={t('unmapped')} />}
       {flash !== null && <NoticeRow text={flash} />}
 
       {/* Workbench surface */}
