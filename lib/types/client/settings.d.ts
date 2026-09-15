@@ -86,7 +86,7 @@ export interface SettingsScopeFace {
  */
 export declare function readSettings(scope: SettingsScopeFace | undefined): VscodeSidebarSettings;
 /**
- * Whether the two file-open takeovers may act right now: the
+ * Whether the file-open takeovers may act right now: the
  * `openAsDefault` switch resolved from the live scope.
  */
 export declare function takeoverSwitchOn(scope: SettingsScopeFace | undefined): boolean;

@@ -18,6 +18,14 @@
  *   workbench tab, closing the settings dialog behind it. Two era-specific
  *   seams (`remote.settings.openSettingsDocument` vs the legacy
  *   `connection.api.settings.openDocument`); exactly one ever intercepts.
+ * - **The expand-button seam** (`expandTakeover.ts`): the collapsed
+ *   column's header control (the one node carrying
+ *   `data-sidebar-right-expand`) captured at the document's capture phase
+ *   and re-issued as `openTab('vscode')`, so a switch-on deployment's
+ *   expand click lands directly on the workbench tab instead of the seeded
+ *   guide — the stock `setExpanded` the button would have run is subsumed
+ *   by the open's own expansion, and a declined or failed claim leaves the
+ *   stock expand untouched.
  *
  * Cross-cutting wiring that lives HERE so no seam carries its own copy:
  *

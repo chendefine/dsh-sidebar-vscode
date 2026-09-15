@@ -19,9 +19,10 @@
  *   the paste fallback (composer dock): payload → chips on the addressed
  *   session's composer, plain-text mention as the degraded path;
  * - the takeover family (takeovers.ts): the official
- *   `ctx.sidebarRight.openResource` funnel and the settings page's
- *   「打开配置文件」button rerouted into the workbench tab, all behind
- *   the openAsDefault switch and the open blocklist;
+ *   `ctx.sidebarRight.openResource` funnel, the collapsed column's expand
+ *   button, and the settings page's「打开配置文件」button rerouted into
+ *   the workbench tab, all behind the openAsDefault switch and the open
+ *   blocklist;
  * - the configuration card (settingsCard.tsx) inside the official
  *   设置 → 插件 → 插件配置 tab, keyed by the `vscode-sidebar` namespace
  *   the Host half serves.

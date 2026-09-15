@@ -18,6 +18,14 @@
  *   workbench tab, closing the settings dialog behind it. Two era-specific
  *   seams (`remote.settings.openSettingsDocument` vs the legacy
  *   `connection.api.settings.openDocument`); exactly one ever intercepts.
+ * - **The expand-button seam** (`expandTakeover.ts`): the collapsed
+ *   column's header control (the one node carrying
+ *   `data-sidebar-right-expand`) captured at the document's capture phase
+ *   and re-issued as `openTab('vscode')`, so a switch-on deployment's
+ *   expand click lands directly on the workbench tab instead of the seeded
+ *   guide — the stock `setExpanded` the button would have run is subsumed
+ *   by the open's own expansion, and a declined or failed claim leaves the
+ *   stock expand untouched.
  *
  * Cross-cutting wiring that lives HERE so no seam carries its own copy:
  *
@@ -38,6 +46,7 @@ import { VSCODE_KIND } from './definition.ts'
 import { readSettings, takeoverSwitchOn, type SettingsScopeFace } from './settings.ts'
 import { isBlockedPath, readOpenBlocklist } from './openBlocklist.ts'
 import { wrapSidebarRightOpenResource, type SidebarRightLike } from './openIntercept.ts'
+import { installExpandTakeover } from './expandTakeover.ts'
 import {
   closeSettingsDialog,
   wrapRemoteOpenSettingsDocument,
@@ -108,6 +117,20 @@ export function installTakeovers(
       kind: VSCODE_KIND,
     })
 
+  // ── the expand-button seam (the collapsed column's header control) ──────
+  // The official expand button acts on the per-session store directly (no
+  // public service seam), so the takeover captures its clicks at the
+  // document's capture phase and re-issues them as openTab('vscode') —
+  // revealing the workbench tab AND expanding the column in one step. The
+  // same gate declines per click; a failed open falls through to the stock
+  // expand. Fail-soft on the service: no controller, no listener.
+  const stopExpand = sidebarRight === undefined
+    ? undefined
+    : installExpandTakeover({
+      takeoverEnabled,
+      openWorkbench: () => { sidebarRight.openTab(VSCODE_KIND) },
+    })
+
   // ── the settings open-document seam (one per runtime era) ──────────────
   // The rerouted path is absolute (the settings provider's own document),
   // so it needs no cwd resolution — and mapPathForOpen passes it through
@@ -135,6 +158,7 @@ export function installTakeovers(
     : wrapSettingsOpenDocument(connection.api, settingsDeps)
 
   return () => {
+    stopExpand?.()
     stopSettingsOpen?.()
     stopOpenResource?.()
   }

@@ -12,12 +12,13 @@
  * the Host half's schema defaults and the browser half's
  * settings-not-ready-yet fallbacks must never disagree:
  *
- * - `openAsDefault` gates the two file-open takeovers (chat-originated
- *   opens through `ctx.sidebarRight.openResource`, and the settings
- *   page's「打开配置文件」button). The better-sidebar-era meaning —
- *   swapping a fresh session's seeded Files tab — is gone with that
- *   system (the official sidebar seeds the guide page and keeps layout
- *   in memory only); the switch keeps its takeover roles.
+ * - `openAsDefault` gates the three file-open takeovers (chat-originated
+ *   opens through `ctx.sidebarRight.openResource`, the collapsed column's
+ *   expand button, and the settings page's「打开配置文件」button). The
+ *   better-sidebar-era meaning — swapping a fresh session's seeded Files
+ *   tab — is gone with that system (the official sidebar seeds the guide
+ *   page and keeps layout in memory only); the switch keeps its takeover
+ *   roles.
  * - `openBlocklist` carries the unset-versus-empty rule through the
  *   settings document's own layering: the composition base IS the
  *   default list, an explicit `[]` is the stored decision "block
@@ -31,7 +32,7 @@ export const VSCODE_SIDEBAR_SETTINGS_NAMESPACE = 'vscode-sidebar'
 
 /** The stored user preference for the VSCode sidebar tab. */
 export interface VscodeSidebarSettings {
-  /** Whether the two file-open takeovers are active (see module doc). */
+  /** Whether the three file-open takeovers are active (see module doc). */
   readonly openAsDefault: boolean
   /**
    * File extensions the takeovers must not claim (blocklist order kept).

@@ -133,7 +133,7 @@ export function readSettings(scope: SettingsScopeFace | undefined): VscodeSideba
 }
 
 /**
- * Whether the two file-open takeovers may act right now: the
+ * Whether the file-open takeovers may act right now: the
  * `openAsDefault` switch resolved from the live scope.
  */
 export function takeoverSwitchOn(scope: SettingsScopeFace | undefined): boolean {

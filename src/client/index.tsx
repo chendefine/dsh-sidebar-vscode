@@ -19,9 +19,10 @@
  *   the paste fallback (composer dock): payload → chips on the addressed
  *   session's composer, plain-text mention as the degraded path;
  * - the takeover family (takeovers.ts): the official
- *   `ctx.sidebarRight.openResource` funnel and the settings page's
- *   「打开配置文件」button rerouted into the workbench tab, all behind
- *   the openAsDefault switch and the open blocklist;
+ *   `ctx.sidebarRight.openResource` funnel, the collapsed column's expand
+ *   button, and the settings page's「打开配置文件」button rerouted into
+ *   the workbench tab, all behind the openAsDefault switch and the open
+ *   blocklist;
  * - the configuration card (settingsCard.tsx) inside the official
  *   设置 → 插件 → 插件配置 tab, keyed by the `vscode-sidebar` namespace
  *   the Host half serves.
@@ -340,14 +341,14 @@ export function apply(ctx: unknown): void {
     return () => { stop() }
   }, 'dsh-sidebar-vscode: vscode tab body')
 
-  // The takeover family (the official openResource funnel + the settings
-  // open-document button), gated by the same openAsDefault switch: switch
-  // off → every seam declines and the chat/settings keep their stock
-  // behavior; switch on → the opens land in the workbench tab and its
-  // navigation params carry the path.
+  // The takeover family (the official openResource funnel + the expand
+  // button + the settings open-document button), gated by the same
+  // openAsDefault switch: switch off → every seam declines and the
+  // chat/sidebar/settings keep their stock behavior; switch on → the opens
+  // land in the workbench tab and its navigation params carry the path.
   client.effect(() => {
     return installTakeovers(client, scope)
-  }, 'dsh-sidebar-vscode: chat + settings open takeover')
+  }, 'dsh-sidebar-vscode: chat + expand + settings open takeover')
 
   // ── The configuration card (设置 → 插件 → 插件配置) ──────────────────────
   // Keyed by the settings namespace the Host half serves; the official

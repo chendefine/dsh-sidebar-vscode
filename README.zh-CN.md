@@ -24,7 +24,7 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.2.9
+- 版本：0.3.1
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
 - 测试：511 例全部通过（24 个规格文件）
@@ -61,7 +61,9 @@
 
 - **降级与恢复**：直连跨域 `serverUrl` 时同源桥不可用，信封落入真实剪贴板，**粘贴进输入框仍被识别**为 chip 并落在粘贴光标处；chip 插入被输入机拒绝（提交中等瞬态）时退化为追加纯文本 mention（host 解析路径相同，仅失去 chip 外观）；从对话气泡 / 外部编辑器**复制渲染出的引用再粘回**——即使是 sigil 被空白撑开的散架文本（`@ [ label ]( dsh-vscode: … )`）或丢失闭合括号的截断复制体——经 canonical 校验后在光标处重建为原子 chip，前后散文保持原样（fail-soft，绝不报错）；
 
-- **`openAsDefault` 开关**只控制下面两个文件打开接管（better-sidebar 时代的「新会话种子交换」随该体系一同移除——官方侧栏种子是引导页、布局仅内存态、`openTab` 必定展开列，新会话的发现路径就是引导页入口框）。
+- **`openAsDefault` 开关**只控制下面三个文件打开接管（better-sidebar 时代的「新会话种子交换」随该体系一同移除——官方侧栏种子是引导页、布局仅内存态、`openTab` 必定展开列，新会话的发现路径就是引导页入口框）。
+
+- **右侧边栏按钮接管**（同一开关）：会话头部的「打开右侧边栏」按钮（折叠态的展开控制，官方 `ExpandButton`，唯一带 `data-sidebar-right-expand` 标记的节点）原本把列展开到上次停留的标签——新表面的种子是引导页（多条引导入口并存时官方种子规则永远解析到 guide）。开关开启时，本插件在 document **捕获阶段**截获该按钮的点击并改发 `openTab('vscode')`：揭示/新建会话唯一的 workbench 页标签并同一步展开列（打开自带的展开恰好覆盖按钮原要执行的 `setExpanded(true)`；只有打开成功后才 `stopPropagation` + `preventDefault`，失败则点击原样落回官方展开）。按钮直连每会话 store、无公开服务接缝，DOM 捕获是唯一稳定切入点；开关每次点击现读，关闭即完全恢复官方行为。
 
 - **对话文件点击接管**（同一开关控制）：对话里点击**变更文件标签**（每轮结束的 produced-files chips）、工具行路径链接或正文文件引用时，改在内嵌 VS Code 里直接打开该文件——官方运行时把这些打开全部路由到 `ctx.sidebarRight.openResource` 公共漏斗（ui-chat 注入的 `openFile`、deliverables 行的 chips、正文文件链接），本插件在 controller 实例上包装这**一个**接缝（原型方法之上的自有属性 shadow；卸载时仅当阴影仍属自己才还原）。包装器解析 `dsh-resource://file/session/<id>/<rel>` / `…/absolute/<path>` 地址、解析会话工作区根，把打开翻译为 `openTab('vscode', { params: { path, line? } })` —— 侧栏同一步展开并揭示唯一的 workbench 标签，文件经 `tab.navigation`（带单调 `revision` 的 params——天然的单发命令载体）落到其内部。**文件类型拦截（`openBlocklist`）**：命中黑名单后缀（默认 pdf/docx/xlsx/pptx/png/jpeg/jpg，可在设置卡增删）的文件不进 VSCode——调用原样落回官方路由，由官方注册表的查看器认领（今天是内置文本预览；未来的查看器插件会注册自己的官方类型）。拒绝路径同理：开关关闭、非文件地址、解析失败、会话根未知都原样放行，且每次点击现读设置。认领后的链路：正文侧的 navigation 消费者 → 扩展 spool（`/tmp/dsh-sidebar-vscode/<slug(workspace)>/cmd.json`，500ms 轮询消费、`showTextDocument`）——`cap.json` 活性标记 + 能力探测把门，任一失手降级为 URL `payload` 参数整页重载一次。**启动标签投递（扩展 ≥ 0.1.3）**：命令等本次启动的 nonce 落盘后才发送，并把 nonce 作为启动标签写进命令（`cmd.json {boot}`）；只有以同一 nonce 启动的扩展宿主才会消费带标签的命令（残留宿主不得把命令吃进垂死窗口）。开关关闭 = 完全不启用（chat 行为零变化）。
 
@@ -181,7 +183,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `openAsDefault` | `false` | 控制两个文件打开接管（对话文件点击与设置页「打开配置文件」）。关闭后处处恢复官方默认行为 |
+| `openAsDefault` | `false` | 控制三个文件打开接管（对话文件点击、设置页「打开配置文件」、右侧边栏展开按钮）。关闭后处处恢复官方默认行为 |
 | `openBlocklist` | （未设 = `pdf, docx, xlsx, pptx, png, jpeg, jpg`） | 「不由 VSCode 打开的文件类型」：后缀字符串数组，面板行为 tag 编辑器（tag 带 × 删除；输入框自由输入后缀，回车/逗号添加，下拉建议常用二进制类型）。命中后缀的文件在对话中点击时不被接管——原样落回官方路由，由官方侧栏的查看器认领（今天是内置文本预览；未来查看器插件会注册自己的官方类型），绝不落宿主 OS 打开器。**未设置 = 默认七项；清空 = 存 `[]`，即全部由 VSCode 打开**（两者语义不同）。匹配大小写不敏感，按「基名以 `.后缀` 结尾」判定（`a.notpdf` 不命中 `pdf`；条目可含内部点，如 `tar.gz`；无后缀文件永不命中）；每次点击时现读设置，改动即时生效。设置页「打开配置文件」接管**不受**此表影响 |
 | `serverUrl` | （空 = `http://127.0.0.1:8000`） | `code serve-web` 输出的完整地址（可含基路径与 `?tkn=` 令牌）；留空 = 默认 `http://127.0.0.1:8000`（本机裸启动）。代理可达时一律挂载为同源 `/sidebar/vscode/` 打开；宿主不可达时完整地址回退直连（同源桥降级）；显式相对子路径（如 `/vscode`）在代理关闭时按网关语义使用 |
 | `pathMap` | （空 = 不映射） | 仅配置文件——无设置面板行（少见，分容器部署才需要）。DSH 路径前缀 → VSCode 容器路径前缀，`源=目标` 对用 `;` 分隔；最长源前缀优先；某前缀已是映射目标时原样透传。留空时**不做任何映射**，会话 cwd 与文件均按原始绝对路径直接打开（同容器部署即用此默认）。规则只做前缀改写、**不是白名单**：未命中任何规则的绝对路径原样透传（文件真不存在时由 VS Code 报错兜底） |

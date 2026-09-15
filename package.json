@@ -1,7 +1,7 @@
 {
   "name": "dsh-sidebar-vscode",
-  "version": "0.3.0",
-  "description": "DSH web plugin: an official right-Sidebar tab type ('vscode') that embeds the VS Code web workbench opened at the current session workspace — same-origin by default through the plugin's built-in reverse proxy (/sidebar/vscode), or via a gateway subpath / any configured editor base URL. Editor selections land as atomic reference chips whose canonical mentions the host half expands into <text-selection> context at agent/pre-step; explorer files/folders land as path-only resource chips expanded into content-less <file-selection>/<folder-selection> markers. Chat-originated file opens (the sidebarRight openResource funnel) and the settings page's open-document button are taken over into the workbench behind the openAsDefault switch; its settings live in the official plugin-config card (namespace 'vscode-sidebar').",
+  "version": "0.3.1",
+  "description": "DSH web plugin: an official right-Sidebar tab type ('vscode') that embeds the VS Code web workbench opened at the current session workspace — same-origin by default through the plugin's built-in reverse proxy (/sidebar/vscode), or via a gateway subpath / any configured editor base URL. Editor selections land as atomic reference chips whose canonical mentions the host half expands into <text-selection> context at agent/pre-step; explorer files/folders land as path-only resource chips expanded into content-less <file-selection>/<folder-selection> markers. Chat-originated file opens (the sidebarRight openResource funnel), the collapsed column's expand button, and the settings page's open-document button are taken over into the workbench behind the openAsDefault switch; its settings live in the official plugin-config card (namespace 'vscode-sidebar').",
   "type": "module",
   "license": "MIT",
   "repository": {
