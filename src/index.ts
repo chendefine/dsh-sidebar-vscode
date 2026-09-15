@@ -300,6 +300,9 @@ export function apply(ctx: Context): void {
       })
       return () => { stop() }
     }, 'dsh-sidebar-vscode: vscode-mention contexts')
+    // The event contract types the listener's return as `undefined`
+    // (newer cordis builds); a block body alone infers `void`.
+    return undefined
   })
   /* v8 ignore stop */
 

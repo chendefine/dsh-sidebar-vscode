@@ -14,7 +14,7 @@
  */
 
 /** The injectable sheets this plugin owns. */
-export type PluginStyleId = 'tab' | 'rail' | 'settings'
+export type PluginStyleId = 'tab' | 'host' | 'rail' | 'settings'
 
 /** One sheet: its idempotency id and its rules. */
 interface StyleSheetSpec {
@@ -140,6 +140,43 @@ const STYLE_SHEETS: Record<PluginStyleId, StyleSheetSpec> = {
   color: var(--dsw-alias-label-tertiary);
   opacity: 0.8;
   max-width: 420px;
+}
+`,
+  },
+  host: {
+    id: 'dsh-sidebar-vscode-host-css',
+    css: `
+/* The persistent workbench host (see workbenchRuntime.ts): the ONE
+ * document.body child the embedded VS Code iframe lives in so that its
+ * element never leaves the DOM across right-Sidebar tab switches (any
+ * removal destroys an iframe's browsing context — a reload). The
+ * projector (projection.ts) drives left/top/width/height/z-index per
+ * frame while the tab is visible; the level it writes sits between the
+ * host UI's own — the fullscreen panel draws at 40, the float host at
+ * 60, portalled menus at 70 — so the projected frame covers what its
+ * placeholder covers and nothing else. The container itself never takes
+ * pointers; the iframe inside re-enables them, so nothing outside the
+ * projected rect is blocked. Visibility (not display) hides it: a
+ * display:none host would collapse the iframe to a 0x0 viewport and
+ * force a VS Code re-layout on every hide/show cycle. */
+.dsh_vscodeHost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  display: block;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+  z-index: 45;
+}
+.dsh_vscodeHost iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: auto;
 }
 `,
   },

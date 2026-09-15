@@ -34,6 +34,7 @@ import { VscodeView } from './VscodeView.tsx'
 import { attachLocale } from './i18n.ts'
 import { vscodeTabDefinition, VSCODE_ID } from './definition.ts'
 import { installTakeovers } from './takeovers.ts'
+import { destroyWorkbenchRuntime } from './workbenchRuntime.ts'
 import { ComposerDock } from './composer.tsx'
 import { VscodeSettingsCard } from './settingsCard.tsx'
 import type { SettingsScopeFace } from './settings.ts'
@@ -198,6 +199,12 @@ function readComposerPoint(
 export function apply(ctx: unknown): void {
   const client = ctx as ClientContextFace
   client.effect(() => attachLocale(client.locale), 'dsh-sidebar-vscode: dictionaries')
+
+  // ── The persistent workbench teardown ───────────────────────────────────
+  // The workbench runtime (see workbenchRuntime.ts) keeps the embedded VS
+  // Code iframe alive in a document.body host ACROSS tab-body unmounts;
+  // plugin dispose (HMR, unload) is the one moment that host must go.
+  client.effect(() => () => { destroyWorkbenchRuntime() }, 'dsh-sidebar-vscode: workbench runtime teardown')
 
   // ── The `vscode-sidebar` settings scope ────────────────────────────────
   // One binding for the whole plugin: the takeover gates read it per call,

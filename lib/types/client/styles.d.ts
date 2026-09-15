@@ -13,7 +13,7 @@
  * @module dsh-sidebar-vscode/client/styles
  */
 /** The injectable sheets this plugin owns. */
-export type PluginStyleId = 'tab' | 'rail' | 'settings';
+export type PluginStyleId = 'tab' | 'host' | 'rail' | 'settings';
 /**
  * Idempotently install the named stylesheets into `document.head`.
  * Tokens and layout variables are host globals, so the sheets stand alone.

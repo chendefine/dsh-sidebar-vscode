@@ -24,7 +24,7 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.3.1
+- 版本：0.3.2
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
 - 测试：511 例全部通过（24 个规格文件）
@@ -33,7 +33,7 @@
 
 **标签页**
 
-- 在官方右侧边栏注册**页面标签类型** `vscode`（两阶段注册：静态定义进 `ctx.sidebarRightTabs`（含引导页入口框），正文进 keyed 的 `sidebar.right.pane.tab` 席位），以同源 iframe 内嵌 `code serve-web` 工作台，并自动定位到**当前会话的工作区**（`<base>/?folder=<映射后路径>`）。注意官方 pane 只渲染活动标签的正文：同 pane 切走会卸载 workbench（由启动门 + 编辑器账本对账承接），切回经同一健壮路径重挂载；浮出面板不卸载；
+- 在官方右侧边栏注册**页面标签类型** `vscode`（两阶段注册：静态定义进 `ctx.sidebarRightTabs`（含引导页入口框），正文进 keyed 的 `sidebar.right.pane.tab` 席位），以同源 iframe 内嵌 `code serve-web` 工作台，并自动定位到**当前会话的工作区**（`<base>/?folder=<映射后路径>`）。官方 pane 只渲染活动标签的正文，而 iframe 一旦离开父节点浏览上下文即被销毁（HTML 规范：removing steps 销毁 child navigable；Chromium 151 实测同 document 内搬家也会整帧重载），因此 workbench **并不住在标签正文里**：`workbenchRuntime.ts` 把它放进 `document.body` 下的常驻宿主、永不离开 DOM，正文只渲染占位符，由投影器把宿主盒子钉在占位矩形上（见技术架构「常驻工作台」一节）。**同 pane 切走再切回零成本**——帧、WebSocket、编辑器状态全程在线；工作区 / `serverUrl` / `pathMap` 变化原地重载；关闭标签（记录移除，即 signal abort）销毁工作台，插件卸载亦然；
 - 工具栏显示工作区路径，提供「刷新」「在新窗口打开」；外观跟随 DSH 亮 / 暗 / 系统主题；界面文案中英双语。
 
 **引用注入**
@@ -144,7 +144,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 - **启动对账**——激活时先等 VS Code 自身的恢复落定，再让窗口对齐台账：台账里没有的恢复标签（关标签前已关闭的文件）被关闭（脏标签保留，数据优先）、恢复丢失的台账文件被补开、活动编辑器复原。**无台账**的启动（工作区首次启动，或降级 URL-payload 打开）完全不动 VS Code 自身行为。
 - **隐藏揭幕（`boot.begin` / `boot.status`）**——挂载 iframe 之前，标签页先在 spool 里停放一枚启动 nonce（`bootreq.json`）；扩展对账完成后在 `boot.json` 回执里回显它，客户端在此之前让 iframe 保持 opacity 0、以加载遮罩示人。用户看到的**第一帧**就是对账完的编辑器区——绝不会先看见某文件被打开又被关掉。揭幕是一场**竞速**而非单一等待：回执轮询与 **DOM 静默观察器**（同源读取 workbench 的编辑器标签条）并联，先到先赢——原地重载后的扩展宿主可能不再重新激活（回执永远不来），而已经画完的工作台本身就是「布景完成」的证明。但**仅静默构不成这个证明**：幽灵启动的整个对账 settle 窗口内，标签条是「静默但错误」的（静默恰恰是随后那次关闭的前置条件，绝不是关闭已发生的证据），因此竞速者是**账本感知**的——`boot.begin` 应答会一并带回停靠时启动账本的期望开档集合，静默揭幕（以及 4 秒轮询预算耗尽后的兜底）还额外要求采样到的标签条与该集合按基名多重集一致（标签条 DOM 不暴露全路径）；回执匹配仍无条件揭幕，无账本（首次启动 / 较旧 host 半）照旧仅凭静默，而账本不吻合的标签条会让 iframe 一直藏到对账关闭落地、或观察器自身 8 秒上限兜底。提前揭幕还有第二重危险，仅靠握手看不见：用户在「已揭幕、对账未跑」窗口里打开的文件晚于对账所依据的账本，会被当幽灵关掉——因此揭幕后帧内的**首个用户手势**会落盘 `interact.json`（nonce 作用域，路由 `boot.interact`），对账的关闭循环与幽灵补刀都会为本 boot 的交互标记让步（回执报告让步数；陈旧标记绝不会解除后续 boot 的武装）。全链路 fail-soft：较旧的 host 半（boot 路由尚未重载）由 DOM 静默观察器单独裁决，跨源直连 iframe 则不加门控、按原生行为可见启动。
 - **跨标签启动锁**——两个同源 DSH 页面并发启动工作台时会竞争**创建** VS Code 的 IndexedDB 存储（`vscode-web-db`），败者可能在自身启动过程中挂死数分钟（实测：一次 294 秒的库打开；两个全新 profile 各自卡到*另一*标签页关闭为止）。因此 iframe 挂载前必须先持有 Web Lock `dsh-sidebar-vscode:workbench-boot`，工作台绘制完成即释放（那一刻创建竞争已经结束）；排队超过半秒会在加载遮罩中说明缘由。设计上处处 fail-open：没有 Web Locks API、锁被卡死的持有者（60 秒等待上限）、或不可读的框架（30 秒持有上限）都选择放行而不是阻塞。
-- **台账归属围栏 + 启动轮换（扩展 ≥ 0.1.3）**——serve-web 在渲染器消失后也会让扩展宿主存活一段时间，而这类残留宿主的台账处理器仍然 armed：它会把自己那个**不可见窗口**的标签集写进共享的 `editors.json`，对账的 reopen 循环还会把台账文件开进该窗口、其标签事件又反过来重写台账——台账就此被可见 workbench 从未展示过的文件毒化，之后每次启动都如实复活（「已关闭的文件又回来了」）。台账现在**归属本次启动**：每次台账写入、对账本身、以及幽灵补刀都会复核停放的启动 nonce 是否仍是本宿主激活时的那枚。客户端在 iframe **原地重载**时（面板收起或切换工作区会把窗格 DOM 摘除、再插回时浏览器视为整帧重载——新渲染器的宿主若沿用旧 nonce 就会错配）以及标签页卸载时轮换该 nonce，把所有仍持旧 nonce 的宿主一并退役。
+- **台账归属围栏 + 启动轮换（扩展 ≥ 0.1.3）**——serve-web 在渲染器消失后也会让扩展宿主存活一段时间，而这类残留宿主的台账处理器仍然 armed：它会把自己那个**不可见窗口**的标签集写进共享的 `editors.json`，对账的 reopen 循环还会把台账文件开进该窗口、其标签事件又反过来重写台账——台账就此被可见 workbench 从未展示过的文件毒化，之后每次启动都如实复活（「已关闭的文件又回来了」）。台账现在**归属本次启动**：每次台账写入、对账本身、以及幽灵补刀都会复核停放的启动 nonce 是否仍是本宿主激活时的那枚。客户端在 iframe **原地重载**时（工作区 / `serverUrl` / `pathMap` 变化、降级通道 payload、手动刷新——运行时的换键路径；新渲染器的宿主若沿用旧 nonce 就会错配。单纯切换标签已不再触发任何重载，见「常驻工作台」一节）以及工作台销毁时轮换该 nonce，把所有仍持旧 nonce 的宿主一并退役。
 - **迟到幽灵补刀（扩展 ≥ 0.1.3）**——VS Code 自身的恢复可能在 对账的 settle 预算耗尽**之后**还在陆续落标签（重工作区的慢启动），而这些迟到者恰恰是没人会再去关的「已关闭文件幽灵」。武装之后会间隔着跑几轮**只关不开**的差分：每轮关掉台账未列出且处于**后台**的标签，豁免脏标签与活动编辑器（重新挂载后数秒内，用户主动打开的文件必然成为活动编辑器，而恢复幽灵落在后台）；任何一轮都不会打开文件。
 
 ## 使用方法
@@ -221,7 +221,7 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 └───────────────────────────────────────────────────────────────┘
 ┌─ browser 半 (web) ────────────────────────────────────────────┐
 │ src/client/index.tsx        注册 tab + dock + @ 触发源 + 词典   │
-│ src/client/VscodeView.tsx   标签视图：把各控制器接在一起渲染     │
+│ src/client/VscodeView.tsx   标签视图：投影锚点 + 外壳            │
 │ src/client/*Controller      启动门控/焦点围栏/基址/打开请求/打开 │
 │                              编排器（均可注入依赖单测）          │
 │ src/client/references.ts    载荷→chip、插入、tag 栏、粘贴恢复    │
@@ -232,6 +232,16 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 
 - **host 半**是模型 facing 边界：对每个存活 agent 在 `agent/pre-step` 监听，解析被认领用户消息中的规范 mention（markdown 与裸 URI，两种 scheme，严格 canonical 校验），改写为可读标签（`freezeMessage` 保留消息 id），按引用身份去重后逐条注入 context（`createUserMessage`，紧跟首次引用它的消息）。文件系统只用于新鲜度标记——快照内容随 mention 携带，注入不依赖磁盘状态；
 - **browser 半**负责全部 UI：官方 `vscode` 标签类型与正文、chip、tag 栏、设置卡片、接管、词典；官方侧栏服务缺席时客户端 fiber 静默等待、什么都不注册。
+
+### 常驻工作台（切换标签为何零成本）
+
+官方 pane 只渲染活动标签的正文，而 iframe 元素一旦离开父节点，其嵌套浏览上下文即被销毁——HTML 规范的 removing steps 会 destroy child navigable，且 Chromium 151 实测：即使同 document 内移动 iframe（或移动其祖先容器）也会整帧重载。VS Code 没有「快照重建」路径（`ui-sidebar-terminal` 用控制器里的屏幕修订重建 xterm——本设计借用的模式，换成唯一一种「状态即文档」的元素），因此工作台要活过标签切换，只有一条路：**元素永不离开 DOM**。
+
+- `workbenchRuntime.ts` 持有页面级单例——一个一次性挂到 `document.body` 的宿主 `div`，iframe 在首次获准加载时创建于其中，销毁时才移除。全部启动门控控制器（boot lock、boot gate、焦点围栏、打开通道 opener、剪贴板桥）都住进运行时，状态因此活过标签正文的挂载周期。视图（`VscodeView.tsx`）只渲染占位符与外壳，向运行时喂解析后的输入，并按 `${sessionId}:${tabId}` 采纳它；
+- `projection.ts` 把宿主盒子粘在占位矩形上——可见期间每动画帧一次 `getBoundingClientRect` 读 + 一次样式写，投影帧因此能跟上面板滑动、拖宽手柄、全屏切换与浮窗拖动而无需移动 iframe。层叠策略：停靠 / 全屏 45（高于全屏面板的 40、低于浮窗宿主的 60），占位符浮出时 61（高于浮层、低于 70 的菜单）。隐藏时以 `visibility` 保留最后矩形——宿主归零会逼 VS Code 在每次隐藏/显示周期里重排布局；
+- 防泄漏纪律：每页最多一个活工作台（basis 变化——换工作区、改设置——原地重载，绝不出现第二个实例；boot lock 存在的意义正是防止两个同源并发启动把 VS Code 的 IndexedDB 死锁）；运行活过正文卸载，在**最后一个**采纳标签记录消失时销毁（框架在记录移除时 abort 的 tab signal），插件卸载时也销毁（client 入口 teardown 里的 `destroyWorkbenchRuntime()`）。两个 pane 可同时持有同 kind——最后挂载者拥有投影，其释放时回退到前一个 pane 的占位符而非留白。
+
+对旧防护所针对的重载路径的影响：同 pane 切标签、面板收起/展开、同工作区切换会话，现在**都不再重载**（帧在后台继续运行——连启动都会在后台完成）；原地重载只剩：工作区 / `serverUrl` / `pathMap` 变化、降级通道 payload、手动刷新按钮——恰好是启动门 nonce 轮换与账本对账仍然发挥作用的场合。重挂载后的瞬时 base 重解析也绝不拆掉活帧——运行时持有上一个已解析 base，直到出现不同的解析结果。
 
 ### 四级链路
 
@@ -259,9 +269,9 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 官方侧栏把一次打开送到标签正文的形式是 `tab.navigation` —— `{ address, params, revision }`，每次导航 revision 递增——这正是 better-sidebar 时代要靠 `openRequest` meta + 墙钟 nonce + 持久化 meta 卫生手工搭建的「单发命令载体」。`src/client/openRequests.ts` 只保留仍然要紧的纪律：revision 0（种入的引导、撤销恢复的记录）不是任何人的点击；页级水位表（`${sessionId}:${tabId}` → 已执行的最高 revision）让重挂载跳过已执行过的导航、而挂载批次的点击仍然执行；帧的启动门未落定时新导航延迟执行（其打开命令须携带启动 nonce）。navigation 消费者在执行时铸造扩展命令 nonce，把打开交给双通道 opener（`workbenchLink.ts`）。
 #### 焦点防护（workbench 必须自己赢得焦点）
 
-VS Code workbench 开机后会**编程性聚焦自身内容**——Getting Started 欢迎页渲染即 `focus()` 自身，恢复的工作区会聚焦它恢复的编辑器——大约在 iframe 加载后 0.5–4 秒发生，与用户是否交互无关。只要这次开机落在用户并非奔着 workbench 去的时刻，光标就会被从脚下夺走：新会话的默认标签在收起面板后隐形启动会无声夺走光标（闪两下）；而**跨工作区切回会话**时 workbench 会重新开机——面板在 React 层被 keep-alive 存活，但 iframe 在切走时被移出文档、切回时重新插回，浏览器视为重载——恢复的文件恰好抢在输入框自动聚焦之后夺走焦点。`src/client/VscodeView.tsx` 用两个机制防护：
+VS Code workbench 开机后会**编程性聚焦自身内容**——Getting Started 欢迎页渲染即 `focus()` 自身，恢复的工作区会聚焦它恢复的编辑器——大约在 iframe 加载后 0.5–4 秒发生，与用户是否交互无关。只要这次开机落在用户并非奔着 workbench 去的时刻，光标就会被从脚下夺走：新会话的默认标签在收起面板后隐形启动会无声夺走光标（闪两下）；而**跨工作区切换会话**时 workbench 会原地重载（basis 变了；同工作区切换则原样复用活帧、零重载）——恢复的文件恰好抢在输入框自动聚焦之后夺走焦点。`src/client/VscodeView.tsx` + `workbenchRuntime.ts` 用两个机制防护：
 
-- **首次加载延迟**：iframe 一直挂起，直到本标签**真正可见过至少一次**（官方停靠正文可见性：活动标签且面板展开；浮窗恒可见）。接管打开若落在面板收起时，workbench 等待观众——隐藏启动用户什么都看不到，还白抢焦点；延迟到首次揭示后再加载，启动期的任何焦点抓取都发生在用户正看着 workbench 的时候。注意官方 pane 只渲染活动标签的正文：切到同 pane 的其他标签会卸载帧、切回经同一受防护路径重新开机（浮出面板不卸载）。
+- **首次加载延迟**：iframe 一直挂起，直到本标签**真正可见过至少一次**（官方停靠正文可见性：活动标签且面板展开；浮窗恒可见）。接管打开若落在面板收起时，workbench 等待观众——隐藏启动用户什么都看不到，还白抢焦点；延迟到首次揭示后再加载，启动期的任何焦点抓取都发生在用户正看着 workbench 的时候。延迟条件是运行时的 `visibleOnce` 门，因此活过标签正文的卸载周期——而一旦帧已存在，切到同 pane 其他标签就再无任何成本（正文卸载、帧转入后台运行，切回即时重新投影）。
 - **焦点围栏**（`src/client/focusGuard.ts`）：焦点一进入帧内，立即还给帧外最近持有它的元素——归还次数按滑动窗口限额（默认 10 秒 5 次），病态循环抢焦点时围栏让位以免焦点乒乓——仅在两种情况下武装：
   - **隐藏**（**显式** `visible === false`）：帧收不到用户点击，任何进入都是偷取。面板收起或标签非当前时，抢焦点无从合法化。
   - **开机**：帧**每次**加载后的一个窗口期（默认 6 秒），因为每次加载都是一次 workbench 开机、每次开机都会自聚焦——页面刷新与工作区切回的重插都算。窗口期内进入会被弹回，**除非**用户在帧内做了手势（同源 `pointerdown`/`keydown` 追踪，每次加载重挂——刚开机的 workbench 一点即入），或父页面 Tab 键把焦点交了过来。唯一被认可的开机是上面的延迟首载：那是用户展开标签释放的加载，抢焦点正中下怀。跨域 iframe（直连回退模式）看不到帧内手势，开机围栏直接解除，绝不弹掉用户的真实点击。
@@ -307,7 +317,9 @@ src/mentionCodec.ts            # 共享纯逻辑：两种 scheme 规范 URI 编�
 src/openChannel.ts             # host 半：/tmp 命令通道 spool —— 全部持久化走唯一 SpoolStore（原子写 + 容错读）（13 测试）
 src/trust-fence.ts             # host 半：本插件路由的浏览器信任围栏（回环/trustedHosts + 同源标记）
 src/client/index.tsx           # browser 半入口：薄组合根（tab + dock + @ 触发源 + 接管装配），机制全部在下列模块
-src/client/VscodeView.tsx      # 标签视图：把五个生命周期控制器接在一起并渲染（工具栏/提示/工作台）
+src/client/VscodeView.tsx      # 标签视图：投影锚点 + 外壳（工具栏/提示/加载遮罩），向常驻运行时喂输入
+src/client/workbenchRuntime.ts # 工作台守护者：每页一个常驻宿主 + 帧，活过标签正文卸载；lock→gate→src 协调器；采纳者 signal 回收（13 测试）
+src/client/projection.ts       # 矩形投影器：rAF 追踪常驻宿主对准标签正文占位符 + 层叠策略（10 测试）
 src/client/bootGate.ts         # BootGateController：nonce 停靠 → 回执 × DOM 静默揭幕竞速 → 原地重载轮换；+ DOM 静默观察器（13+5 测试）
 src/client/bootLock.ts         # WorkbenchBootLock：跨标签 Web Lock 串行化首次绘制（vscode-web-db 创建竞争）+ acquireWebLock（11 测试）
 src/client/focusFence.ts       # FocusFenceController：每次 load 的手势追踪 + 文档监听，包着 focusGuard 的纯规则
