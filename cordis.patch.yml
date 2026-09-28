@@ -5,17 +5,22 @@
 # context boundary (agent/pre-step expansion of canonical `dsh-vscode:`
 # and `dsh-vscode-res:` mentions into <text-selection> / <file-selection> /
 # <folder-selection> context messages, sourced { kind: 'vscode-mention' } /
-# { kind: 'vscode-resource' }) and the `vscode-sidebar` settings section
-# the official plugin-config card edits; the browser half registers the
-# official right-Sidebar 'vscode' tab type (ctx.sidebarRightTabs +
-# the sidebar.right.pane.tab seat), the composer reference chips, the
-# reference rail, the settings.plugin.item card, and the openResource /
-# openSettingsDocument takeovers.
+# { kind: 'vscode-resource' }) and the same-origin /sidebar/vscode reverse
+# proxy; the browser half registers the official right-Sidebar 'vscode' tab
+# type (ctx.sidebarRightTabs + the sidebar.right.pane.tab seat), the
+# composer reference chips, the reference rail, the Plugins-page
+# configuration form (plugins.bundle.config / plugins.row.config), and the
+# openResource / openSettingsDocument takeovers.
 #
 # User-facing configuration (the editor base URL, the workspace path
 # mapping, the openAsDefault switch, the open blocklist, the capture caps)
-# lives in the settings document's 'vscode-sidebar' namespace:
-# 设置 → 插件 → 插件配置 → VSCode 侧边栏 (NOT here).
+# lives in the plugin's Config schema (src/config.ts — every field
+# volatile): the settings service derives the 'dsh-sidebar-vscode' section
+# from THIS entry by its id, editable live at
+# 设置 → 插件 → dsh-sidebar-vscode 的配置区 / 该行的配置页 (NOT a
+# hand-registered settings namespace anymore). The config below is the
+# section's shipped base layer — what every unset field resolves to and
+# what「恢复默认」reverts to.
 #
 # Double-mount guard (same pattern as the official bundle patches): an
 # aggregate bundle may already mount this package under its own entry id.
@@ -30,3 +35,17 @@
     - id: dsh-sidebar-vscode
       name: 'dsh-sidebar-vscode'
       # disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === 'dsh-sidebar-vscode' && e.options.id !== 'dsh-sidebar-vscode' && !e.disabled)"
+      config:
+        openAsDefault: false
+        openBlocklist:
+          - pdf
+          - docx
+          - xlsx
+          - pptx
+          - png
+          - jpeg
+          - jpg
+        serverUrl: ''
+        pathMap: ''
+        maxLines: 200
+        maxBytes: 20000

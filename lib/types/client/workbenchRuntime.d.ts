@@ -42,7 +42,10 @@
  *   the workbench — that is this module's whole point) and dies when the
  *   LAST adopting tab record goes away (signal abort = the sidebar
  *   removed the record; sidebar close and session switches retain
- *   records, so switching back and forth is free).
+ *   records, so switching back and forth is free). A runtime that dies
+ *   this way vacates the singleton slot ITSELF: the next adopt (the
+ *   reopened tab) mints a fresh workbench, because a dead handle's
+ *   every method no-ops and the reopened tab would never come up.
  * - PLUGIN DISPOSE (HMR / unload): `destroyWorkbenchRuntime()` tears
  *   everything down — host element removed, listeners and observers
  *   disposed, controllers' own teardowns run.

@@ -147,25 +147,25 @@ describe('blocklistSuggestions', () => {
 })
 
 describe('readOpenBlocklist', () => {
-  /** Minimal settings-scope face mirroring settings.ts's SettingsScopeFace. */
-  function scopeOf(value: unknown) {
+  /** Minimal config-form face mirroring settings.ts's SettingsFormFace. */
+  function formOf(value: unknown) {
     return {
       getSnapshot: () => ({ status: 'ready' as const, value: { openBlocklist: value } as never, writable: true }),
       subscribe: () => () => {},
-      set: async () => {},
-      unset: async () => {},
+      set: async () => true,
+      unset: async () => true,
     }
   }
 
-  it('reads the resolved section array through the settings scope', () => {
-    expect(readOpenBlocklist(scopeOf(['zip']))).toEqual(['zip'])
+  it('reads the resolved section array through the config form', () => {
+    expect(readOpenBlocklist(formOf(['zip']))).toEqual(['zip'])
   })
 
   it('falls back to the default for an unset section value', () => {
-    expect(readOpenBlocklist(scopeOf(undefined))).toEqual(DEFAULT_OPEN_BLOCKLIST)
+    expect(readOpenBlocklist(formOf(undefined))).toEqual(DEFAULT_OPEN_BLOCKLIST)
   })
 
-  it('treats a missing scope as unset (the code default)', () => {
+  it('treats a missing form as unset (the code default)', () => {
     expect(readOpenBlocklist(undefined)).toEqual(DEFAULT_OPEN_BLOCKLIST)
   })
 })

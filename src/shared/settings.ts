@@ -1,12 +1,15 @@
 /**
  * The `vscode-sidebar` settings model, shared by both plugin halves.
  *
- * The settings live in the OFFICIAL user-settings document under one
- * namespace (`vscode-sidebar`), not in any sidebar plugin's private blob:
- * the Host half registers the section (`src/settingsSection.ts`) so the
- * settings serve it, and the「设置 → 插件 → 插件配置」tab pairs that
- * namespace with this plugin's browser-registered card
- * (`settings.plugin.item`, keyed by the same string).
+ * The settings live in the OFFICIAL profile composition, keyed by this
+ * plugin's composition entry id (`dsh-sidebar-vscode`, the id its
+ * `cordis.patch.yml` declares) — NOT in any sidebar plugin's private
+ * blob: since dsh 0.1.7 the settings service derives a plugin's
+ * configuration page from its composition entry's `Config` schema
+ * (`src/config.ts`; every field `.volatile()`), and the「设置 → 插件」
+ * page pairs that derived namespace with this plugin's browser-registered
+ * card (`plugins.bundle.config` / `plugins.row.config`, keyed the same
+ * way).
  *
  * This module is the ONE source of truth both halves compile against —
  * the Host half's schema defaults and the browser half's
@@ -27,8 +30,12 @@
  * @module dsh-sidebar-vscode/shared/settings
  */
 
-/** The settings namespace this plugin owns (lowercase, per the Host pattern). */
-export const VSCODE_SIDEBAR_SETTINGS_NAMESPACE = 'vscode-sidebar'
+/**
+ * The settings namespace this plugin's configuration lives under: the
+ * composition entry id (what the loader's patch declares and the settings
+ * service keys the derived section by).
+ */
+export const VSCODE_SIDEBAR_SETTINGS_NAMESPACE = 'dsh-sidebar-vscode'
 
 /** The stored user preference for the VSCode sidebar tab. */
 export interface VscodeSidebarSettings {
@@ -69,10 +76,10 @@ export const MAX_BYTES_MAX = 200_000
 export const OPEN_BLOCKLIST_MAX_ENTRIES = 64
 
 /**
- * The composition base: what every unset field resolves to. The Host half
- * registers this as the section's `base` layer, and the browser half uses
- * it verbatim whenever the settings scope has not answered yet (or this
- * deployment serves no settings provider at all).
+ * The composition base: what every unset field resolves to. The patch's
+ * entry config carries this as the section's `base` layer, and the
+ * browser half uses it verbatim whenever the config form has not
+ * answered yet (or this deployment serves no settings provider at all).
  */
 export const VSCODE_SIDEBAR_SETTINGS_BASE: Readonly<VscodeSidebarSettings> = Object.freeze({
   openAsDefault: false,

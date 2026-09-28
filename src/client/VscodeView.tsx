@@ -57,7 +57,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { readSettingCaps, useSettings, type SettingsScopeFace } from './settings.ts'
+import { readSettingCaps, useSettings, type SettingsFormFace } from './settings.ts'
 import {
   buildVscodeUrl,
   DEFAULT_SERVER_URL,
@@ -103,8 +103,8 @@ export interface VscodeViewProps {
   sessionId: string
   /** The sessions registry selector (the cwd source). */
   useSessions: UseSessionsCwd
-  /** The bound `vscode-sidebar` settings scope (this plugin's registration inject). */
-  settings: SettingsScopeFace | undefined
+  /** The shared `dsh-sidebar-vscode` config form (this plugin's registration inject). */
+  settings: SettingsFormFace | undefined
 }
 
 /** Presentational: the toolbar strip (workspace path + reload + pop-out). */

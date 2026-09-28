@@ -264,10 +264,10 @@ const STYLE_SHEETS: Record<PluginStyleId, StyleSheetSpec> = {
   settings: {
     id: 'dsh-sidebar-vscode-settings-css',
     css: `
-/* The card shell: one plugin's disclosure box inside the official
- * configurable-plugins tab (设置 → 插件 → 插件配置), matching that tab's
- * card rhythm over the same host tokens — collapsed at rest, the whole
- * header one button, the body disclosed in place. */
+/* The form shell: this plugin's configuration form body inside the
+ * Plugins page's config section (设置 → 插件 → dsh-sidebar-vscode 的
+ * 配置区 / 该行的配置页), over the same host tokens — the page draws the
+ * title and navigation, the boxed body below is this card. */
 .dsh_vscodeSet_card {
   box-sizing: border-box;
   display: flex;

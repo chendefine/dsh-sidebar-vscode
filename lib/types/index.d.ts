@@ -1,11 +1,11 @@
 /**
  * `dsh-sidebar-vscode`, node half: the vscode-selection context boundary,
- * the extension command channel's fenced routes, the `vscode-sidebar`
- * settings section, and the same-origin VS Code reverse proxy.
+ * the extension command channel's fenced routes, and the same-origin VS
+ * Code reverse proxy.
  *
  * Everything UI-shaped (the official right-Sidebar `vscode` tab, the
  * composer chips, the reference rail, the chat-open interception, the
- * settings card) lives in the browser half. This half owns:
+ * configuration card) lives in the browser half. This half owns:
  *
  * - the model-facing seam: for every live agent it listens at
  *   `agent/pre-step`, expands canonical `dsh-vscode:` (editor selections)
@@ -15,9 +15,11 @@
  *   resources, content-less `<file-selection>`/`<folder-selection>`
  *   markers sourced `{ kind: 'vscode-resource', … }` (see `src/mention.ts`);
  *
- * - the `vscode-sidebar` settings section (`src/settingsSection.ts`),
- *   registered on the settings provider so the official「插件配置」tab
- *   serves the namespace this plugin's browser card edits;
+ * - the plugin's `Config` schema (`src/config.ts`): the settings service
+ *   derives the `dsh-sidebar-vscode` configuration page from it (every
+ *   volatile field editable live, committed edits pushed into the
+ *   running references without a remount) — the static `Config` export
+ *   below IS the registration, no service inject needed;
  *
  * - the fenced route family under `/sidebar-vscode/api/*`, dispatched
  *   through one method table (METHODS below): the open-channel probes and
@@ -41,14 +43,29 @@
  * @module dsh-sidebar-vscode
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { VscodeSidebarPluginConfig } from './config.ts';
 /** Cordis plugin name (the Loader entry; matches the client bundle id). */
 export declare const name = "dsh-sidebar-vscode";
+/**
+ * The plugin's configuration schema — the one the loader resolves the
+ * entry config through and the settings service derives this plugin's
+ * configuration page from (its volatile fields, keyed by the entry id
+ * `dsh-sidebar-vscode`); see `src/config.ts`.
+ */
+export { Config } from './config.ts';
+export type { VscodeSidebarPluginConfig } from './config.ts';
 /** Services required before load: the agent registry (agent/created
  * events), the webserver (command-channel routes), and the web runtime
- * (the trust fence's live trustedHosts). */
+ * (the trust fence's live trustedHosts). The settings section needs no
+ * inject: the host's settings service derives it from this entry's
+ * `Config` schema by entry id. */
 export declare const inject: string[];
 /**
  * Mount the vscode-selection pre-step boundary for every agent.
  * @param ctx - host cordis context.
+ * @param config - the loader-resolved plugin config; every field is a
+ * live volatile reference a settings commit updates in place. The Host
+ * half consumes none of them (every consumer is browser-side, through
+ * the shared config form), so the references are simply held.
  */
-export declare function apply(ctx: Context): void;
+export declare function apply(ctx: Context, config: VscodeSidebarPluginConfig): void;

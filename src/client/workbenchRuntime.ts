@@ -42,7 +42,10 @@
  *   the workbench — that is this module's whole point) and dies when the
  *   LAST adopting tab record goes away (signal abort = the sidebar
  *   removed the record; sidebar close and session switches retain
- *   records, so switching back and forth is free).
+ *   records, so switching back and forth is free). A runtime that dies
+ *   this way vacates the singleton slot ITSELF: the next adopt (the
+ *   reopened tab) mints a fresh workbench, because a dead handle's
+ *   every method no-ops and the reopened tab would never come up.
  * - PLUGIN DISPOSE (HMR / unload): `destroyWorkbenchRuntime()` tears
  *   everything down — host element removed, listeners and observers
  *   disposed, controllers' own teardowns run.
@@ -206,6 +209,13 @@ interface Attachment {
 let runtime: WorkbenchRuntime | null = null
 
 /**
+ * The deps {@link adoptWorkbenchRuntime} builds with. Production is the
+ * browser binding; the test installer substitutes its own so a spec can
+ * drive the module's ADOPT seam itself (the self-destroy re-arm specs).
+ */
+let adoptDeps: WorkbenchRuntimeDeps = defaultDeps
+
+/**
  * The runtime handle a view drives. Every method is safe after destroy
  * (a no-op), so a view never needs to know whether it outlives the
  * workbench it projects.
@@ -252,7 +262,7 @@ export interface WorkbenchHandle {
  * @returns the handle every view of the workbench shares.
  */
 export function adoptWorkbenchRuntime(): WorkbenchHandle {
-  if (runtime === null) runtime = new WorkbenchRuntime(defaultDeps)
+  if (runtime === null) runtime = new WorkbenchRuntime(adoptDeps)
   return runtime.handle
 }
 
@@ -274,6 +284,7 @@ export function destroyWorkbenchRuntime(): void {
  */
 export function installWorkbenchRuntimeForTest(deps: WorkbenchRuntimeDeps): WorkbenchHandle {
   destroyWorkbenchRuntime()
+  adoptDeps = deps
   runtime = new WorkbenchRuntime(deps)
   return runtime.handle
 }
@@ -464,6 +475,11 @@ class WorkbenchRuntime {
   /** Register one view: adopter signal + projection + fence mint on the first. */
   private attach(id: string, signal: AbortSignal, anchor: ProjectionAnchor | null, visible: boolean): void {
     if (this.disposed) return
+    // A tab whose record is already gone attaches NOTHING: an
+    // already-aborted signal never fires its 'abort' listener, so
+    // registering it would mint a zombie adopter nothing can ever
+    // remove — a workbench kept alive with no view left to project it.
+    if (signal.aborted) return
     if (!this.adopters.has(id)) {
       this.adopters.set(id, signal)
       signal.addEventListener('abort', this.adoptAbort)
@@ -724,6 +740,15 @@ class WorkbenchRuntime {
   destroy(): void {
     if (this.disposed) return
     this.disposed = true
+    // Vacate the singleton slot the moment this runtime dies — including
+    // the SELF-destroy path (the last adopter's abort, i.e. the sidebar
+    // removed the tab record when the user closed the tab): the next
+    // view's adopt must mint a FRESH workbench, not be handed this dead
+    // handle, whose every method no-ops and whose host never returns —
+    // a reopened tab would sit on 「正在打开 VSCode …」forever. Cleared
+    // BEFORE the listener pass below: a listener may synchronously
+    // adopt, and it must find the slot empty.
+    if (runtime === this) runtime = null
     for (const signal of this.adopters.values()) signal.removeEventListener('abort', this.adoptAbort)
     this.adopters.clear()
     this.attachments.clear()

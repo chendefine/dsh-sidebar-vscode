@@ -15,7 +15,12 @@
  *   reassignment;
  * - a transient base re-resolution never reloads the live frame;
  * - the LAST adopter's signal abort (tab record removal) destroys the
- *   workbench: host removed, styles disposed, element dropped;
+ *   workbench: host removed, styles disposed, element dropped — and the
+ *   SELF-destroyed runtime vacates the singleton slot, so the next
+ *   adopt (a reopened tab) mints a FRESH workbench instead of a dead
+ *   handle that sits on the loading overlay forever;
+ * - an attach whose signal already aborted registers nothing (no zombie
+ *   adopter can outlive its tab record);
  * - the plugin-level destroy tears everything down unconditionally.
  *
  * @module dsh-sidebar-vscode/tests/workbenchRuntime.spec
@@ -23,6 +28,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
+  adoptWorkbenchRuntime,
   destroyWorkbenchRuntime,
   installWorkbenchRuntimeForTest,
   type RuntimeDom,
@@ -440,5 +446,69 @@ describe('WorkbenchRuntime', () => {
     const fresh = setup()
     const target = bootFor(fresh, 's1:t2', new FakeSignal(), '/work')
     await vi.waitFor(() => expect(fresh.frame()?.src).toBe(target))
+  })
+
+  it('re-arms after the SELF-destroy too: a closed tab must not poison the next adopt', async () => {
+    // The live bug: closing the sidebar's VSCode tab makes the official
+    // service abort the tab record's signal, the LAST adopter's abort
+    // destroys the runtime IN PLACE — and the destroyed singleton used
+    // to stay in the module slot. The reopened tab's view then adopted
+    // the dead handle (every method no-ops when disposed, no host div
+    // ever comes back) and sat on 「正在打开 VSCode …」forever, across
+    // session and workspace switches alike.
+    const harness = setup()
+    const signal = new FakeSignal()
+    bootFor(harness, 's1:t1', signal, '/work')
+    const frame = await vi.waitFor(() => {
+      const created = harness.frame()
+      expect(created).not.toBeNull()
+      return created as FakeElement
+    })
+    frame.fire('load')
+    expect(harness.handle.getSnapshot().loaded).toBe(true)
+
+    // Close the tab: record removed → last adopter aborts → SELF-destroy.
+    signal.abort()
+    expect(harness.host().removed).toBe(true)
+    expect(harness.disposeStyles).toHaveBeenCalled()
+    expect(harness.handle.getSnapshot().frameAlive).toBe(false)
+
+    // Reopen the tab: the fresh view drives the module's own ADOPT seam
+    // (not the test installer) — it must mint a FRESH runtime and boot.
+    const handle = adoptWorkbenchRuntime()
+    expect(handle).not.toBe(harness.handle)
+    handle.attach('s1:t2', new FakeSignal() as unknown as AbortSignal, fakeAnchor(), true)
+    handle.update({ serverUrl: '/sidebar/vscode/', pathMap: [], cwd: '/work' })
+    const target = buildVscodeUrl('/sidebar/vscode/', '/work')
+    const freshFrame = await vi.waitFor(() => {
+      expect(handle.element).not.toBeNull()
+      expect(handle.element?.src).toBe(target)
+      return handle.element as unknown as FakeElement
+    })
+    freshFrame.fire('load')
+    expect(handle.getSnapshot().loaded).toBe(true)
+    expect(handle.getSnapshot().frameAlive).toBe(true)
+    // The dead runtime's host is not resurrected — a NEW host was built.
+    expect(harness.host().removed).toBe(true)
+  })
+
+  it('ignores an attach whose signal already aborted (no zombie adopters)', async () => {
+    // A view whose tab record is already gone (the sidebar removed it in
+    // the same commit that unmounts the body) must attach nothing: an
+    // already-aborted signal never fires its 'abort' listener, so
+    // registering it would mint an adopter nothing can ever remove — a
+    // workbench kept alive with no view to project it.
+    const harness = setup()
+    const dead = new FakeSignal()
+    dead.abort()
+    harness.handle.attach('s1:t1', dead as unknown as AbortSignal, fakeAnchor(), true)
+    harness.handle.update({ serverUrl: '/sidebar/vscode/', pathMap: [], cwd: '/work' })
+    await new Promise(resolve => { setTimeout(resolve, 0) })
+    expect(harness.frame()).toBeNull()
+    expect(harness.handle.getSnapshot().projected).toBeNull()
+
+    // The next LIVE adopt on the same runtime still works untouched.
+    const target = bootFor(harness, 's1:t2', new FakeSignal(), '/work')
+    await vi.waitFor(() => { expect(harness.frame()?.src).toBe(target) })
   })
 })

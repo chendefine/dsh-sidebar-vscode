@@ -23,24 +23,28 @@
  *   button, and the settings page's「打开配置文件」button rerouted into
  *   the workbench tab, all behind the openAsDefault switch and the open
  *   blocklist;
- * - the configuration card (settingsCard.tsx) inside the official
- *   设置 → 插件 → 插件配置 tab, keyed by the `vscode-sidebar` namespace
- *   the Host half serves.
+ * - the configuration form (settingsCard.tsx) on the official Plugins
+ *   page's two config seats — the bundle's own page
+ *   (`plugins.bundle.config`, keyed by the package name) and the row's
+ *   page (`plugins.row.config`, keyed `<package name>#<row id>`) — both
+ *   mounted while the Host serves the `dsh-sidebar-vscode` namespace
+ *   (the composition entry id, the section the settings service derives
+ *   from the entry's `Config` schema).
  *
  * @module dsh-sidebar-vscode/client
  */
 /** Services required before mounting: the official right-Sidebar's tab
  * registry and navigation controller, the slot registry (the tab body,
- * the composer dock, and the settings card seats), the locale service,
- * the session registry, the conversation input service, the trigger
- * registry (chip serialization routing), the settings scope (the
- * `vscode-sidebar` namespace), and the connection service (the legacy
- * settings.openDocument seam). */
+ * the composer dock, and the configuration form seats), the locale
+ * service, the session registry, the conversation input service, the
+ * trigger registry (chip serialization routing), the shared config-forms
+ * service (the `dsh-sidebar-vscode` namespace), and the connection
+ * service (the legacy settings.openDocument seam). */
 export declare const inject: string[];
 /**
  * Client plugin body.
  * @param ctx - the client cordis context (the official sidebar services +
- * slots + locale + sessions + conversation + inputTriggers + settingsScope
+ * slots + locale + sessions + conversation + inputTriggers + configForms
  * + connection).
  */
 export declare function apply(ctx: unknown): void;

@@ -2,7 +2,7 @@
 
 [中文](./README.zh-CN.md) · [npm](https://www.npmjs.com/package/dsh-sidebar-vscode) · [GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
 
-An **official right-Sidebar tab type** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) that embeds the **VS Code web workbench** (`ctx.sidebarRightTabs` + the `sidebar.right.pane.tab` seat of `@deepseek-ai/dsh-client-ui-sidebar-right`), and turns editor selections / explorer files into **atomic reference chips** in the conversation composer — expanded by the host half into model context right after the citing message on submit. Its user-facing settings live in the official plugin-config card: 设置 → 插件 → 插件配置 → **VSCode 侧边栏**.
+An **official right-Sidebar tab type** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) that embeds the **VS Code web workbench** (`ctx.sidebarRightTabs` + the `sidebar.right.pane.tab` seat of `@deepseek-ai/dsh-client-ui-sidebar-right`), and turns editor selections / explorer files into **atomic reference chips** in the conversation composer — expanded by the host half into model context right after the citing message on submit. Its user-facing settings derive from the plugin entry's volatile `Config` schema and are edited on the official Plugins page: 设置 → 插件 → **dsh-sidebar-vscode 的配置区**.
 
 ![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![CI](https://img.shields.io/github/actions/workflow/status/chendefine/dsh-sidebar-vscode/ci.yml) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
 
@@ -25,7 +25,7 @@ editor selection                    explorer
 
 - Package: [dsh-sidebar-vscode on npm](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - Source: [chendefine/dsh-sidebar-vscode on GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
-- Version: 0.3.2
+- Version: 0.3.3
 - License: MIT
 - Platform: web (the DSH Web GUI)
 - Tests: 477 passing (24 spec files)
@@ -74,7 +74,7 @@ editor selection                    explorer
 
 ### Prerequisites
 
-- A DSH host (Web GUI) whose web app carries the official right Sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`; the `sidebarRightTabs` / `sidebarRight` / `settingsScope` services exist from 0.1.5-alpha.1 — the session header's「展开侧栏」button is the visible tell). Without it the client fiber parks silently and nothing registers;
+- A DSH host (Web GUI) whose web app carries the official right Sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`; the `sidebarRightTabs` / `sidebarRight` services exist from 0.1.5-alpha.1 and `configForms` from 0.1.7 — the session header's「展开侧栏」button is the visible tell). Without it the client fiber parks silently and nothing registers;
 - A `code serve-web` instance reachable from the browser — pick a wiring shape:
   1. **Built-in proxy (the default; the choice for gateway-less deployments: Windows, LAN `dsh web`)** — an EMPTY `serverUrl` defaults to `http://127.0.0.1:8000` (a bare local `code serve-web` — the CLI's own defaults), or paste any full address it prints (base path and `?tkn=` token included). The address is pushed via `/sidebar-vscode/api/proxy.config` and mounted as the **same-origin `/sidebar/vscode/`** on the very port `dsh web` listens on (transparent HTTP forwarding, WebSocket upgrade pipe, token auto-append) — zero nginx, zero start flags:
      ```sh
@@ -180,7 +180,7 @@ Select files/folders in the explorer (multi- and mixed-select work), right-click
 
 ### Settings
 
-Settings live in the official plugin-config card — **设置 → 插件 → 插件配置 → VSCode 侧边栏** (Settings → Plugins → Plugin Config → VSCode Sidebar): the Host half registers the `vscode-sidebar` settings namespace (`ctx.settings.installSection`), the browser half registers the `settings.plugin.item` card keyed by it, and every row commits through `ctx.settingsScope` (`set`/`unset`; the card header's "Reset to defaults" clears the user layer so each field re-inherits the composition base). **Not** in cordis.patch.yml (`pathMap` below is served by the same namespace but deliberately has no card row):
+Settings derive from the plugin entry's **volatile `Config` schema** (`src/config.ts`) and are edited on the official Plugins page — **设置 → 插件 → dsh-sidebar-vscode 的配置区** (the bundle's own config form between its description and its rows) or the row's configure control: the settings service keys the derived section by the composition entry id `dsh-sidebar-vscode`, the browser half registers the SAME card in the two seats the Plugins page offers (`plugins.bundle.config` keyed by package name, `plugins.row.config` keyed `<package name>#<row id>`, both mounted while the Host serves the section), and every row commits through the shared config form (`ctx.configForms`: `set`/`unset`; the footer's "Reset to defaults" clears the user layer so each field re-inherits the composition base — the shipped base layer travels in `cordis.patch.yml`). **Not hand-registered anywhere** (`pathMap` below is served by the same section but deliberately has no card row):
 
 | Key | Default | Description |
 |---|---|---|
@@ -242,7 +242,7 @@ The official pane renders only the active tab's body, and an iframe element remo
 
 - `workbenchRuntime.ts` owns a page-scoped singleton — a host `div` appended to `document.body` once, the iframe inside it created on the first released load and removed only on destroy. Every boot-gating controller (boot lock, boot gate, focus fence, open-channel opener, clipboard bridge) lives in the runtime, so their state outlives the tab body's mounts. The view (`VscodeView.tsx`) renders a placeholder plus chrome, feeds the runtime resolved inputs, and adopts it per `${sessionId}:${tabId}`;
 - `projection.ts` glues the host's box to the placeholder's — one `getBoundingClientRect` read and one style write per animation frame while the tab is visible, so the projected frame follows the panel's slide transitions, the resize handle, fullscreen switches and float drags without the iframe moving. Stacking: 45 docked/fullscreen (above the fullscreen panel's 40, below the float host's 60), 61 while the placeholder floats (above the float layer, below the menus at 70). Hiding keeps the last rect under `visibility` — a zero-size host would force a VS Code re-layout every hide/show cycle;
-- the leak discipline: one live workbench per page (a second basis — another workspace, a settings edit — reloads the frame in place, never a second instance, because the boot lock exists precisely to keep concurrent same-origin boots from deadlocking VS Code's IndexedDB); the runtime survives body unmounts and dies when the last adopting tab record goes away (the tab signal the framework aborts on record removal), or on plugin unload (`destroyWorkbenchRuntime()` in the client entry's teardown). Two panes may hold one kind — the latest attach owns the projection, and a release falls back to the previous pane's placeholder instead of leaving it blank.
+- the leak discipline: one live workbench per page (a second basis — another workspace, a settings edit — reloads the frame in place, never a second instance, because the boot lock exists precisely to keep concurrent same-origin boots from deadlocking VS Code's IndexedDB); the runtime survives body unmounts and dies when the last adopting tab record goes away (the tab signal the framework aborts on record removal), or on plugin unload (`destroyWorkbenchRuntime()` in the client entry's teardown) — and a runtime that dies by signal abort vacates the singleton slot itself, so the next adopt (the reopened tab) mints a FRESH workbench instead of being handed the dead handle, whose every method no-ops and whose host never returns. Two panes may hold one kind — the latest attach owns the projection, and a release falls back to the previous pane's placeholder instead of leaving it blank.
 
 What this changes for the reload paths the older guards were built around: a sibling-tab switch, a panel collapse/expand, and a same-workspace session switch no longer reload anything (the frame keeps running invisibly — its boot even finishes in the background); an in-place reload now happens only on a workspace/`serverUrl`/`pathMap` change, a degraded-channel payload, or the manual reload button, which is exactly where the boot gate's nonce rotation and the ledger reconcile still earn their keep. A transient base re-resolution after a remount never tears the live frame down — the runtime holds its last resolved base until a different one lands.
 
@@ -317,9 +317,9 @@ The codebase is layered by domain — a **shared protocol plane** every runtime 
 
 ```
 src/shared/protocol.ts         # THE protocol plane: every constant that crosses a process boundary (envelope marker, proxy mount, spool file names, capability versions, TTLs, the workspace slug) — pure, host+client import it verbatim
-src/index.ts                   # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes behind one METHOD TABLE + the `vscode-sidebar` settings section (inject: agents, webServer, webRuntime; nested settings)
-src/settingsSection.ts         # the `vscode-sidebar` settings section: schema + installSection (5 tests)
-src/shared/settings.ts         # the settings model shared by both halves: namespace, types, composition base
+src/index.ts                   # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes behind one METHOD TABLE + the static Config export (inject: agents, webServer, webRuntime)
+src/config.ts                  # the plugin's volatile Config schema — the settings service derives the `dsh-sidebar-vscode` section from it (7 tests)
+src/shared/settings.ts         # the settings model shared by both halves: entry-id namespace, types, composition base
 src/vscodeProxy.ts             # host half: same-origin /sidebar/vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel + trust fence) (41 tests)
 src/mention.ts                 # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (38 tests)
 src/mentionCodec.ts            # shared pure logic: canonical URI codecs (2 schemes)/truncation/hashing (42 tests)
@@ -343,8 +343,8 @@ src/client/references.ts       # payload→chips (selection/resources)/insert at
 src/client/referencePipeline.ts # the lander/options handle table the plugin body, the tab, and the dock share
 src/client/selection.ts        # clipboard envelope codecs (selection + resource payloads) (16 tests)
 src/client/paths.ts            # pathMap parse/map/reverse-map, URL building (34 tests)
-src/client/settings.ts         # `vscode-sidebar` settings reads (scope snapshot + base fallback) + capture-cap contract (defaults/bounds/commit) (18 tests)
-src/client/settingsCard.tsx    # the official plugin-config card (settings.plugin.item): card shell + reset-to-defaults + switch row + blocklist tag row + text rows + cap rows (styles via styles.ts)
+src/client/settings.ts         # `dsh-sidebar-vscode` config-form reads (snapshot + base fallback) + capture-cap contract (defaults/bounds/commit) (18 tests)
+src/client/settingsCard.tsx    # the Plugins-page config form (plugins.bundle.config / plugins.row.config): form body + reset-to-defaults + switch row + blocklist tag row + text rows + cap rows (styles via styles.ts)
 src/client/settingsTakeover.ts # settings「打开配置文件」takeover: one shared decision core behind both era wrappers + dialog close (17 tests)
 src/client/openIntercept.ts    # the official openResource takeover: the local file-address parser + wrapSidebarRightOpenResource (gate / blocklist fall-through / params translation) (22 tests)
 src/client/takeovers.ts        # the takeover family's installation: one gate wired to two seams (the openResource funnel + both settings funnels)
@@ -367,7 +367,7 @@ scripts/install-extension.sh   # one-command extension install (vsce package →
 scripts/install-extension.md   # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md    # this doc (English) / the Chinese doc
 screenshot.png                 # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts                # vitest specs — 511 tests / 24 files (per-module counts noted above)
+tests/*.spec.ts                # vitest specs — 522 tests / 28 files (per-module counts noted above)
 cordis.patch.yml               # the bundle channel's host-half insert row (mount declaration)
 tsdown.config.ts               # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
 vitest.config.ts               # test-time dsh-llm alias (harness checkout preferred, installed package fallback)

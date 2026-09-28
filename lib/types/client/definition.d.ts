@@ -35,6 +35,8 @@ export interface VscodeTabParams {
 }
 /** One guide entry box (structural over the official `SidebarRightGuideEntry`). */
 export interface VscodeGuideEntry {
+    /** Stable entry identity within this provider (the official entry key). */
+    readonly id: string;
     readonly order: number;
     readonly title: () => string;
     readonly description: () => string;

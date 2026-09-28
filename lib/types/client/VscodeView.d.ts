@@ -55,7 +55,7 @@
  *
  * @module dsh-sidebar-vscode/client/VscodeView
  */
-import { type SettingsScopeFace } from './settings.ts';
+import { type SettingsFormFace } from './settings.ts';
 /** The framework-bound tab-info hook's answer (structural subset the view reads). */
 export interface VscodeTabInfo {
     readonly tab: {
@@ -84,8 +84,8 @@ export interface VscodeViewProps {
     sessionId: string;
     /** The sessions registry selector (the cwd source). */
     useSessions: UseSessionsCwd;
-    /** The bound `vscode-sidebar` settings scope (this plugin's registration inject). */
-    settings: SettingsScopeFace | undefined;
+    /** The shared `dsh-sidebar-vscode` config form (this plugin's registration inject). */
+    settings: SettingsFormFace | undefined;
 }
 /**
  * Render the VS Code workbench's seat for the session's workspace: the

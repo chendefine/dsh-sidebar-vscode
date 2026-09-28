@@ -30,10 +30,10 @@
  * Cross-cutting wiring that lives HERE so no seam carries its own copy:
  *
  * - the gate: `takeoverEnabled` = the `openAsDefault` switch resolved from
- *   the live settings scope (evaluated per call, so flipping the switch
+ *   the live config form (evaluated per call, so flipping the switch
  *   applies to the very next click);
  * - the open blocklist (`openBlocklist.ts`), read per call from the same
- *   scope: a file type the code editor renders poorly (Office/image/PDF …)
+ *   form: a file type the code editor renders poorly (Office/image/PDF …)
  *   declines the VSCode reroute and falls through to the official
  *   sidebar's own viewer surface;
  * - session addressing: the session-scope address translation resolves
@@ -43,7 +43,7 @@
  */
 
 import { VSCODE_KIND } from './definition.ts'
-import { readSettings, takeoverSwitchOn, type SettingsScopeFace } from './settings.ts'
+import { readSettings, takeoverSwitchOn, type SettingsFormFace } from './settings.ts'
 import { isBlockedPath, readOpenBlocklist } from './openBlocklist.ts'
 import { wrapSidebarRightOpenResource, type SidebarRightLike } from './openIntercept.ts'
 import { installExpandTakeover } from './expandTakeover.ts'
@@ -88,18 +88,18 @@ export interface TakeoverClientFace {
  * does not provide its service.
  *
  * @param client - the client context face (sidebarRight, sessions, era services).
- * @param scope - the bound `vscode-sidebar` settings scope (live reads;
+ * @param form - the shared `dsh-sidebar-vscode` config form (live reads;
  * undefined = no settings service, every read falls back to the code
  * defaults — the switch reads off, so every seam declines).
  * @returns the disposer unwinding every installed seam (HMR-safe).
  */
 export function installTakeovers(
   client: TakeoverClientFace,
-  scope: SettingsScopeFace | undefined,
+  form: SettingsFormFace | undefined,
 ): () => void {
   // ── the one gate + the one per-call decision table ─────────────────────
-  const takeoverEnabled = (): boolean => takeoverSwitchOn(scope)
-  const blockedPath = (path: string): boolean => isBlockedPath(path, readOpenBlocklist(scope))
+  const takeoverEnabled = (): boolean => takeoverSwitchOn(form)
+  const blockedPath = (path: string): boolean => isBlockedPath(path, readOpenBlocklist(form))
   const cwdOf = (sessionId: string): string | undefined =>
     client.sessions?.list?.getSnapshot().byId?.[sessionId]?.cwd
 

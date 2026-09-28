@@ -1,27 +1,25 @@
 /**
- * The plugin's configuration card inside the official settings page:
- * 设置 → 插件 → 插件配置 → VSCode 侧边栏.
+ * The plugin's configuration form on the official Plugins page:
+ * 设置 → 插件 → dsh-sidebar-vscode 的配置区(插件页) / 该行的配置页.
  *
- * The card registers into the `settings.plugin.item` seat keyed by the
- * `vscode-sidebar` namespace — the same namespace the Host half serves
- * (`src/settingsSection.ts`) — so the configurable-plugins tab pairs the
- * two and dispatches this card under that key. Reads and writes ride the
- * official settings scope (`ctx.settingsScope.bind`): every row commits
- * per action through `scope.set(field, value)`, and the footer's
- * 「恢复默认」 clears the user layer field by field (`scope.unset`) so
- * each reverts to the composition base.
+ * The form registers into the two seats the Plugins page (dsh ≥ 0.1.7)
+ * offers a bundle — `plugins.bundle.config` (keyed by the package name,
+ * rendered on the bundle's page between its description and its rows)
+ * and `plugins.row.config` (keyed `<package name>#<row id>`, the row's
+ * configure control) — mounted while the Host serves the
+ * `dsh-sidebar-vscode` namespace (the composition entry id; the section
+ * the settings service derives from the entry's `Config` schema). The
+ * page draws the title, description, and navigation around the entry;
+ * this card is the form body only (the disclosure header of the old
+ * settings-list seat is gone with that seat). Reads and writes ride the
+ * shared config form (`ctx.configForms.get`): every row commits per
+ * action through `settings.set(field, value)` — a refused write reloads
+ * Host state through the form itself — and the footer's「恢复默认」
+ * clears the user layer field by field (`settings.unset`) so each
+ * reverts to the composition base.
  *
- * The chrome follows the official PluginCard disclosure (the built-in
- * plugin cards and `dsh-web-search-aggregation`'s copy of it): a `<li>`
- * whose header is one full-width button — name over description, a
- * 「已自定义」 chip while any user-layer field is set, a chevron that
- * rotates — disclosing the rows in place. COLLAPSED by default, like
- * every other card on that page: the card is one entry among many, and
- * which card a user opens is a reading gesture this card keeps to itself
- * (`useState`, no persistence).
- *
- * The disclosed rows are the panel this plugin has always owned, carried
- * over end-to-end:
+ * The rows are the panel this plugin has always owned, carried over
+ * end-to-end:
  *
  * - the openAsDefault SWITCH row (the two file-open takeovers' gate);
  * - the openBlocklist TAG row (openBlocklist.ts's contract): extensions
@@ -30,15 +28,15 @@
  *   each add/remove persists the whole next array (commit-per-action);
  * - the serverUrl TEXT row, stacked — description on top, the input
  *   alone on its own full-width line below (`pathMap` deliberately has
- *   NO row: the rare split-container rewrite lives in the settings
- *   document only — the read side still honors it when present);
+ *   NO row: the rare split-container rewrite lives in the profile
+ *   section only — the read side still honors it when present);
  * - the maxLines / maxBytes NUMBER rows: pre-filled defaults (an unset
  *   field shows the effective default, and merely focusing and blurring
  *   it writes nothing) and input-time range enforcement (an edit below
  *   the declared minimum or above the maximum is flagged the moment it
  *   is typed and snaps to the nearest bound when it commits).
  *
- * A read-only scope (memory mode — a remote browser process-local
+ * A read-only form (memory mode — a remote browser process-local
  * connection) disables every control and says so; the rows still render
  * the effective values.
  *
@@ -54,7 +52,7 @@ import {
   readUserLayer,
   useSettingsSnapshot,
   type CapSpec,
-  type SettingsScopeFace,
+  type SettingsFormFace,
 } from './settings.ts'
 import {
   blocklistSuggestions,
@@ -65,10 +63,16 @@ import {
 import type { CopyKey } from './locales.ts'
 import { VSCODE_SIDEBAR_SETTINGS_BASE, type VscodeSidebarSettings } from '../shared/settings.ts'
 
-/** The card's own props: the injected settings scope (root-scope seat). */
+/** The card's own props: the view asked for plus the injected config form. */
 export interface VscodeSettingsCardProps {
-  /** The bound `vscode-sidebar` settings scope (this plugin's inject). */
-  scope: SettingsScopeFace | undefined
+  /**
+   * The view the Plugins page asks for: `summary` (the row's
+   * description fallback, one line of text) or `page` (this form).
+   * Bundle-page seats render `page` only.
+   */
+  view?: 'summary' | 'page'
+  /** The shared `dsh-sidebar-vscode` config form (this plugin's inject). */
+  settings: SettingsFormFace | undefined
 }
 
 /** Copy of one cap row, resolved through t() at render time. */
@@ -355,120 +359,94 @@ function CapRow(props: { spec: CapSpec, raw: unknown, disabled: boolean, onWrite
 }
 
 /**
- * The card: the disclosure header (collapsed at rest, like every card on
- * that page) over the disclosed body — the takeover switch, the
- * open-blocklist tag row (it qualifies the switch above it — which files
- * that takeover must NOT claim), the serverUrl text row, one {@link
- * CapRow} per declared cap spec, and the reset footer — reading and
- * writing the `vscode-sidebar` settings section.
+ * The form: the read-only notice, the staged rows — the takeover switch,
+ * the open-blocklist tag row (it qualifies the switch above it — which
+ * files that takeover must NOT claim), the serverUrl text row, one
+ * {@link CapRow} per declared cap spec — and the reset footer, reading
+ * and writing the `dsh-sidebar-vscode` configuration section. The
+ * Plugins page draws the title and navigation around it.
  */
 export function VscodeSettingsCard(props: VscodeSettingsCardProps): React.ReactNode {
-  const { scope } = props
-  const snapshot = useSettingsSnapshot(scope)
+  const { settings } = props
+  if (props.view === 'summary') return t('cardDescription')
+  const snapshot = useSettingsSnapshot(settings)
   const values: VscodeSidebarSettings = snapshot.value ?? VSCODE_SIDEBAR_SETTINGS_BASE
   const disabled = !snapshot.writable
-  const user = readUserLayer(scope)
+  const user = readUserLayer(settings)
   const overridden = RESETTABLE_FIELDS.filter(field => field in user)
   const [resetting, setResetting] = useState(false)
-  // Card-local, like the official chrome: which card a user has open is a
-  // reading gesture, not something the Host has any stake in — and every
-  // card on the page starts collapsed.
-  const [open, setOpen] = useState(false)
 
   /** 「恢复默认」: clear the user layer field by field, so every row
    * re-inherits the composition base (the code defaults). */
   const resetDefaults = (): void => {
-    if (scope === undefined || resetting) return
+    if (settings === undefined || resetting) return
     setResetting(true)
-    void Promise.all(overridden.map(field => scope.unset(field)))
+    void Promise.all(overridden.map(field => settings.unset(field)))
       .catch(() => {
-        // A rejected clear reloads Host state through the scope itself;
+        // A rejected clear reloads Host state through the form itself;
         // the card simply follows the next snapshot.
       })
       .finally(() => { setResetting(false) })
   }
 
   const write = (field: string, value: unknown): void => {
-    void scope?.set(field, value).catch(() => {
-      // Same recovery contract: the scope re-reads on failure.
+    void settings?.set(field, value).catch(() => {
+      // Same recovery contract: the form re-reads on failure. A `false`
+      // answer (Host refusal) needs no handling here either — the form
+      // reloads Host state itself and the next snapshot follows it.
     })
   }
 
-  const title = t('cardTitle')
   return (
-    <div
-      className={open ? 'dsh_vscodeSet_card dsh_vscodeSet_card--open' : 'dsh_vscodeSet_card'}
-      data-vscode-settings-card={snapshot.status}
-      data-vscode-card-open={open ? 'true' : 'false'}
-    >
-      <button
-        type="button"
-        className="dsh_vscodeSet_cardHead"
-        aria-expanded={open}
-        aria-label={`${t(open ? 'cardCollapse' : 'cardExpand')}: ${title}`}
-        onClick={() => { setOpen(!open) }}
-      >
-        <span className="dsh_vscodeSet_cardText">
-          <span className="dsh_vscodeSet_cardTitle">{title}</span>
-          <span className="dsh_vscodeSet_cardDesc">{t('cardDescription')}</span>
-        </span>
-        {overridden.length > 0 && <span className="dsh_vscodeSet_chip">{t('cardCustomized')}</span>}
-        <svg className="dsh_vscodeSet_chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
-      {open && (
-        <div className="dsh_vscodeSet_cardBody">
-          {disabled && <div className="dsh_vscodeSet_readonly">{t('cardReadOnly')}</div>}
-          <div className="dsh_vscodeSet_rows" data-vscode-settings>
-            <SwitchRow
-              title={t('settingOpenAsDefault')}
-              desc={t('settingOpenAsDefaultDesc')}
-              checked={values.openAsDefault === true}
-              disabled={disabled}
-              onWrite={(next) => { write('openAsDefault', next) }}
-            />
-            <BlocklistRow
-              raw={values.openBlocklist}
-              disabled={disabled}
-              onWrite={(value) => { write(OPEN_BLOCKLIST_KEY, [...value]) }}
-            />
-            {TEXT_SPECS.map(spec => (
-              <TextRow
-                key={spec.key}
-                spec={spec}
-                raw={values[spec.key]}
-                disabled={disabled}
-                onWrite={(value) => { write(spec.key, value) }}
-              />
-            ))}
-            {CAP_SPECS.map(spec => (
-              <CapRow
-                key={spec.key}
-                spec={spec}
-                raw={values[spec.key]}
-                disabled={disabled}
-                onWrite={(value) => { write(spec.key, value) }}
-              />
-            ))}
-          </div>
-          <div className="dsh_vscodeSet_foot">
-            {overridden.length > 0 && (
-              <>
-                <span className="dsh_vscodeSet_footNote">{t('cardCustomized')}</span>
-                <button
-                  type="button"
-                  className="dsh_vscodeSet_reset"
-                  disabled={disabled || resetting}
-                  onClick={resetDefaults}
-                >
-                  {t('cardReset')}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+    <div className="dsh_vscodeSet_card" data-vscode-settings-card={snapshot.status}>
+      {disabled && <div className="dsh_vscodeSet_readonly">{t('cardReadOnly')}</div>}
+      <div className="dsh_vscodeSet_rows" data-vscode-settings>
+        <SwitchRow
+          title={t('settingOpenAsDefault')}
+          desc={t('settingOpenAsDefaultDesc')}
+          checked={values.openAsDefault === true}
+          disabled={disabled}
+          onWrite={(next) => { write('openAsDefault', next) }}
+        />
+        <BlocklistRow
+          raw={values.openBlocklist}
+          disabled={disabled}
+          onWrite={(value) => { write(OPEN_BLOCKLIST_KEY, [...value]) }}
+        />
+        {TEXT_SPECS.map(spec => (
+          <TextRow
+            key={spec.key}
+            spec={spec}
+            raw={values[spec.key]}
+            disabled={disabled}
+            onWrite={(value) => { write(spec.key, value) }}
+          />
+        ))}
+        {CAP_SPECS.map(spec => (
+          <CapRow
+            key={spec.key}
+            spec={spec}
+            raw={values[spec.key]}
+            disabled={disabled}
+            onWrite={(value) => { write(spec.key, value) }}
+          />
+        ))}
+      </div>
+      <div className="dsh_vscodeSet_foot">
+        {overridden.length > 0 && (
+          <>
+            <span className="dsh_vscodeSet_footNote">{t('cardCustomized')}</span>
+            <button
+              type="button"
+              className="dsh_vscodeSet_reset"
+              disabled={disabled || resetting}
+              onClick={resetDefaults}
+            >
+              {t('cardReset')}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   )
 }

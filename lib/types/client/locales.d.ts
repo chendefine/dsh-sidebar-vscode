@@ -23,7 +23,7 @@ export declare const zh: {
     readonly settingServerUrlDesc: "code serve-web 输出的完整地址（可含基路径与 ?tkn= 令牌）；留空 = 默认 http://127.0.0.1:8000。可达时经内置同源代理打开，否则回退直连";
     readonly settingServerUrlPlaceholder: "留空 = http://127.0.0.1:8000；或 http://127.0.0.1:8000/vscode/?tkn=…";
     readonly loading: "正在打开 VSCode …";
-    readonly loadHint: "长时间空白？请检查「设置 → 插件 → 插件配置 → VSCode 侧边栏」里的服务地址是否可达，或用「在新窗口打开」排查";
+    readonly loadHint: "长时间空白？请检查「设置 → 插件 → dsh-sidebar-vscode 的配置区」里的服务地址是否可达，或用「在新窗口打开」排查";
     readonly bootQueue: "正在等待其他窗口的编辑器完成启动（避免同时启动互相卡死），马上就好 …";
     readonly reload: "刷新";
     readonly openNewWindow: "在新窗口打开";

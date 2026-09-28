@@ -1,11 +1,11 @@
 /**
  * `dsh-sidebar-vscode`, node half: the vscode-selection context boundary,
- * the extension command channel's fenced routes, the `vscode-sidebar`
- * settings section, and the same-origin VS Code reverse proxy.
+ * the extension command channel's fenced routes, and the same-origin VS
+ * Code reverse proxy.
  *
  * Everything UI-shaped (the official right-Sidebar `vscode` tab, the
  * composer chips, the reference rail, the chat-open interception, the
- * settings card) lives in the browser half. This half owns:
+ * configuration card) lives in the browser half. This half owns:
  *
  * - the model-facing seam: for every live agent it listens at
  *   `agent/pre-step`, expands canonical `dsh-vscode:` (editor selections)
@@ -15,9 +15,11 @@
  *   resources, content-less `<file-selection>`/`<folder-selection>`
  *   markers sourced `{ kind: 'vscode-resource', … }` (see `src/mention.ts`);
  *
- * - the `vscode-sidebar` settings section (`src/settingsSection.ts`),
- *   registered on the settings provider so the official「插件配置」tab
- *   serves the namespace this plugin's browser card edits;
+ * - the plugin's `Config` schema (`src/config.ts`): the settings service
+ *   derives the `dsh-sidebar-vscode` configuration page from it (every
+ *   volatile field editable live, committed edits pushed into the
+ *   running references without a remount) — the static `Config` export
+ *   below IS the registration, no service inject needed;
  *
  * - the fenced route family under `/sidebar-vscode/api/*`, dispatched
  *   through one method table (METHODS below): the open-channel probes and
@@ -46,7 +48,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // Type-only: brings the agent event and PreStepDecision declarations in.
 import type {} from '@deepseek-ai/dsh-agent'
 import { createFileRangeReader, vscodeMentionPreStep } from './mention.ts'
-import { installVscodeSidebarSettings } from './settingsSection.ts'
+import type { VscodeSidebarPluginConfig } from './config.ts'
 import {
   OPEN_CHANNEL_BASE,
   parseOpenCommand,
@@ -71,9 +73,20 @@ import {
 /** Cordis plugin name (the Loader entry; matches the client bundle id). */
 export const name = 'dsh-sidebar-vscode'
 
+/**
+ * The plugin's configuration schema — the one the loader resolves the
+ * entry config through and the settings service derives this plugin's
+ * configuration page from (its volatile fields, keyed by the entry id
+ * `dsh-sidebar-vscode`); see `src/config.ts`.
+ */
+export { Config } from './config.ts'
+export type { VscodeSidebarPluginConfig } from './config.ts'
+
 /** Services required before load: the agent registry (agent/created
  * events), the webserver (command-channel routes), and the web runtime
- * (the trust fence's live trustedHosts). */
+ * (the trust fence's live trustedHosts). The settings section needs no
+ * inject: the host's settings service derives it from this entry's
+ * `Config` schema by entry id. */
 export const inject = ['agents', 'webServer', 'webRuntime']
 
 /** The route family this half owns on the webserver. */
@@ -281,8 +294,13 @@ const METHODS: Record<string, ApiMethod> = {
 /**
  * Mount the vscode-selection pre-step boundary for every agent.
  * @param ctx - host cordis context.
+ * @param config - the loader-resolved plugin config; every field is a
+ * live volatile reference a settings commit updates in place. The Host
+ * half consumes none of them (every consumer is browser-side, through
+ * the shared config form), so the references are simply held.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: VscodeSidebarPluginConfig): void {
+  void config
   const readFileRange = createFileRangeReader()
   // The listener lives on the agent's scope (the event is agent-scoped), so it
   // registers per created agent and withdraws with it.
@@ -306,15 +324,14 @@ export function apply(ctx: Context): void {
   })
   /* v8 ignore stop */
 
-  // ── The `vscode-sidebar` settings section ──────────────────────────────
-  // The official「插件配置」card tab pairs the namespaces the Host serves
-  // with the browser-registered cards, so this registration is what makes
-  // the plugin's card appear (设置 → 插件 → 插件配置 → VSCode 侧边栏).
-  // Fail-soft: a deployment without a settings provider never serves the
-  // namespace (no card), and the browser half falls back to code defaults.
-  ctx.inject(['settings'], settingsCtx => {
-    installVscodeSidebarSettings(ctx, settingsCtx.get('settings'))
-  })
+  // ── The plugin's configuration ─────────────────────────────────────────
+  // Nothing to register: the settings service derives the
+  // `dsh-sidebar-vscode` section from this entry's `Config` schema (its
+  // volatile fields) by entry id, so the static `Config` export above IS
+  // the registration. The browser half's card edits the section through
+  // the shared `configForms` form; a deployment without a settings
+  // provider simply serves no section (no card), and the browser half
+  // falls back to the code defaults.
 
   // ── Same-origin /vscode reverse proxy ──────────────────────────────────
   // Probe-gated and fail-soft: an unreachable or conflicting upstream only

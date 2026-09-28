@@ -23,9 +23,13 @@
  *   button, and the settings page's「打开配置文件」button rerouted into
  *   the workbench tab, all behind the openAsDefault switch and the open
  *   blocklist;
- * - the configuration card (settingsCard.tsx) inside the official
- *   设置 → 插件 → 插件配置 tab, keyed by the `vscode-sidebar` namespace
- *   the Host half serves.
+ * - the configuration form (settingsCard.tsx) on the official Plugins
+ *   page's two config seats — the bundle's own page
+ *   (`plugins.bundle.config`, keyed by the package name) and the row's
+ *   page (`plugins.row.config`, keyed `<package name>#<row id>`) — both
+ *   mounted while the Host serves the `dsh-sidebar-vscode` namespace
+ *   (the composition entry id, the section the settings service derives
+ *   from the entry's `Config` schema).
  *
  * @module dsh-sidebar-vscode/client
  */
@@ -37,7 +41,7 @@ import { installTakeovers } from './takeovers.ts'
 import { destroyWorkbenchRuntime } from './workbenchRuntime.ts'
 import { ComposerDock } from './composer.tsx'
 import { VscodeSettingsCard } from './settingsCard.tsx'
-import type { SettingsScopeFace } from './settings.ts'
+import type { SettingsFormFace } from './settings.ts'
 import type { SidebarRightLike } from './openIntercept.ts'
 import type { SettingsApiLike } from './settingsTakeover.ts'
 import {
@@ -63,15 +67,20 @@ import { isResourceList, type ClipboardPayload } from './selection.ts'
 import { readActiveComposerSelection, restoreActiveComposerCaret } from './composer.tsx'
 import { VSCODE_SIDEBAR_SETTINGS_NAMESPACE } from '../shared/settings.ts'
 
+/** This bundle's package name — the Plugins page keys a bundle's own
+ * configuration seat by it (spelled here, not read from any manifest:
+ * this bundle must stay self-contained). */
+const PACKAGE_NAME = 'dsh-sidebar-vscode'
+
 /** Services required before mounting: the official right-Sidebar's tab
  * registry and navigation controller, the slot registry (the tab body,
- * the composer dock, and the settings card seats), the locale service,
- * the session registry, the conversation input service, the trigger
- * registry (chip serialization routing), the settings scope (the
- * `vscode-sidebar` namespace), and the connection service (the legacy
- * settings.openDocument seam). */
+ * the composer dock, and the configuration form seats), the locale
+ * service, the session registry, the conversation input service, the
+ * trigger registry (chip serialization routing), the shared config-forms
+ * service (the `dsh-sidebar-vscode` namespace), and the connection
+ * service (the legacy settings.openDocument seam). */
 export const inject = [
-  'sidebarRightTabs', 'sidebarRight', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'settingsScope', 'connection',
+  'sidebarRightTabs', 'sidebarRight', 'slots', 'locale', 'sessions', 'conversation', 'inputTriggers', 'configForms', 'connection',
 ]
 
 /** The structural context face the client body touches. */
@@ -105,9 +114,17 @@ interface ClientContextFace {
   inputTriggers?: {
     registerSource(source: VscodeTriggerSource): () => void
   }
-  /** The official settings-scope binder (`ctx.settingsScope`). */
-  settingsScope?: {
-    bind(spec: { namespace: string }): SettingsScopeFace
+  /** The shared config-forms service (`ctx.configForms`): one form per
+   * Host plugin entry, keyed by the composition entry id (reads ride the
+   * describe mirror; writes are revision-fenced path mutations). */
+  configForms?: {
+    /** The shared form for one Host plugin entry. */
+    get(entryId: string): SettingsFormFace
+    /** Keep a registration alive while the Host serves any namespace. */
+    whileServed(
+      namespaces: readonly string[],
+      register: (served: ReadonlySet<string>) => () => void,
+    ): () => void
   }
   /** The connection service (the legacy settings.openDocument seam's target). */
   connection?: { api?: { settings?: SettingsApiLike } }
@@ -193,7 +210,7 @@ function readComposerPoint(
 /**
  * Client plugin body.
  * @param ctx - the client cordis context (the official sidebar services +
- * slots + locale + sessions + conversation + inputTriggers + settingsScope
+ * slots + locale + sessions + conversation + inputTriggers + configForms
  * + connection).
  */
 export function apply(ctx: unknown): void {
@@ -206,12 +223,12 @@ export function apply(ctx: unknown): void {
   // plugin dispose (HMR, unload) is the one moment that host must go.
   client.effect(() => () => { destroyWorkbenchRuntime() }, 'dsh-sidebar-vscode: workbench runtime teardown')
 
-  // ── The `vscode-sidebar` settings scope ────────────────────────────────
-  // One binding for the whole plugin: the takeover gates read it per call,
-  // the tab body and the settings card read it per render / per write.
-  // An absent settings service (a runtime without one) leaves the scope
-  // undefined and every consumer reads the code defaults.
-  const scope = client.settingsScope?.bind({ namespace: VSCODE_SIDEBAR_SETTINGS_NAMESPACE })
+  // ── The `dsh-sidebar-vscode` config form ───────────────────────────────
+  // One shared form for the whole plugin: the takeover gates read it per
+  // call, the tab body and the configuration form read it per render /
+  // per write. An absent config-forms service (a runtime without one)
+  // leaves the form undefined and every consumer reads the code defaults.
+  const form = client.configForms?.get(VSCODE_SIDEBAR_SETTINGS_NAMESPACE)
 
   // ── The reference pipeline: lander + paster + remover ──────────────────
   // One lander shared by the composer dock (paste fallback) and the tab's
@@ -335,15 +352,15 @@ export function apply(ctx: unknown): void {
     }
   }, 'dsh-sidebar-vscode: vscode tab type')
 
-  // Stage two — the body, keyed by the definition's id. The settings
-  // scope rides the registration's inject; the framework binds
+  // Stage two — the body, keyed by the definition's id. The config form
+  // rides the registration's inject; the framework binds
   // `useTabInfo()` and the session-scoped standard props.
   client.effect(() => {
     const stop = client.slots.inject('sidebar.right.pane.tab', () => client.slots.register({
       name: 'sidebar.right.pane.tab',
       key: VSCODE_ID,
       locale: NS,
-      inject: () => ({ settings: scope }),
+      inject: () => ({ settings: form }),
     }, VscodeView))
     return () => { stop() }
   }, 'dsh-sidebar-vscode: vscode tab body')
@@ -354,24 +371,44 @@ export function apply(ctx: unknown): void {
   // chat/sidebar/settings keep their stock behavior; switch on → the opens
   // land in the workbench tab and its navigation params carry the path.
   client.effect(() => {
-    return installTakeovers(client, scope)
+    return installTakeovers(client, form)
   }, 'dsh-sidebar-vscode: chat + expand + settings open takeover')
 
-  // ── The configuration card (设置 → 插件 → 插件配置) ──────────────────────
-  // Keyed by the settings namespace the Host half serves; the official
-  // configurable-plugins tab dispatches this card under that key. The
-  // card's stylesheet lives as long as the registration.
+  // ── The configuration form (设置 → 插件) ──────────────────────────────────
+  // The Plugins page (dsh ≥ 0.1.7) owns a plugin's configuration and
+  // offers a bundle two seats: the bundle's own form on its package page
+  // (`plugins.bundle.config`, keyed by package name — what the user opens
+  // straight from the plugin list) and one row's page
+  // (`plugins.row.config`, keyed `<package name>#<row id>` — the row's
+  // configure control). This bundle is one plugin with one config, so
+  // BOTH seats inject the SAME card over the SAME shared form: whichever
+  // way the user arrives, the form is on the first page they land on.
+  // The mounts ride `configForms.whileServed`, so a deployment that
+  // never served the `dsh-sidebar-vscode` section shows no trace of the
+  // card. The card's stylesheet lives as long as the registration.
   client.effect(() => {
     const disposeStyles = adoptPluginStyles('settings')
-    const stop = client.slots.inject('settings.plugin.item', () => client.slots.register({
-      name: 'settings.plugin.item',
-      key: VSCODE_SIDEBAR_SETTINGS_NAMESPACE,
-      locale: NS,
-      inject: () => ({ scope }),
-    }, VscodeSettingsCard))
+    const stop = client.configForms?.whileServed([VSCODE_SIDEBAR_SETTINGS_NAMESPACE], () => {
+      const offBundle = client.slots.inject('plugins.bundle.config', () => client.slots.register({
+        name: 'plugins.bundle.config',
+        key: PACKAGE_NAME,
+        locale: NS,
+        inject: () => ({ settings: form }),
+      }, VscodeSettingsCard))
+      const offRow = client.slots.inject('plugins.row.config', () => client.slots.register({
+        name: 'plugins.row.config',
+        key: `${PACKAGE_NAME}#${VSCODE_SIDEBAR_SETTINGS_NAMESPACE}`,
+        locale: NS,
+        inject: () => ({ settings: form }),
+      }, VscodeSettingsCard))
+      return () => {
+        offBundle()
+        offRow()
+      }
+    })
     return () => {
-      stop()
+      stop?.()
       disposeStyles()
     }
-  }, 'dsh-sidebar-vscode: settings card')
+  }, 'dsh-sidebar-vscode: plugins-page config form')
 }

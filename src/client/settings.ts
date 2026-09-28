@@ -1,16 +1,18 @@
 /**
- * The `vscode-sidebar` settings read side: one typed window over the
- * official settings scope, plus the numeric capture-cap contract the
- * settings card and the reference pipeline share.
+ * The `dsh-sidebar-vscode` configuration read side: one typed window
+ * over the shared config form, plus the numeric capture-cap contract the
+ * configuration card and the reference pipeline share.
  *
- * The settings live in the Host-served user-settings document (namespace
- * `vscode-sidebar`; the Host half registers it — `src/settingsSection.ts`)
- * and reach the browser through `ctx.settingsScope.bind`. The card
- * (`settingsCard.tsx`) edits them there; the tab body and the takeover
- * gates read them per render / per call, so edits apply to the very next
- * interaction with no re-wiring.
+ * The settings live in the Host-served profile composition, keyed by
+ * this plugin's composition entry id (`dsh-sidebar-vscode` — the section
+ * the Host's settings service derives from the entry's `Config` schema)
+ * and reach the browser through `ctx.configForms.get` (the shared form:
+ * reads ride the describe mirror, writes are revision-fenced path
+ * mutations). The card (`settingsCard.tsx`) edits them there; the tab
+ * body and the takeover gates read them per render / per call, so edits
+ * apply to the very next interaction with no re-wiring.
  *
- * Fail-soft by construction: a scope that has not answered yet (or a
+ * Fail-soft by construction: a form that has not answered yet (or a
  * deployment serving no settings provider) reads as the composition base
  * — the same values the Host would resolve for an all-unset section — so
  * every consumer keeps working with the code defaults.
@@ -96,48 +98,58 @@ export function commitCap(raw: string, effective: number, min: number, max: numb
   return clamped === effective ? null : clamped
 }
 
-/** The settings scope's snapshot (structural over `SettingsScopeSnapshot<T>`). */
-export interface SettingsScopeSnapshot {
+/** The config form's snapshot (structural over `ConfigFormSnapshot<T>`). */
+export interface SettingsFormSnapshot {
   /** `loading` until the first accepted section; `unavailable` when not served. */
   readonly status: 'loading' | 'ready' | 'unavailable'
   /** Last accepted schema-resolved section; undefined before the first acceptance. */
   readonly value: VscodeSidebarSettings | undefined
+  /** Raw user layer as stored; a field's PRESENCE here marks it overridden. */
+  readonly user?: unknown
   /** Whether the Host document accepts writes (memory mode does not). */
   readonly writable: boolean
 }
 
 /**
- * The settings scope face this plugin touches — structural over the
- * official `SettingsScope<VscodeSidebarSettings>` (bind of
- * `ctx.settingsScope`), so the client bundle stays free of official-package
- * value imports while keeping the exact shapes the service serves.
+ * The config form face this plugin touches — structural over the shared
+ * `ConfigForm<VscodeSidebarSettings>` (`ctx.configForms.get`, keyed by
+ * the composition entry id), so the client bundle stays free of
+ * official-package value imports while keeping the exact shapes the
+ * service serves.
  */
-export interface SettingsScopeFace {
-  getSnapshot(): SettingsScopeSnapshot
+export interface SettingsFormFace {
+  getSnapshot(): SettingsFormSnapshot
   subscribe(listener: () => void): () => void
-  /** Queue one field write (JSON-shaped value selected by the user). */
-  set(field: string, value: unknown): Promise<void>
-  /** Queue one field clear, so the field re-inherits the composition base. */
-  unset(field: string): Promise<void>
+  /**
+   * Queue one field write (JSON-shaped value selected by the user).
+   * @returns whether the Host accepted the write (a refusal reloads
+   * Host state through the form itself).
+   */
+  set(field: string, value: unknown): Promise<boolean>
+  /**
+   * Queue one field clear, so the field re-inherits the composition base.
+   * @returns whether the Host accepted the clear.
+   */
+  unset(field: string): Promise<boolean>
 }
 
 /**
- * The effective settings: the scope's accepted section once ready, else
+ * The effective settings: the form's accepted section once ready, else
  * the composition base (the code defaults — a not-yet-answered or absent
  * provider must degrade, never break).
  */
-export function readSettings(scope: SettingsScopeFace | undefined): VscodeSidebarSettings {
-  const value = scope?.getSnapshot().value
+export function readSettings(form: SettingsFormFace | undefined): VscodeSidebarSettings {
+  const value = form?.getSnapshot().value
   if (value === undefined || typeof value !== 'object') return VSCODE_SIDEBAR_SETTINGS_BASE
   return value
 }
 
 /**
  * Whether the file-open takeovers may act right now: the
- * `openAsDefault` switch resolved from the live scope.
+ * `openAsDefault` switch resolved from the live form.
  */
-export function takeoverSwitchOn(scope: SettingsScopeFace | undefined): boolean {
-  return readSettings(scope).openAsDefault === true
+export function takeoverSwitchOn(form: SettingsFormFace | undefined): boolean {
+  return readSettings(form).openAsDefault === true
 }
 
 /**
@@ -160,42 +172,42 @@ export function readSettingCaps(values: VscodeSidebarSettings): { maxLines: numb
  * while the raw user layer carries the field, `false` while it reverts to
  * the composition base.
  */
-export function readUserLayer(scope: SettingsScopeFace | undefined): Readonly<Record<string, unknown>> {
-  const raw = (scope?.getSnapshot() as { user?: unknown } | undefined)?.user
+export function readUserLayer(form: SettingsFormFace | undefined): Readonly<Record<string, unknown>> {
+  const raw = (form?.getSnapshot() as { user?: unknown } | undefined)?.user
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
   return raw as Record<string, unknown>
 }
 
-/** The subscribe/read pair `useSyncExternalStore` needs over one scope. */
-function subscribeOf(scope: SettingsScopeFace): (listener: () => void) => () => void {
-  return listener => scope.subscribe(listener)
+/** The subscribe/read pair `useSyncExternalStore` needs over one form. */
+function subscribeOf(form: SettingsFormFace): (listener: () => void) => () => void {
+  return listener => form.subscribe(listener)
 }
 
-/** The loading-scope snapshot stand-in (base fallback, not writable). */
-const LOADING_SNAPSHOT: SettingsScopeSnapshot = { status: 'loading', value: undefined, writable: false }
+/** The loading-form snapshot stand-in (base fallback, not writable). */
+const LOADING_SNAPSHOT: SettingsFormSnapshot = { status: 'loading', value: undefined, writable: false }
 
 /**
- * React binding over one settings scope's RAW snapshot: re-renders on
- * every snapshot replacement. A scope that is absent (tests, a runtime
+ * React binding over one config form's RAW snapshot: re-renders on
+ * every snapshot replacement. A form that is absent (tests, a runtime
  * without the settings service) reads as eternally loading.
- * @param scope - the bound settings scope (stable identity assumed).
- * @returns the scope's current snapshot.
+ * @param form - the shared config form (stable identity assumed).
+ * @returns the form's current snapshot.
  */
-export function useSettingsSnapshot(scope: SettingsScopeFace | undefined): SettingsScopeSnapshot {
+export function useSettingsSnapshot(form: SettingsFormFace | undefined): SettingsFormSnapshot {
   return useSyncExternalStore(
-    scope === undefined ? () => () => {} : subscribeOf(scope),
-    () => scope?.getSnapshot() ?? LOADING_SNAPSHOT,
-    () => scope?.getSnapshot() ?? LOADING_SNAPSHOT,
+    form === undefined ? () => () => {} : subscribeOf(form),
+    () => form?.getSnapshot() ?? LOADING_SNAPSHOT,
+    () => form?.getSnapshot() ?? LOADING_SNAPSHOT,
   )
 }
 
 /**
- * React binding over one settings scope's VALUES: the accepted section
+ * React binding over one config form's VALUES: the accepted section
  * once ready, else the composition base (the code defaults — a
  * not-yet-answered or absent provider must degrade, never break).
- * @param scope - the bound settings scope (stable identity assumed).
+ * @param form - the shared config form (stable identity assumed).
  * @returns the effective settings for the current snapshot.
  */
-export function useSettings(scope: SettingsScopeFace | undefined): VscodeSidebarSettings {
-  return useSettingsSnapshot(scope).value ?? VSCODE_SIDEBAR_SETTINGS_BASE
+export function useSettings(form: SettingsFormFace | undefined): VscodeSidebarSettings {
+  return useSettingsSnapshot(form).value ?? VSCODE_SIDEBAR_SETTINGS_BASE
 }

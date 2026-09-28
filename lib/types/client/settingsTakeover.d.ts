@@ -6,18 +6,20 @@
  * click lands the configuration file inside the embedded VS Code instead of
  * the Host OS opener.
  *
- * Why this seam exists: the stock button asks the Host to hand
- * `$DSH_HOME/settings.yaml` to the platform opener (macOS: a text editor;
- * Linux: the desktop file association — `spawn xdg-open ENOENT` on the
- * headless containers DSH typically runs in). The method's contract
- * deliberately carries no path, so the browser cannot choose a Host target;
+ * Why this seam exists: the stock button asks the Host to hand the
+ * settings document (`$DSH_HOME/settings.yaml` in the old runtime; the
+ * active profile patch since the composition-based settings system) to
+ * the platform opener (macOS: a text editor; Linux: the desktop file
+ * association — `spawn xdg-open ENOENT` on the headless containers DSH
+ * typically runs in). The method's contract deliberately carries no
+ * path, so the browser cannot choose a Host target;
  * this plugin instead resolves the document through its OWN fenced node-half
  * route (`settings.document`, see src/client/openChannelApi.ts) and reroutes
  * the open exactly like the chat-side seam (openIntercept.ts):
  * `sidebarRight.openTab('vscode', { params: { path } })` — the official
  * sidebar reveals the workbench tab and hands it the navigation. An absolute
  * path needs no mapping-rule match (mapPathForOpen passes unmatched paths
- * through), so the home-side settings.yaml opens as-is in the default
+ * through), so the home-side document opens as-is in the default
  * same-container topology.
  *
  * Fail-soft by construction: the wrapper declines (gate off, settings

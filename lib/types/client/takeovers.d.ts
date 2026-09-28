@@ -30,10 +30,10 @@
  * Cross-cutting wiring that lives HERE so no seam carries its own copy:
  *
  * - the gate: `takeoverEnabled` = the `openAsDefault` switch resolved from
- *   the live settings scope (evaluated per call, so flipping the switch
+ *   the live config form (evaluated per call, so flipping the switch
  *   applies to the very next click);
  * - the open blocklist (`openBlocklist.ts`), read per call from the same
- *   scope: a file type the code editor renders poorly (Office/image/PDF …)
+ *   form: a file type the code editor renders poorly (Office/image/PDF …)
  *   declines the VSCode reroute and falls through to the official
  *   sidebar's own viewer surface;
  * - session addressing: the session-scope address translation resolves
@@ -41,7 +41,7 @@
  *
  * @module dsh-sidebar-vscode/client/takeovers
  */
-import { type SettingsScopeFace } from './settings.ts';
+import { type SettingsFormFace } from './settings.ts';
 import { type SidebarRightLike } from './openIntercept.ts';
 import { type SettingsApiLike } from './settingsTakeover.ts';
 /** The sessions slice the session-scope translation reads. */
@@ -85,10 +85,10 @@ export interface TakeoverClientFace {
  * does not provide its service.
  *
  * @param client - the client context face (sidebarRight, sessions, era services).
- * @param scope - the bound `vscode-sidebar` settings scope (live reads;
+ * @param form - the shared `dsh-sidebar-vscode` config form (live reads;
  * undefined = no settings service, every read falls back to the code
  * defaults — the switch reads off, so every seam declines).
  * @returns the disposer unwinding every installed seam (HMR-safe).
  */
-export declare function installTakeovers(client: TakeoverClientFace, scope: SettingsScopeFace | undefined): () => void;
+export declare function installTakeovers(client: TakeoverClientFace, form: SettingsFormFace | undefined): () => void;
 export {};

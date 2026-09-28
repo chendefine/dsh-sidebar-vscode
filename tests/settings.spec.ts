@@ -115,9 +115,9 @@ describe('commitCap', () => {
   })
 })
 
-// ---- the `vscode-sidebar` settings scope model (the read side) ----
+// ---- the `dsh-sidebar-vscode` config form model (the read side) ----
 
-import type { SettingsScopeFace } from '../src/client/settings.ts'
+import type { SettingsFormFace } from '../src/client/settings.ts'
 const {
   readSettingCaps,
   readSettings,
@@ -126,30 +126,30 @@ const {
 } = await import('../src/client/settings.ts')
 
 describe('readSettings / takeoverSwitchOn / readSettingCaps', () => {
-  /** A scope fake over a plain snapshot value. */
-  function scopeOf(value: unknown, user?: unknown): SettingsScopeFace {
+  /** A config-form fake over a plain snapshot value. */
+  function formOf(value: unknown, user?: unknown): SettingsFormFace {
     return {
       getSnapshot: () => ({ status: 'ready', value, writable: true, ...(user !== undefined ? { user } : {}) }),
       subscribe: () => () => {},
-      set: async () => {},
-      unset: async () => {},
-    } as unknown as SettingsScopeFace
+      set: async () => true,
+      unset: async () => true,
+    } as unknown as SettingsFormFace
   }
 
-  it('reads the accepted section once the scope is ready', () => {
-    const scope = scopeOf({ openAsDefault: true, serverUrl: 'http://x:8000' })
-    expect(readSettings(scope)).toMatchObject({ openAsDefault: true, serverUrl: 'http://x:8000' })
-    expect(takeoverSwitchOn(scope)).toBe(true)
+  it('reads the accepted section once the form is ready', () => {
+    const form = formOf({ openAsDefault: true, serverUrl: 'http://x:8000' })
+    expect(readSettings(form)).toMatchObject({ openAsDefault: true, serverUrl: 'http://x:8000' })
+    expect(takeoverSwitchOn(form)).toBe(true)
   })
 
-  it('falls back to the composition base for a loading or absent scope', async () => {
+  it('falls back to the composition base for a loading or absent form', async () => {
     const { VSCODE_SIDEBAR_SETTINGS_BASE } = await import('../src/shared/settings.ts')
-    const loading: SettingsScopeFace = {
+    const loading: SettingsFormFace = {
       getSnapshot: () => ({ status: 'loading', value: undefined, writable: false }),
       subscribe: () => () => {},
-      set: async () => {},
-      unset: async () => {},
-    } as unknown as SettingsScopeFace
+      set: async () => true,
+      unset: async () => true,
+    } as unknown as SettingsFormFace
     expect(readSettings(loading)).toBe(VSCODE_SIDEBAR_SETTINGS_BASE)
     expect(readSettings(undefined)).toBe(VSCODE_SIDEBAR_SETTINGS_BASE)
     expect(takeoverSwitchOn(undefined)).toBe(false)
@@ -158,7 +158,7 @@ describe('readSettings / takeoverSwitchOn / readSettingCaps', () => {
 
   it('reads the caps with defensive re-defaulting', () => {
     expect(readSettingCaps(readSettings(undefined))).toEqual({ maxLines: 200, maxBytes: 20000 })
-    expect(readSettingCaps(readSettings(scopeOf({ maxLines: 80, maxBytes: 5000 })))).toEqual({
+    expect(readSettingCaps(readSettings(formOf({ maxLines: 80, maxBytes: 5000 })))).toEqual({
       maxLines: 80, maxBytes: 5000,
     })
     expect(readSettingCaps({ maxLines: Number.NaN, maxBytes: -1 } as never)).toEqual({
@@ -167,8 +167,8 @@ describe('readSettings / takeoverSwitchOn / readSettingCaps', () => {
   })
 
   it('surfaces the user layer for the card\'s reset affordance', () => {
-    expect(readUserLayer(scopeOf({}, { serverUrl: 'x' }))).toEqual({ serverUrl: 'x' })
+    expect(readUserLayer(formOf({}, { serverUrl: 'x' }))).toEqual({ serverUrl: 'x' })
     expect(readUserLayer(undefined)).toEqual({})
-    expect(readUserLayer(scopeOf({}, null))).toEqual({})
+    expect(readUserLayer(formOf({}, null))).toEqual({})
   })
 })

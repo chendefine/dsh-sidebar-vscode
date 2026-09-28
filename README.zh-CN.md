@@ -2,7 +2,7 @@
 
 [English](./README.md) · [npm](https://www.npmjs.com/package/dsh-sidebar-vscode) · [GitHub](https://github.com/chendefine/dsh-sidebar-vscode)
 
-为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）**官方右侧边栏**注册一个内嵌 **VS Code 网页版** 的标签类型（`ctx.sidebarRightTabs` + `@deepseek-ai/dsh-client-ui-sidebar-right` 的 `sidebar.right.pane.tab` 席位），并把编辑器选区 / 资源管理器文件变成对话输入框里的**原子引用 chip**——提交时由 host 半展开为紧随引用消息之后的模型上下文。用户设置位于官方插件配置卡片：设置 → 插件 → 插件配置 → **VSCode 侧边栏**。
+为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）**官方右侧边栏**注册一个内嵌 **VS Code 网页版** 的标签类型（`ctx.sidebarRightTabs` + `@deepseek-ai/dsh-client-ui-sidebar-right` 的 `sidebar.right.pane.tab` 席位），并把编辑器选区 / 资源管理器文件变成对话输入框里的**原子引用 chip**——提交时由 host 半展开为紧随引用消息之后的模型上下文。用户设置由插件入口的 volatile `Config` schema 派生，在官方插件页编辑：设置 → 插件 → **dsh-sidebar-vscode 的配置区**。
 
 ![npm](https://img.shields.io/npm/v/dsh-sidebar-vscode) ![license](https://img.shields.io/npm/l/dsh-sidebar-vscode) ![node](https://img.shields.io/node/v/dsh-sidebar-vscode) ![CI](https://img.shields.io/github/actions/workflow/status/chendefine/dsh-sidebar-vscode/ci.yml) ![stars](https://img.shields.io/github/stars/chendefine/dsh-sidebar-vscode)
 
@@ -24,10 +24,10 @@
 
 - 包名：[dsh-sidebar-vscode（npm）](https://www.npmjs.com/package/dsh-sidebar-vscode)
 - 源码：[chendefine/dsh-sidebar-vscode（GitHub）](https://github.com/chendefine/dsh-sidebar-vscode)
-- 版本：0.3.2
+- 版本：0.3.3
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：511 例全部通过（24 个规格文件）
+- 测试：522 例全部通过（28 个规格文件）
 
 ## 功能简介
 
@@ -73,7 +73,7 @@
 
 ### 前提
 
-- Web 应用带官方右侧边栏的 DSH 宿主（`@deepseek-ai/dsh-client-ui-sidebar-right`；`sidebarRightTabs` / `sidebarRight` / `settingsScope` 服务自 0.1.5-alpha.1 起存在——会话头部的「展开侧栏」按钮即标志）。缺席时客户端 fiber 静默等待、什么都不注册；
+- Web 应用带官方右侧边栏的 DSH 宿主（`@deepseek-ai/dsh-client-ui-sidebar-right`；`sidebarRightTabs` / `sidebarRight` 服务自 0.1.5-alpha.1 起存在，`configForms` 服务自 0.1.7 起存在——会话头部的「展开侧栏」按钮即标志）。缺席时客户端 fiber 静默等待、什么都不注册；
 - 一个浏览器可达的 `code serve-web` 实例。接入形态按部署环境任选：
   1. **内置反代（默认，Windows / 局域网直跑 `dsh web` 首选）**——`serverUrl` 留空即默认 `http://127.0.0.1:8000`（本机裸启动 `code serve-web` 的完整地址），或直填 serve-web 输出的任意完整地址（可含基路径与 `?tkn=` 令牌）。地址经 `/sidebar-vscode/api/proxy.config` 推给宿主半，在 `dsh web` 自己监听的端口上挂载为**同源 `/sidebar/vscode/`**（HTTP 透传 + WebSocket 管道 + 令牌自动附加），零 nginx、零启动参数：
      ```sh
@@ -179,7 +179,7 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 
 ### 设置
 
-设置位于官方插件配置卡片——**设置 → 插件 → 插件配置 → VSCode 侧边栏**：宿主半注册 `vscode-sidebar` 设置命名空间（`ctx.settings.installSection`），浏览器半注册按其键位的 `settings.plugin.item` 卡片，每行经 `ctx.settingsScope` 提交（`set`/`unset`；卡片头部的「恢复默认」逐字段清除用户层，各自回到组合基线）。**不在 cordis.patch.yml**（下表的 `pathMap` 由同一命名空间伺服，但刻意不设卡片行）：
+设置由插件入口的 **volatile `Config` schema**（`src/config.ts`）派生，在官方插件页编辑——**设置 → 插件 → dsh-sidebar-vscode 的配置区**（插件包页面里描述与行之间的配置表单）或该行的配置入口：设置服务按组合入口 id `dsh-sidebar-vscode` 键派生配置节，浏览器半把同一张卡片注册进插件页提供的两个席位（`plugins.bundle.config` 按包名键、`plugins.row.config` 按 `<包名>#<行 id>` 键，均在宿主伺服该节期间挂载），每行经共享配置表单（`ctx.configForms`）提交（`set`/`unset`；底部的「恢复默认」逐字段清除用户层，各自回到组合基线——出厂基线随 `cordis.patch.yml` 携带）。**无需手工注册任何命名空间**（下表的 `pathMap` 由同一节伺服，但刻意不设卡片行）：
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -239,7 +239,7 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 
 - `workbenchRuntime.ts` 持有页面级单例——一个一次性挂到 `document.body` 的宿主 `div`，iframe 在首次获准加载时创建于其中，销毁时才移除。全部启动门控控制器（boot lock、boot gate、焦点围栏、打开通道 opener、剪贴板桥）都住进运行时，状态因此活过标签正文的挂载周期。视图（`VscodeView.tsx`）只渲染占位符与外壳，向运行时喂解析后的输入，并按 `${sessionId}:${tabId}` 采纳它；
 - `projection.ts` 把宿主盒子粘在占位矩形上——可见期间每动画帧一次 `getBoundingClientRect` 读 + 一次样式写，投影帧因此能跟上面板滑动、拖宽手柄、全屏切换与浮窗拖动而无需移动 iframe。层叠策略：停靠 / 全屏 45（高于全屏面板的 40、低于浮窗宿主的 60），占位符浮出时 61（高于浮层、低于 70 的菜单）。隐藏时以 `visibility` 保留最后矩形——宿主归零会逼 VS Code 在每次隐藏/显示周期里重排布局；
-- 防泄漏纪律：每页最多一个活工作台（basis 变化——换工作区、改设置——原地重载，绝不出现第二个实例；boot lock 存在的意义正是防止两个同源并发启动把 VS Code 的 IndexedDB 死锁）；运行活过正文卸载，在**最后一个**采纳标签记录消失时销毁（框架在记录移除时 abort 的 tab signal），插件卸载时也销毁（client 入口 teardown 里的 `destroyWorkbenchRuntime()`）。两个 pane 可同时持有同 kind——最后挂载者拥有投影，其释放时回退到前一个 pane 的占位符而非留白。
+- 防泄漏纪律：每页最多一个活工作台（basis 变化——换工作区、改设置——原地重载，绝不出现第二个实例；boot lock 存在的意义正是防止两个同源并发启动把 VS Code 的 IndexedDB 死锁）；运行活过正文卸载，在**最后一个**采纳标签记录消失时销毁（框架在记录移除时 abort 的 tab signal），插件卸载时也销毁（client 入口 teardown 里的 `destroyWorkbenchRuntime()`）——经 signal abort 自毁的运行时会**自行让出单例槽位**，下一次 adopt（重新打开的标签）铸造全新工作台，而不是拿到方法全部 no-op、宿主永不回归的死句柄。两个 pane 可同时持有同 kind——最后挂载者拥有投影，其释放时回退到前一个 pane 的占位符而非留白。
 
 对旧防护所针对的重载路径的影响：同 pane 切标签、面板收起/展开、同工作区切换会话，现在**都不再重载**（帧在后台继续运行——连启动都会在后台完成）；原地重载只剩：工作区 / `serverUrl` / `pathMap` 变化、降级通道 payload、手动刷新按钮——恰好是启动门 nonce 轮换与账本对账仍然发挥作用的场合。重挂载后的瞬时 base 重解析也绝不拆掉活帧——运行时持有上一个已解析 base，直到出现不同的解析结果。
 
@@ -308,9 +308,9 @@ DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因�
 
 ```
 src/shared/protocol.ts         # 协议平面：跨进程边界的全部常量（信封标记、代理挂载路径、spool 文件名、能力版本、TTL、工作区 slug）——纯模块，host+client 原样引用
-src/index.ts                   # host 半入口：agent/created → pre-step 边界挂载 + /sidebar-vscode/api 围栏路由（一张方法表分发）+ `vscode-sidebar` 设置段注册（inject: agents, webServer, webRuntime；嵌套 settings）
-src/settingsSection.ts         # `vscode-sidebar` 设置段：schema + installSection（5 测试）
-src/shared/settings.ts         # 两半共享的设置模型：命名空间、类型、组合基线
+src/index.ts                   # host 半入口：agent/created → pre-step 边界挂载 + /sidebar-vscode/api 围栏路由（一张方法表分发）+ 静态 Config 导出（inject: agents, webServer, webRuntime）
+src/config.ts                  # 插件的 volatile Config schema——设置服务由此派生 `dsh-sidebar-vscode` 配置节（7 测试）
+src/shared/settings.ts         # 两半共享的设置模型：入口 id 命名空间、类型、组合基线
 src/vscodeProxy.ts             # host 半：/sidebar/vscode 同源反代（HTTP 透传 + WS upgrade 管道 + 路径/令牌改写 + configure 通道）（41 测试）
 src/mention.ts                 # host 半核心：解析改写/去重/新鲜度/<text-selection> 等注入（38 测试）
 src/mentionCodec.ts            # 共享纯逻辑：两种 scheme 规范 URI 编解码/截断/哈希归一（42 测试）
@@ -334,8 +334,8 @@ src/client/references.ts       # 载荷→chip（选区/资源）/光标处插�
 src/client/referencePipeline.ts # 插件体、标签页、dock 三方共享的 lander/选项句柄表
 src/client/selection.ts        # 剪贴板信封编解码（选区 + 资源两种 payload）（16 测试）
 src/client/paths.ts            # pathMap 解析/映射/反向映射、URL 构建（34 测试）
-src/client/settings.ts         # `vscode-sidebar` 设置读取（scope 快照 + 基线回退）+ 截断上限契约（默认/边界/提交助手）（18 测试）
-src/client/settingsCard.tsx    # 官方插件配置卡片（settings.plugin.item）：卡片外壳 + 恢复默认 + 开关行 + 黑名单 tag 行 + 文本行 + 数值行（样式走 styles.ts）
+src/client/settings.ts         # `dsh-sidebar-vscode` 配置表单读取（快照 + 基线回退）+ 截断上限契约（默认/边界/提交助手）（18 测试）
+src/client/settingsCard.tsx    # 插件页配置表单（plugins.bundle.config / plugins.row.config）：表单体 + 恢复默认 + 开关行 + 黑名单 tag 行 + 文本行 + 数值行（样式走 styles.ts）
 src/client/openBlocklist.ts    # 「不由 VSCode 打开」后缀表：默认值 / 归一化 / 基名后缀匹配（24 测试）
 src/client/settingsTakeover.ts # 设置页「打开配置文件」接管：两个时代包装器共用一个决策核 + 设置弹框关闭（17 测试）
 src/client/openIntercept.ts    # 官方 openResource 接管：本地 file 地址解析器 + wrapSidebarRightOpenResource（门/黑名单放行/params 翻译）（22 测试）

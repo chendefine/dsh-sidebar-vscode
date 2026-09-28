@@ -33,7 +33,7 @@
  * @module dsh-sidebar-vscode/client/openBlocklist
  */
 
-import { readSettings, type SettingsScopeFace } from './settings.ts'
+import { readSettings, type SettingsFormFace } from './settings.ts'
 
 /** The settings field the blocklist persists under (kept as the test handle). */
 export const OPEN_BLOCKLIST_KEY = 'openBlocklist'
@@ -128,15 +128,15 @@ export function blocklistSuggestions(current: readonly string[]): readonly strin
   return BLOCKLIST_SUGGESTIONS.filter(entry => !listed.has(entry))
 }
 
-/** The minimal settings-scope face the settings read needs (mirrors settings.ts). */
-type ScopeLike = SettingsScopeFace | undefined
+/** The minimal config-form face the settings read needs (mirrors settings.ts). */
+type FormLike = SettingsFormFace | undefined
 
 /**
  * The effective blocklist for one open decision: the resolved
- * `vscode-sidebar` section's `openBlocklist` value parsed per call
- * (absent scope = the code default, matching readSettings's
+ * `dsh-sidebar-vscode` section's `openBlocklist` value parsed per call
+ * (absent form = the code default, matching readSettings's
  * base-fallback contract).
  */
-export function readOpenBlocklist(scope: ScopeLike): readonly string[] {
-  return parseOpenBlocklist(readSettings(scope).openBlocklist)
+export function readOpenBlocklist(form: FormLike): readonly string[] {
+  return parseOpenBlocklist(readSettings(form).openBlocklist)
 }

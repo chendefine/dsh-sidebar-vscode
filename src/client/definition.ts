@@ -42,6 +42,8 @@ export interface VscodeTabParams {
 
 /** One guide entry box (structural over the official `SidebarRightGuideEntry`). */
 export interface VscodeGuideEntry {
+  /** Stable entry identity within this provider (the official entry key). */
+  readonly id: string
   readonly order: number
   readonly title: () => string
   readonly description: () => string
@@ -72,6 +74,9 @@ export function vscodeTabDefinition(): VscodeTabDefinition {
     // label is the product name either way.
     title: () => t('title'),
     guide: [{
+      // The entry's stable identity within this provider (the official
+      // contract's key; the terminal's own entry ships `id: 'new'`).
+      id: 'workbench',
       // After the official files entry (order 10): the code editor
       // follows the workspace it edits.
       order: 20,
