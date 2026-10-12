@@ -10,7 +10,7 @@
  * @module dsh-sidebar-vscode/tests/vscodeProxy.spec
  */
 
-import { createServer, globalAgent } from 'node:http'
+import { createServer, get as httpGet, globalAgent } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { connect as tcpConnect } from 'node:net'
@@ -189,6 +189,12 @@ function makeContext(face: ReturnType<typeof makeWebServerFace>) {
       if (typeof stop === 'function') disposers.push(stop)
       return () => {}
     },
+    /** Scoped service injection double (bindFenceAuthorities): no authority
+     * service ever exists in this harness, so no callback ever fires — the
+     * fence stays loopback(+bind)-only, the fail-closed default. */
+    inject(_dependencies: readonly string[], _callback: (scoped: unknown) => void): unknown {
+      return undefined
+    },
     logger: { info: vi.fn(), warn: vi.fn() },
     webServer: face.webServer,
     disposers,
@@ -232,6 +238,26 @@ async function startFront(face: ReturnType<typeof makeWebServerFace>): Promise<{
         destroyUpgraded() { for (const socket of upgraded) socket.destroy() },
       })
     })
+  })
+}
+
+/** One plain GET with a forged Host header (fetch refuses to set Host);
+ * resolves the status, headers, and body. */
+function rawGet(port: number, path: string, host: string): Promise<{ status: number, headers: Headers, body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpGet(`http://127.0.0.1:${port}${path}`, { headers: { host } }, (response) => {
+      const chunks: Buffer[] = []
+      response.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+      response.on('end', () => {
+        const headers = new Headers()
+        for (const [name, value] of Object.entries(response.headers)) {
+          if (typeof value === 'string') headers.set(name, value)
+          else if (Array.isArray(value)) headers.set(name, value.join(', '))
+        }
+        resolve({ status: response.statusCode ?? 0, headers, body: Buffer.concat(chunks).toString('utf8') })
+      })
+    })
+    request.on('error', reject)
   })
 }
 
@@ -409,6 +435,26 @@ describe('env-mode proxy end-to-end (canonical /vscode upstream)', () => {
     })
     expect(response.status).toBe(200)
     expect(await response.text()).toBe('path=/vscode/echo?x=1 body=hello-upstream')
+  })
+
+  it('serves a bind-literal deployment the way the 0.2.1 /api fence does', async () => {
+    const handle = createVscodeProxy(ctx)
+    await handle.ready
+    // A `--host 10.0.0.7` deployment: the browser dials the bind literal, so
+    // Host names it. fetch cannot forge Host; a raw request can. The fence
+    // reads the carrier face per request, so the property can be toggled
+    // live on this shared fixture.
+    const carrier = ctx.webServer as { host?: string }
+    carrier.host = '10.0.0.7'
+    const served = await rawGet(front.port, '/sidebar/vscode/', `10.0.0.7:${front.port}`)
+    expect(served.status).toBe(200)
+    // Transparent Host forwarding still holds on the accepted leg.
+    expect(served.headers.get('x-proxied-host')).toBe(`10.0.0.7:${front.port}`)
+    // Without the bind literal on the carrier (the ≤0.2.0 face), the same
+    // request falls back to loopback+trustedHosts and refuses.
+    delete carrier.host
+    const refused = await rawGet(front.port, '/sidebar/vscode/', `10.0.0.7:${front.port}`)
+    expect(refused.status).toBe(403)
   })
 
   it('claims nothing while the upstream is silent', async () => {

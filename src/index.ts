@@ -61,7 +61,7 @@ import {
   writeUserInteract,
 } from './openChannel.ts'
 import { NONCE_MAX_LENGTH } from './shared/protocol.ts'
-import { isTrustedApiRequest } from './trust-fence.ts'
+import { bindFenceAuthorities, isTrustedApiRequest } from './trust-fence.ts'
 import {
   createVscodeProxy,
   parseUpstreamUrl,
@@ -83,11 +83,17 @@ export { Config } from './config.ts'
 export type { VscodeSidebarPluginConfig } from './config.ts'
 
 /** Services required before load: the agent registry (agent/created
- * events), the webserver (command-channel routes), and the web runtime
- * (the trust fence's live trustedHosts). The settings section needs no
- * inject: the host's settings service derives it from this entry's
- * `Config` schema by entry id. */
-export const inject = ['agents', 'webServer', 'webRuntime']
+ * events) and the webserver (command-channel routes). The trust fence's
+ * trustedHosts are bound through scoped ctx.inject callbacks (see
+ * bindFenceAuthorities in trust-fence.ts): dsh ≤0.2.0 provides
+ * `webRuntime`, 0.2.1-alpha.2 removed that service and moved the
+ * authorities to `webStartup` — cordis forbids reading a service the
+ * plugin does not inject (`cannot get property … without inject`), so
+ * neither may be a static inject either, or the plugin strands as
+ * pending forever on the other dsh generation. The settings section
+ * needs no inject: the host's settings service derives it from this
+ * entry's `Config` schema by entry id. */
+export const inject = ['agents', 'webServer']
 
 /** The route family this half owns on the webserver. */
 const API_PREFIX = '/sidebar-vscode/api/'
@@ -126,8 +132,19 @@ interface HostContextFace {
       path: string
       handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void
     }): () => void
+    /** The listener's own bind literal (dsh ≥0.1.x webServer Config['host']):
+     * the fence accepts a browser dialing it on any port, exactly like the
+     * 0.2.1 /api fence. Optional: an older face without it stays loopback +
+     * trustedHosts only. */
+    readonly host?: string
+    /** The listener's protocol ('https:' under native TLS, dsh ≥0.2.1):
+     * default-port normalization in the fence follows it. */
+    readonly protocol?: 'http:' | 'https:'
   }
-  webRuntime: { trustedHosts: readonly string[] }
+  /** Scoped service injection, the only sanctioned service read (see
+   * bindFenceAuthorities): direct ctx.<service> access throws when the
+   * plugin does not statically inject that service. */
+  inject(dependencies: readonly string[], callback: (scoped: unknown) => void): unknown
   /** The settings provider face this plugin reads (prepareDocument only). */
   get(name: 'settings'): { prepareDocument(): Promise<string | undefined> } | undefined
 }
@@ -343,13 +360,15 @@ export function apply(ctx: Context, config: VscodeSidebarPluginConfig): void {
 
   // ── The fenced route family (method-table dispatch) ────────────────────
   // Fenced like every other plugin route (browser-trust fence over the
-  // live trustedHosts); a cross-site page cannot reach them.
+  // live trustedHosts plus the listener's own bind address and protocol);
+  // a cross-site page cannot reach them.
   const host = ctx as unknown as HostContextFace
+  const fenceTrustedHosts = bindFenceAuthorities(host)
   ctx.effect(() => host.webServer.register({
     kind: 'prefix',
     path: '/sidebar-vscode/api',
     handler: async (req, res) => {
-      if (!isTrustedApiRequest(req, host.webRuntime.trustedHosts)) {
+      if (!isTrustedApiRequest(req, fenceTrustedHosts(), host.webServer.host, host.webServer.protocol)) {
         writeJson(res, 403, errorBody('forbidden', 'forbidden'))
         return
       }

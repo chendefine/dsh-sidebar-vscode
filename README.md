@@ -317,14 +317,14 @@ The codebase is layered by domain — a **shared protocol plane** every runtime 
 
 ```
 src/shared/protocol.ts         # THE protocol plane: every constant that crosses a process boundary (envelope marker, proxy mount, spool file names, capability versions, TTLs, the workspace slug) — pure, host+client import it verbatim
-src/index.ts                   # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes behind one METHOD TABLE + the static Config export (inject: agents, webServer, webRuntime)
+src/index.ts                   # host-half entry: agent/created → pre-step boundary + fenced /sidebar-vscode/api routes behind one METHOD TABLE + the static Config export (inject: agents, webServer; trustedHosts bound via scoped ctx.inject: webRuntime ≤0.2.0 / webStartup ≥0.2.1)
 src/config.ts                  # the plugin's volatile Config schema — the settings service derives the `dsh-sidebar-vscode` section from it (7 tests)
 src/shared/settings.ts         # the settings model shared by both halves: entry-id namespace, types, composition base
 src/vscodeProxy.ts             # host half: same-origin /sidebar/vscode reverse proxy (HTTP + WS pipe + path/token rewrite + configure channel + trust fence) (41 tests)
 src/mention.ts                 # host-half core: parse/rewrite/dedup/freshness/<text-selection> etc. (38 tests)
 src/mentionCodec.ts            # shared pure logic: canonical URI codecs (2 schemes)/truncation/hashing (42 tests)
 src/openChannel.ts             # host half: /tmp command-channel spool — all persistence through one SpoolStore (atomic writes, fail-soft reads) (13 tests)
-src/trust-fence.ts             # host half: browser-trust fence for this plugin's routes (loopback/trustedHosts + same-origin markers)
+src/trust-fence.ts             # host half: browser-trust fence for this plugin's routes, parity with the 0.2.1 /api fence (loopback/trustedHosts/listener bind literal + protocol-aware same-origin markers; authorities bound via scoped ctx.inject: webRuntime ≤0.2.0 / webStartup ≥0.2.1)
 src/client/index.tsx           # browser-half entry: a thin composition root (tab + dock + @ source + takeovers) over the modules below
 src/client/VscodeView.tsx      # the tab VIEW: the projection anchor + chrome (toolbar/notices/loading), feeding the persistent runtime
 src/client/workbenchRuntime.ts # the workbench keeper: ONE persistent host + frame per page surviving tab-body unmounts; lock→gate→src reconciler; adopter-signal GC (13 tests)

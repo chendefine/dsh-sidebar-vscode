@@ -55,10 +55,16 @@ export declare const name = "dsh-sidebar-vscode";
 export { Config } from './config.ts';
 export type { VscodeSidebarPluginConfig } from './config.ts';
 /** Services required before load: the agent registry (agent/created
- * events), the webserver (command-channel routes), and the web runtime
- * (the trust fence's live trustedHosts). The settings section needs no
- * inject: the host's settings service derives it from this entry's
- * `Config` schema by entry id. */
+ * events) and the webserver (command-channel routes). The trust fence's
+ * trustedHosts are bound through scoped ctx.inject callbacks (see
+ * bindFenceAuthorities in trust-fence.ts): dsh ≤0.2.0 provides
+ * `webRuntime`, 0.2.1-alpha.2 removed that service and moved the
+ * authorities to `webStartup` — cordis forbids reading a service the
+ * plugin does not inject (`cannot get property … without inject`), so
+ * neither may be a static inject either, or the plugin strands as
+ * pending forever on the other dsh generation. The settings section
+ * needs no inject: the host's settings service derives it from this
+ * entry's `Config` schema by entry id. */
 export declare const inject: string[];
 /**
  * Mount the vscode-selection pre-step boundary for every agent.

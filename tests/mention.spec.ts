@@ -237,9 +237,13 @@ describe('expandVscodeMentions', () => {
   })
 
   it('leaves non-user messages untouched', async () => {
+    // A system-prompt-sourced message: the current dsh vocabulary's non-user
+    // producer kind (the 0.1.x `plugin` kind no longer exists in
+    // MessageSourceMap — this spec typechecks against the live /app/dsh
+    // build through tsconfig paths).
     const pluginMessage = createUserMessage({
       content: [{ type: 'text', text: `plugin echo ${formatVscodeMention(refPayload())}` }],
-      source: { kind: 'plugin', plugin: 'other', form: 'notice', summary: 'echo' },
+      source: { kind: 'system-prompt' },
     })
     const messages = [pluginMessage]
     const out = await expandVscodeMentions(messages, CWD, freshReader, new AbortController().signal)

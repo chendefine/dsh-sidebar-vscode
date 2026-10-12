@@ -66,7 +66,7 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
-import { isTrustedApiRequest } from './trust-fence.ts'
+import { bindFenceAuthorities, isTrustedApiRequest } from './trust-fence.ts'
 
 /** Environment key overriding the proxy upstream (full URL, path/query ok). */
 export const UPSTREAM_ENV = 'DSH_SIDEBAR_VSCODE_UPSTREAM'
@@ -142,6 +142,13 @@ interface ProxyWebServerFace {
     path: string
     handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => Promise<void> | void
   }): () => void
+  /** The listener's own bind literal: the fence accepts a browser dialing
+   * it on any port, exactly like the 0.2.1 /api fence. Optional: an older
+   * face without it stays loopback + trustedHosts only. */
+  readonly host?: string
+  /** The listener's protocol ('https:' under native TLS): default-port
+   * normalization in the fence follows it. */
+  readonly protocol?: 'http:' | 'https:'
 }
 
 /** The off-like sentinels that disable the proxy entirely. */
@@ -550,12 +557,16 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
   const face = (): ProxyWebServerFace | undefined => (ctx as unknown as { webServer?: ProxyWebServerFace }).webServer
 
   /**
-   * The live webRuntime face the browser-trust fence reads (structural;
-   * an absent service leaves an empty trustedHosts list, which fences to
-   * loopback only — the same fail-closed default the /api routes use).
+   * The live browser-trust authorities across dsh generations: dsh ≤0.2.0
+   * carries them on `webRuntime`, 0.2.1-alpha.2 removed that service and
+   * moved them to `webStartup`. Cordis forbids reading either service
+   * without injecting it (`cannot get property … without inject`), so the
+   * value arrives through scoped ctx.inject callbacks instead (see
+   * bindFenceAuthorities); before either service exists the getter answers
+   * [], which fences to loopback only — the same fail-closed default the
+   * /api routes use.
    */
-  const runtime = (): { trustedHosts: readonly string[] } | undefined =>
-    (ctx as unknown as { webRuntime?: { trustedHosts: readonly string[] } }).webRuntime
+  const fenceTrustedHosts = bindFenceAuthorities(ctx as unknown as Parameters<typeof bindFenceAuthorities>[0])
 
   /**
    * The browser-trust gate for BOTH proxy legs: cross-site pages must not
@@ -564,12 +575,17 @@ export function createVscodeProxy(ctx: ProxyPluginContext): VscodeProxyHandle {
    * mount itself appends), and WebSocket handshakes are not CORS-checked
    * at all, so an unfenced upgrade leg is a cross-site-hijack tunnel into
    * the victim's VS Code server (serve-web's `handleUpgrade` ignores the
-   * connection token). Same fence as every other plugin route (index.ts);
-   * the same-origin page, the embedded iframe, and direct bookmark
+   * connection token). Same fence as every other plugin route (index.ts):
+   * trustedHosts from the bound authorities plus the listener's own bind
+   * address and protocol (a `--host <literal>` deployment serves the
+   * workbench iframe, whose requests carry that literal as Host); the
+   * same-origin page, the embedded iframe, and direct bookmark
    * navigations (`sec-fetch-site: none`, no Origin) all pass.
    */
-  const fenceOk = (req: IncomingMessage): boolean =>
-    isTrustedApiRequest(req, runtime()?.trustedHosts ?? [])
+  const fenceOk = (req: IncomingMessage): boolean => {
+    const carrier = face()
+    return isTrustedApiRequest(req, fenceTrustedHosts(), carrier?.host, carrier?.protocol)
+  }
 
   /** Registered mount prefixes → their current rewrite targets. */
   const mountTargets = new Map<string, string>()

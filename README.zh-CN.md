@@ -308,14 +308,14 @@ DSH 会话与嵌入 workbench 看到**同一文件系统、同一路径**，因�
 
 ```
 src/shared/protocol.ts         # 协议平面：跨进程边界的全部常量（信封标记、代理挂载路径、spool 文件名、能力版本、TTL、工作区 slug）——纯模块，host+client 原样引用
-src/index.ts                   # host 半入口：agent/created → pre-step 边界挂载 + /sidebar-vscode/api 围栏路由（一张方法表分发）+ 静态 Config 导出（inject: agents, webServer, webRuntime）
+src/index.ts                   # host 半入口：agent/created → pre-step 边界挂载 + /sidebar-vscode/api 围栏路由（一张方法表分发）+ 静态 Config 导出（inject: agents, webServer；trustedHosts 经 scoped ctx.inject 绑定：webRuntime ≤0.2.0 / webStartup ≥0.2.1）
 src/config.ts                  # 插件的 volatile Config schema——设置服务由此派生 `dsh-sidebar-vscode` 配置节（7 测试）
 src/shared/settings.ts         # 两半共享的设置模型：入口 id 命名空间、类型、组合基线
 src/vscodeProxy.ts             # host 半：/sidebar/vscode 同源反代（HTTP 透传 + WS upgrade 管道 + 路径/令牌改写 + configure 通道）（41 测试）
 src/mention.ts                 # host 半核心：解析改写/去重/新鲜度/<text-selection> 等注入（38 测试）
 src/mentionCodec.ts            # 共享纯逻辑：两种 scheme 规范 URI 编解码/截断/哈希归一（42 测试）
 src/openChannel.ts             # host 半：/tmp 命令通道 spool —— 全部持久化走唯一 SpoolStore（原子写 + 容错读）（13 测试）
-src/trust-fence.ts             # host 半：本插件路由的浏览器信任围栏（回环/trustedHosts + 同源标记）
+src/trust-fence.ts             # host 半：本插件路由的浏览器信任围栏，与 0.2.1 /api 围栏对齐（回环/trustedHosts/监听地址字面量 + 按协议归一的同源标记；授权源经 scoped ctx.inject 绑定：webRuntime ≤0.2.0 / webStartup ≥0.2.1）
 src/client/index.tsx           # browser 半入口：薄组合根（tab + dock + @ 触发源 + 接管装配），机制全部在下列模块
 src/client/VscodeView.tsx      # 标签视图：投影锚点 + 外壳（工具栏/提示/加载遮罩），向常驻运行时喂输入
 src/client/workbenchRuntime.ts # 工作台守护者：每页一个常驻宿主 + 帧，活过标签正文卸载；lock→gate→src 协调器；采纳者 signal 回收（13 测试）

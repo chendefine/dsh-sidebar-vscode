@@ -23,7 +23,6 @@
  * @module dsh-sidebar-vscode/config
  */
 import type { Volatile } from '@deepseek-ai/cordis';
-import z from '@deepseek-ai/schemastery';
 import { type VscodeSidebarSettings } from './shared/settings.ts';
 /**
  * The config `apply` receives once the loader resolves the schema: every
@@ -46,18 +45,18 @@ export type VscodeSidebarPluginConfig = {
  * profile section outside them is refused at write time by the settings
  * service itself.
  */
-export declare const Config: z<Schemastery.ObjectS<NoInfer<{
-    openAsDefault: z<boolean, boolean, "volatile-defined">;
-    openBlocklist: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
-    serverUrl: z<string, string, "volatile-defined">;
-    pathMap: z<string, string, "volatile-defined">;
-    maxLines: z<number, number, "volatile-defined">;
-    maxBytes: z<number, number, "volatile-defined">;
+export declare const Config: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
+    openAsDefault: import("@deepseek-ai/schemastery").default<boolean, boolean, "volatile-defined">;
+    openBlocklist: import("@deepseek-ai/schemastery").default<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    serverUrl: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
+    pathMap: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
+    maxLines: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
+    maxBytes: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
-    openAsDefault: z<boolean, boolean, "volatile-defined">;
-    openBlocklist: z<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
-    serverUrl: z<string, string, "volatile-defined">;
-    pathMap: z<string, string, "volatile-defined">;
-    maxLines: z<number, number, "volatile-defined">;
-    maxBytes: z<number, number, "volatile-defined">;
+    openAsDefault: import("@deepseek-ai/schemastery").default<boolean, boolean, "volatile-defined">;
+    openBlocklist: import("@deepseek-ai/schemastery").default<NoInfer<string[]>, NoInfer<string[]>, "volatile-defined">;
+    serverUrl: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
+    pathMap: import("@deepseek-ai/schemastery").default<string, string, "volatile-defined">;
+    maxLines: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
+    maxBytes: import("@deepseek-ai/schemastery").default<number, number, "volatile-defined">;
 }>>, "plain">;
