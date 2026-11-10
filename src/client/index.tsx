@@ -71,7 +71,8 @@ import {
   type SessionsServiceFace,
 } from './references.ts'
 import { isResourceList, type ClipboardPayload } from './selection.ts'
-import { readActiveComposerSelection, restoreActiveComposerCaret } from './composer.tsx'
+import { restoreActiveComposerCaret } from './composer.tsx'
+import { readComposerPoint } from './composerPoint.ts'
 import { VSCODE_SIDEBAR_SETTINGS_NAMESPACE } from '../shared/settings.ts'
 
 /** This bundle's package name — the Plugins page keys a bundle's own
@@ -163,59 +164,6 @@ interface VscodeTriggerSource {
 }
 
 /**
- * Whether the currently displayed conversation is the addressed session —
- * the gate for reading (and restoring) the displayed composer's caret on
- * its behalf: a composer showing another session holds another draft, so
- * its selection offsets would be meaningless for this landing.
- */
-function composerDisplayedFor(
-  sessions: ClientContextFace['sessions'],
-  sessionId: string | undefined,
-): boolean {
-  if (sessionId === undefined) return false
-  return sessions?.list?.getSnapshot().current === sessionId
-}
-
-/** One resolved composer point plus where it came from. */
-interface ComposerPoint {
-  readonly point: { readonly start: number, readonly end: number }
-  /** True when the point was read off the displayed DOM surface (its caret
-   * restore must therefore write that surface back; a machine-resolved
-   * point leaves the editor's own post-insert selection alone). */
-  readonly fromDom: boolean
-}
-
-/**
- * The addressed session's live composer caret, in the plane the machine
- * addresses edits in — the bridge path's insertion point.
- *
- * Lexical hosts answer through the input resolver's keyboard face
- * (`conversation.input.keyboard(id).caretSpan()`): the editor's own
- * selection projection, per-session correct and kept through focus loss
- * into the VS Code iframe. Hosts without the face fall back to the DOM
- * selection of the displayed composer (the modern contenteditable mapping,
- * or the old textarea), gated on the displayed session matching — only the
- * displayed conversation's surface is meaningful there.
- */
-function readComposerPoint(
-  client: ClientContextFace,
-  sessionId: string | undefined,
-): ComposerPoint | undefined {
-  if (sessionId === undefined) return undefined
-  const keyboard = client.conversation?.input.keyboard
-  if (keyboard !== undefined) {
-    try {
-      return { point: keyboard(sessionId).caretSpan(), fromDom: false }
-    } catch {
-      // No shell for the id (never-focused session): fall through to the DOM.
-    }
-  }
-  if (!composerDisplayedFor(client.sessions, sessionId)) return undefined
-  const fromSurface = readActiveComposerSelection()
-  return fromSurface === undefined ? undefined : { point: fromSurface, fromDom: true }
-}
-
-/**
  * Client plugin body.
  * @param ctx - the client cordis context (the official sidebar services +
  * slots + locale + sessions + conversation + inputTriggers + configForms
@@ -264,7 +212,9 @@ export function apply(ctx: unknown): void {
       // through React and collapse the surface's selection to the tail.
       // The bridge path passes no `at`: resolve the insertion point here.
       const ownPoint = at === undefined
-      const resolved = at === undefined ? readComposerPoint(client, sessionId) : undefined
+      const resolved = at === undefined
+        ? readComposerPoint(client.sessions, client.conversation, sessionId)
+        : undefined
       const point = at !== undefined ? at : resolved?.point
       const refs = isResourceList(payload)
         ? buildResourceRefsFromPayload(payload, {
