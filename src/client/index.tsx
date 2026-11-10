@@ -23,6 +23,12 @@
  *   button, and the settings page's「打开配置文件」button rerouted into
  *   the workbench tab, all behind the openAsDefault switch and the open
  *   blocklist;
+ *
+ * - the user-row reference tag (userReferenceTag.tsx): the
+ *   `conversation.chat.user.before` chain seat electing the
+ *   `vscodeReferences` labels the Host half stamps into each citing
+ *   message's durable source, rendering the citation summary Chat's
+ *   transcript visibility policy keeps out of the message list;
  * - the configuration form (settingsCard.tsx) on the official Plugins
  *   page's two config seats — the bundle's own page
  *   (`plugins.bundle.config`, keyed by the package name) and the row's
@@ -53,6 +59,7 @@ import {
 } from './referencePipeline.ts'
 import { adoptPluginStyles } from './styles.ts'
 import { NS } from './locales.ts'
+import { VscodeUserReferenceTag, vscodeUserReferences } from './userReferenceTag.tsx'
 import {
   buildRefsFromPayload,
   buildResourceRefsFromPayload,
@@ -99,6 +106,7 @@ interface ClientContextFace {
       key?: string
       order?: number
       locale?: string
+      select?: (owner: Record<string, unknown>) => unknown
       inject?: () => Record<string, unknown>
     }, component: unknown): () => void
   }
@@ -308,6 +316,33 @@ export function apply(ctx: unknown): void {
       disposeStyles()
     }
   }, 'dsh-sidebar-vscode: composer dock')
+
+  // ── The user-row reference tag (the visible trace of injected contexts) ─
+  // Chat (dsh ≥0.1.7) hides ordinary injected context rows from the
+  // transcript, and its bubble-folded labels are reserved for the official
+  // session-reference / skill-invocation producers — so this plugin's
+  // `<text-selection>` injections, while durable and model-visible, render
+  // nowhere in the message list. The Host half therefore stamps each citing
+  // message's durable source with its citations' readable labels
+  // (`vscodeReferences`), and this seat — `conversation.chat.user.before`,
+  // the chain Chat dispatches above every user/steering bubble — elects
+  // exactly those sources and renders one tertiary summary line above the
+  // bubble (`VS Code 引用 · path L10-L12`). Declaration-aware injection
+  // keeps this independent of whether Chat's renderer is loaded yet; a
+  // runtime without the seat simply never dispatches it. The tag's
+  // stylesheet lives as long as the registration.
+  client.effect(() => {
+    const disposeStyles = adoptPluginStyles('usertag')
+    const stop = client.slots.inject('conversation.chat.user.before', () => client.slots.register({
+      name: 'conversation.chat.user.before',
+      id: 'dsh-sidebar-vscode-user-refs',
+      select: (owner: { source?: unknown }) => vscodeUserReferences(owner.source) ?? null,
+    }, VscodeUserReferenceTag))
+    return () => {
+      stop()
+      disposeStyles()
+    }
+  }, 'dsh-sidebar-vscode: user-row reference tag')
 
   // ── The trigger source (codec-only registration) ───────────────────────
   // Empty candidates keep this source out of every menu; the machine

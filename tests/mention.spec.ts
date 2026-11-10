@@ -17,6 +17,8 @@ import {
   renderSelectionTag,
   renderResourceTag,
   vscodeMentionPreStep,
+  vscodeReferenceLabels,
+  withVscodeReferences,
   type RangeReader,
 } from '../src/mention.ts'
 import {
@@ -214,6 +216,10 @@ describe('expandVscodeMentions', () => {
     expect(out).toHaveLength(2)
     expect(textOf(out[0]!)).toBe('review @example.json L10-L12 please')
     expect(out[0]!.id).toBe(direct.id)
+    expect(out[0]!.source).toMatchObject({
+      kind: 'user',
+      vscodeReferences: ['example.json L10-L12'],
+    })
     expect(out[1]!.source).toMatchObject({
       kind: 'vscode-mention',
       form: 'notice',
@@ -228,6 +234,51 @@ describe('expandVscodeMentions', () => {
     })
     expect(textOf(out[1]!)).toContain('<text-selection ')
     expect(out[1]!.id).not.toBe(direct.id)
+  })
+
+  it('stamps mixed selection and resource labels, deduplicated in citation order', async () => {
+    const selection = formatVscodeMention(refPayload())
+    const duplicate = formatVscodeMention(refPayload())
+    const file = formatVscodeResourceMention(resPayload({ path: 'src/main.ts', type: 'file' }))
+    const folder = formatVscodeResourceMention(resPayload({ path: 'src', type: 'folder' }))
+    const out = await expandVscodeMentions(
+      [userMessage(`${selection} ${duplicate} ${file} ${folder}`)],
+      CWD,
+      freshReader,
+      new AbortController().signal,
+    )
+    expect(out[0]!.source).toMatchObject({
+      kind: 'user',
+      vscodeReferences: ['example.json L10-L12', 'src/main.ts', 'src'],
+    })
+  })
+
+  it('keeps every existing source member when stamping', () => {
+    // The rpc-correlation shape session-controller writes survives the
+    // stamp: the browser echo reconciliation still finds its fields.
+    // (Typed through a non-literal so the extra members ride along, exactly
+    // like a producer-augmented source does at runtime.)
+    const rpc: { kind: 'user', rpcId: string, clientTimeZone?: string } = {
+      kind: 'user',
+      rpcId: 'req-1',
+      clientTimeZone: 'Asia/Shanghai',
+    }
+    const stamped = withVscodeReferences(rpc, ['a.ts L1-L2'])
+    expect(stamped).toEqual({
+      kind: 'user',
+      rpcId: 'req-1',
+      clientTimeZone: 'Asia/Shanghai',
+      vscodeReferences: ['a.ts L1-L2'],
+    })
+  })
+
+  it('builds the label list without duplicating identical citations', () => {
+    const payload = refPayload()
+    expect(vscodeReferenceLabels([
+      payload,
+      payload,
+      resPayload({ path: 'a/b.ts', type: 'file' }),
+    ])).toEqual(['example.json L10-L12', 'a/b.ts'])
   })
 
   it('returns the same instance when nothing cites a reference', async () => {

@@ -27,7 +27,7 @@
 - 版本：0.3.3
 - 许可证：MIT
 - 平台：web（DSH Web GUI）
-- 测试：522 例全部通过（28 个规格文件）
+- 测试：556 例全部通过（30 个规格文件）
 
 ## 功能简介
 
@@ -158,14 +158,18 @@ scripts/install-extension.sh --vsix <path>    # 使用指定 VSIX
 1. 在嵌入的编辑器里选中代码（多光标 = 多条 chip）；
 2. 右键菜单「DSH: 发送选中代码到会话」，或按 **Ctrl/Cmd+Alt+C**；
 3. 输入框出现原子 chip `@src/main.ts L10-L12`——注入成功静默无提示，chip 出现即反馈；仅降级 / 失败时工具栏闪琥珀色提示；
-4. 照常输入并提交。chip 被改写为可读 `@path L10-L12`，`<text-selection>` context 紧跟该消息注入。
+4. 照常输入并提交。chip 被改写为可读 `@path L10-L12`，`<text-selection>` context 紧跟该消息注入；引用消息气泡**上方**出现一行浅色引用标签（`VS Code 引用 · src/main.ts L10-L12, src`，文件 / 文件夹引用同样列出）——标签随消息一起落盘（durable source 的 `vscodeReferences` 字段），刷新 / 翻历史 / 离线日志里都在。
 
 选区引用行为细则：
 
 - **去重**：同一 step 内按 `(路径, 起始行, 结束行)` 去重——重复发送同一选区只注入一条 context；同范围不同内容（文件已改）**保留最新捕获**；
 - **时效**：提交时在会话 cwd 约束下重读磁盘行区间比对哈希——不一致标 `stale="true"`；截断快照改为校验保留的首尾两半（截断本身绝不导致 stale）；未保存缓冲区标 `dirty="true"`；快照内容始终注入（不依赖文件系统），tag 首部注释提示模型修改前先重新读取；
 - **截断**：超过 `maxLines`（默认 200）/ `maxBytes`（默认 20000，防单行压缩大文件）时保留首尾两半、省略中间，正文内嵌 `... (N lines omitted, L51-L150) ...` 标记，标签带 `truncated="true"`；行号保留真实范围；
-- 注入的 context 消息 source 为 `{ kind: 'vscode-mention', form: 'notice', version: 1, path, startLine, endLine, language?, contentHash, bytes, truncated, dirty, stale }`。
+- 注入的 context 消息 source 为 `{ kind: 'vscode-mention', form: 'notice', version: 1, path, startLine, endLine, language?, contentHash, bytes, truncated, dirty, stale }`；引用消息自身的 source 在改写时被盖章为 `{ kind: 'user', vscodeReferences: [ 'path L10-L12', … ] }`（`'user-vscode'` 成员，保留 rpc 关联等既有字段）。
+
+### 消息列表里的引用标签（user-row tag）
+
+DSH ≥0.1.7 的 Chat 转录可见性策略（`chat-visibility.ts` 的 `isVisibleChatNode`）把**普通注入 context 行整体隐藏**——只有携带工具变更的 context 保留行，会话引用（`session-reference`）与技能调用（`skill-invocation`）则被官方快照构建器折进用户气泡成标签。本插件注入的 `<text-selection>` / `<file-selection>` context 因此在消息列表**没有任何可见痕迹**（模型侧与持久日志完好）。恢复显示走的正是官方留给第三方的席位：改写时 host 半把引用标签盖进引用消息的 durable source，客户端半在 **`conversation.chat.user.before`** 链式席位上以 selector 认领这些 source，在用户气泡上方渲染一行与官方 `引用会话 · …` 同风格的浅色摘要（`userReferenceTag.tsx`；席位由 ui-chat 的 user 渲染器声明，声明感知注入保证与加载顺序无关；selector 防御式解析，非本插件盖的 source 一律不认领）。
 
 ### 发送文件 / 文件夹
 
@@ -230,7 +234,7 @@ DSH 插件分 host（node）半与 browser 半，本插件各自职责：
 └───────────────────────────────────────────────────────────────┘
 ```
 
-- **host 半**是模型 facing 边界：对每个存活 agent 在 `agent/pre-step` 监听，解析被认领用户消息中的规范 mention（markdown 与裸 URI，两种 scheme，严格 canonical 校验），改写为可读标签（`freezeMessage` 保留消息 id），按引用身份去重后逐条注入 context（`createUserMessage`，紧跟首次引用它的消息）。文件系统只用于新鲜度标记——快照内容随 mention 携带，注入不依赖磁盘状态；
+- **host 半**是模型 facing 边界：对每个存活 agent 在 `agent/pre-step` 监听，解析被认领用户消息中的规范 mention（markdown 与裸 URI，两种 scheme，严格 canonical 校验），改写为可读标签（`freezeMessage` 保留消息 id；引用标签同时盖进该消息 durable source 的 `vscodeReferences`，供客户端半的 user-row 席位渲染），按引用身份去重后逐条注入 context（`createUserMessage`，紧跟首次引用它的消息）。文件系统只用于新鲜度标记——快照内容随 mention 携带，注入不依赖磁盘状态；
 - **browser 半**负责全部 UI：官方 `vscode` 标签类型与正文、chip、tag 栏、设置卡片、接管、词典；官方侧栏服务缺席时客户端 fiber 静默等待、什么都不注册。
 
 ### 常驻工作台（切换标签为何零成本）
@@ -329,6 +333,7 @@ src/client/openRequests.ts     # OpenRequestConsumer：单发导航纪律 ——
 src/client/workbenchLink.ts    # createWorkbenchOpener：优先扩展 spool（cap v4 起带启动标签），降级 URL payload 重载（8 测试）
 src/client/clipboardBridge.ts  # 同源 iframe navigator.clipboard.writeText 信号补丁（10 测试；跨域读取抛 SecurityError 时 no-op）
 src/client/composer.tsx        # dock 组件：引用 tag 栏 + 粘贴兜底（样式走 styles.ts）
+src/client/userReferenceTag.tsx # 用户气泡上方的引用标签：user.before 席位 selector + 摘要行（样式走 styles.ts）
 src/client/composerDom.ts      # Lexical composer DOM 的 detect 投影遍历（DOM 选区 ⇄ detect 偏移映射）（11 测试）
 src/client/references.ts       # 载荷→chip（选区/资源）/光标处插入/tag 栏投影/粘贴恢复（69 测试）
 src/client/referencePipeline.ts # 插件体、标签页、dock 三方共享的 lander/选项句柄表

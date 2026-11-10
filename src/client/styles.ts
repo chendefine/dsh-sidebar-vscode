@@ -14,7 +14,7 @@
  */
 
 /** The injectable sheets this plugin owns. */
-export type PluginStyleId = 'tab' | 'host' | 'rail' | 'settings'
+export type PluginStyleId = 'tab' | 'host' | 'rail' | 'usertag' | 'settings'
 
 /** One sheet: its idempotency id and its rules. */
 interface StyleSheetSpec {
@@ -258,6 +258,27 @@ const STYLE_SHEETS: Record<PluginStyleId, StyleSheetSpec> = {
 .dsh_vscodeRef_remove:hover {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
+}
+`,
+  },
+  usertag: {
+    id: 'dsh-sidebar-vscode-user-tag-css',
+    css: `
+/* The citation summary line above one citing user bubble (Chat's
+ * conversation.chat.user.before seat). Mirrors Chat's own reference-summary
+ * style — a tertiary hint line — while clipping to the bubble column so a
+ * long citation list never widens the row; the full list rides the
+ * line's title tooltip. The user row is a right-aligned flex column, so
+ * the line inherits its edge alignment for free. */
+.dsh_vscodeRef_userTag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xxs-12);
+  line-height: 18px;
+  user-select: none;
 }
 `,
   },

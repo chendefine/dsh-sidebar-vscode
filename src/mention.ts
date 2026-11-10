@@ -2,7 +2,10 @@
  * The Host-side vscode-selection context: recognizes canonical
  * `dsh-vscode:` (editor selections) and `dsh-vscode-res:` (explorer
  * file/folder references) mentions in outgoing user messages, replaces each
- * with its readable label (preserving the message id), and injects one
+ * with its readable label (preserving the message id), stamps the citations'
+ * readable labels into the citing message's durable source
+ * (`vscodeReferences` — what the browser half's user-row seat renders as the
+ * reference tag), and injects one
  * bounded `<text-selection>` context message — or, for resources, one
  * content-less `<file-selection>`/`<folder-selection>` path marker —
  * immediately after the
@@ -24,7 +27,7 @@
 import { createHash } from 'node:crypto'
 import { isAbsolute, relative as pathRelative, resolve, sep } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
-import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, MessageSourceMap, UserMessage } from '@deepseek-ai/dsh-llm'
 import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import {
@@ -36,6 +39,7 @@ import {
   parseVscodeMentions,
   rangeLabel,
   referenceLabel,
+  resourceLabel,
   type VscodeMentionPayload,
   type VscodeRefPayload,
   type VscodeResourcePayload,
@@ -109,7 +113,57 @@ declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'vscode-mention': VscodeMentionSource
     'vscode-resource': VscodeResourceSource
+    'user-vscode': VscodeUserSource
   }
+}
+
+/**
+ * The citing user message's durable source once this boundary stamped it: a
+ * `kind: 'user'` message (every consumer's `source.kind === 'user'` check
+ * keeps matching) that additionally carries the readable labels of the vscode
+ * references it cited, in citation order. Chat's ordinary context rows are
+ * hidden by the stock transcript visibility policy (dsh ≥0.1.7), so this
+ * record is the durable material the browser half's
+ * `conversation.chat.user.before` seat elects to render the reference tag
+ * above the user bubble — the same discipline session-controller's
+ * `'user-rpc'` source uses for its own extras.
+ */
+export interface VscodeUserSource {
+  kind: 'user'
+  /** Readable citation labels (`path L10-L12` / `path`), deduplicated, first-seen order. */
+  readonly vscodeReferences: readonly string[]
+}
+
+/**
+ * Build the readable label list of one message's citations: selections as
+ * `path L10-L12`, resources as the bare `path` — exactly the labels the
+ * inline rewrite leaves in the message text, deduplicated preserving
+ * first-seen order.
+ * @param payloads - every reference parsed from the citing message.
+ * @returns the deduplicated label list (empty when nothing cited).
+ */
+export function vscodeReferenceLabels(payloads: readonly VscodeMentionPayload[]): string[] {
+  const labels: string[] = []
+  for (const payload of payloads) {
+    const label = isVscodeResourcePayload(payload) ? resourceLabel(payload) : referenceLabel(payload)
+    if (!labels.includes(label)) labels.push(label)
+  }
+  return labels
+}
+
+/**
+ * Stamp the citation labels onto one user message's durable source. The
+ * spread keeps every existing member (e.g. session-controller's rpc
+ * correlation fields), so nothing already riding the source is lost.
+ * @param source - the citing message's user-shaped source.
+ * @param labels - the non-empty deduplicated label list.
+ * @returns the stamped source, typed as the `'user-vscode'` map member.
+ */
+export function withVscodeReferences(
+  source: MessageSourceMap['user'] | VscodeUserSource,
+  labels: readonly string[],
+): VscodeUserSource {
+  return { ...source, vscodeReferences: labels }
 }
 
 /** The durable source record of one injected explorer-resource context message. */
@@ -320,6 +374,9 @@ export async function expandVscodeMentions(
   signal: AbortSignal,
 ): Promise<UserMessage[]> {
   // Pass 1: rewrite citing messages, collecting payloads per message index.
+  // A rewritten message additionally carries its citations' readable labels
+  // in its durable source (`vscodeReferences`) — the material the browser
+  // half's user-row seat renders as the reference tag above the bubble.
   const rewritten = new Map<number, UserMessage>()
   const cited: { payload: VscodeMentionPayload; index: number }[] = []
   for (const [index, message] of messages.entries()) {
@@ -335,7 +392,10 @@ export async function expandVscodeMentions(
       return { type: 'text', text: parsed.text }
     })
     if (!parsedAny) continue
-    rewritten.set(index, freezeMessage({ ...message, content }))
+    const labels = vscodeReferenceLabels(references)
+    rewritten.set(index, freezeMessage(labels.length > 0
+      ? { ...message, content, source: withVscodeReferences(message.source, labels) }
+      : { ...message, content }))
     for (const payload of references) cited.push({ payload, index })
   }
   if (cited.length === 0) return messages as UserMessage[]

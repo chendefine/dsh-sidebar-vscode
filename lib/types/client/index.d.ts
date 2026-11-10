@@ -23,6 +23,12 @@
  *   button, and the settings page's「打开配置文件」button rerouted into
  *   the workbench tab, all behind the openAsDefault switch and the open
  *   blocklist;
+ *
+ * - the user-row reference tag (userReferenceTag.tsx): the
+ *   `conversation.chat.user.before` chain seat electing the
+ *   `vscodeReferences` labels the Host half stamps into each citing
+ *   message's durable source, rendering the citation summary Chat's
+ *   transcript visibility policy keeps out of the message list;
  * - the configuration form (settingsCard.tsx) on the official Plugins
  *   page's two config seats — the bundle's own page
  *   (`plugins.bundle.config`, keyed by the package name) and the row's

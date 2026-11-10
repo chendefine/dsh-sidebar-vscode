@@ -47,6 +47,8 @@ export declare const zh: {
     readonly proxyFallback: "内置代理暂不可达该地址（或宿主半为旧版本），已回退为直连：同源选区桥不可用，粘贴兜底仍可用";
     readonly railReferences: "VS Code 代码引用";
     readonly removeReference: "移除引用";
+    readonly userReferenceSummary: "VS Code 引用";
+    readonly userReferenceSeparator: "、";
 };
 /** All copy keys (zh is the source of truth). */
 export type CopyKey = keyof typeof zh;

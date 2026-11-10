@@ -159,14 +159,18 @@ Expand the right sidebar and pick the **VSCode 工作台 / VSCode workbench** en
 1. Select code in the embedded editor (multi-cursor = one chip each);
 2. Right-click → *"DSH: Send Selection to Session"*, or press **Ctrl/Cmd+Alt+C**;
 3. The atomic chip `@src/main.ts L10-L12` appears in the composer — success is silent (the chip *is* the feedback); only degradations/failures flash an amber notice in the toolbar;
-4. Type and submit as usual. The chip is rewritten to the readable `@path L10-L12`, and the `<text-selection>` context is injected right after the message.
+4. Type and submit as usual. The chip is rewritten to the readable `@path L10-L12`, and the `<text-selection>` context is injected right after the message; a tertiary reference tag (`VS Code references · src/main.ts L10-L12, src` — file/folder references listed the same way) appears **above** the citing bubble. The tag is committed with the message (the durable source's `vscodeReferences` field), so it survives reloads, history paging, and offline logs.
 
 Selection reference details:
 
 - **Dedup**: within one step by `(path, start, end)` — sending the same selection twice injects one context; the same range with different content (file changed) keeps the **newest capture**;
 - **Freshness**: at submit the disk range is re-read confined to the session cwd and hash-compared — a mismatch marks `stale="true"`; a truncated snapshot instead verifies its kept head/tail halves (truncation alone never marks stale); an unsaved buffer marks `dirty="true"`; the snapshot text is always injected (no filesystem dependency), and the leading comment tells the model to re-read before editing;
 - **Truncation**: beyond `maxLines` (default 200) / `maxBytes` (default 20000, guards minified single-line files) the head and tail halves are kept with the middle omitted inline as `... (N lines omitted, L51-L150) ...`, the tag carries `truncated="true"`, and the real line range is preserved;
-- The context message source is `{ kind: 'vscode-mention', form: 'notice', version: 1, path, startLine, endLine, language?, contentHash, bytes, truncated, dirty, stale }`.
+- The context message source is `{ kind: 'vscode-mention', form: 'notice', version: 1, path, startLine, endLine, language?, contentHash, bytes, truncated, dirty, stale }`; the citing message's own source is stamped at rewrite time as `{ kind: 'user', vscodeReferences: [ 'path L10-L12', … ] }` (the `'user-vscode'` map member — every existing field, e.g. the rpc correlation, rides along).
+
+### The reference tag in the message list (user-row tag)
+
+Chat's transcript visibility policy (dsh ≥0.1.7, `isVisibleChatNode` in `chat-visibility.ts`) hides ordinary injected context rows entirely — only tool-change contexts keep a row, while session references (`session-reference`) and skill invocations (`skill-invocation`) are folded into the user bubble as labels by the official snapshot builder. This plugin's `<text-selection>` / `<file-selection>` injections therefore leave **no visible trace** in the message list (the model side and the durable log are intact). The restored display rides the seat Chat offers third parties: at rewrite time the host half stamps the citation labels into the citing message's durable source, and the browser half's selector on the **`conversation.chat.user.before`** chain seat elects exactly those sources, rendering one tertiary summary line above the bubble in the official `Referenced session · …` style (`userReferenceTag.tsx`; the seat is declared by ui-chat's user renderer, and declaration-aware injection makes the registration independent of load order; the selector parses defensively and declines every source this plugin did not stamp).
 
 ### Sending files / folders
 
@@ -233,7 +237,7 @@ A DSH plugin has a host (node) half and a browser half; this plugin's split:
 └────────────────────────────────────────────────────────────────┘
 ```
 
-- The **host half** owns the model-facing seam: per live agent it listens at `agent/pre-step`, parses canonical mentions in the claimed user messages (markdown and bare URIs, both schemes, strict canonical validation), rewrites them to readable labels (`freezeMessage` keeps message ids), dedupes by reference identity, and injects each context (`createUserMessage`) right after the first message citing it. The filesystem is consulted only for freshness marks — snapshot content rides inside the mention, so injection never depends on disk state;
+- The **host half** owns the model-facing seam: per live agent it listens at `agent/pre-step`, parses canonical mentions in the claimed user messages (markdown and bare URIs, both schemes, strict canonical validation), rewrites them to readable labels (`freezeMessage` keeps message ids; the citation labels are simultaneously stamped into the citing message's durable source as `vscodeReferences`, the material the browser half's user-row seat renders), dedupes by reference identity, and injects each context (`createUserMessage`) right after the first message citing it. The filesystem is consulted only for freshness marks — snapshot content rides inside the mention, so injection never depends on disk state;
 - The **browser half** owns all UI: the official `vscode` tab type + body, chips, the rail, the settings card, the takeovers, dictionaries; without the official right-Sidebar services the client fiber parks and nothing registers.
 
 ### The persistent workbench (why switching tabs is free)
@@ -338,6 +342,7 @@ src/client/openRequests.ts     # OpenRequestConsumer: one-shot navigation discip
 src/client/workbenchLink.ts    # createWorkbenchOpener: extension spool first (boot-tagged from cap v4), URL-payload reload degraded (8 tests)
 src/client/clipboardBridge.ts  # same-origin iframe navigator.clipboard.writeText signal patch (10 tests; no-ops on the cross-origin SecurityError throw)
 src/client/composer.tsx        # dock component: reference rail + paste fallbacks (styles via styles.ts)
+src/client/userReferenceTag.tsx # the reference tag above user bubbles: user.before seat selector + summary line (styles via styles.ts)
 src/client/composerDom.ts      # detect-projection walk over the Lexical composer DOM (DOM selection ⇄ detect offsets) (11 tests)
 src/client/references.ts       # payload→chips (selection/resources)/insert at the caret/rail projection/paste recovery (69 tests)
 src/client/referencePipeline.ts # the lander/options handle table the plugin body, the tab, and the dock share
@@ -367,7 +372,7 @@ scripts/install-extension.sh   # one-command extension install (vsce package →
 scripts/install-extension.md   # step-by-step install doc + troubleshooting (Chinese)
 README.md / README.zh-CN.md    # this doc (English) / the Chinese doc
 screenshot.png                 # product usage screenshot (see [Screenshot](#screenshot))
-tests/*.spec.ts                # vitest specs — 522 tests / 28 files (per-module counts noted above)
+tests/*.spec.ts(x)             # vitest specs — 556 tests / 30 files (per-module counts noted above)
 cordis.patch.yml               # the bundle channel's host-half insert row (mount declaration)
 tsdown.config.ts               # dual-bundle build (host ESM + client ModuleLoader format + purity gate)
 vitest.config.ts               # test-time dsh-llm alias (harness checkout preferred, installed package fallback)

@@ -49,6 +49,8 @@ export const zh = {
   proxyFallback: '内置代理暂不可达该地址（或宿主半为旧版本），已回退为直连：同源选区桥不可用，粘贴兜底仍可用',
   railReferences: 'VS Code 代码引用',
   removeReference: '移除引用',
+  userReferenceSummary: 'VS Code 引用',
+  userReferenceSeparator: '、',
 } as const
 
 /** All copy keys (zh is the source of truth). */
@@ -94,4 +96,6 @@ export const en: Record<CopyKey, string> = {
   proxyFallback: 'The built-in proxy cannot reach that address (or the host half is older); falling back to a direct connection: the same-origin selection bridge is off, the paste fallback still works',
   railReferences: 'VS Code code references',
   removeReference: 'Remove reference',
+  userReferenceSummary: 'VS Code references',
+  userReferenceSeparator: ', ',
 }
